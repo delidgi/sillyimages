@@ -137,6 +137,11 @@
 
     let modalOpen = false;
 
+    /**
+     * Inject wardrobe button as overlay on the character's avatar.
+     * Targets: .mes[is_user="false"] .avatar containing the character thumbnail.
+     * Re-injects on CHAT_CHANGED and CHARACTER_MESSAGE_RENDERED.
+     */
     function injectWardrobeButton() {
         document.getElementById('sw-wardrobe-btn')?.remove();
         const charName = getCharName();
@@ -144,7 +149,7 @@
 
         const btn = document.createElement('div');
         btn.id = 'sw-wardrobe-btn';
-        btn.className = 'sw-wardrobe-trigger interactable';
+        btn.className = 'sw-wardrobe-trigger';
         btn.title = 'Гардероб — ' + charName;
         btn.innerHTML = '<i class="fa-solid fa-shirt"></i>';
 
@@ -152,45 +157,37 @@
         if (active.bot || active.user) btn.classList.add('sw-has-active');
 
         btn.addEventListener('click', (e) => {
+            e.preventDefault();
             e.stopPropagation();
+            e.stopImmediatePropagation();
             modalOpen ? closeModal() : openModal();
         });
 
-        let injected = false;
+        // Find the character's avatar in chat messages
+        // Look for the FIRST bot message avatar (greeting / most recent visible)
+        const botMessages = document.querySelectorAll('#chat .mes:not([is_user="true"])');
+        let avatarDiv = null;
 
-        // Strategy 1: #top-bar
-        const topBar = document.getElementById('top-bar');
-        if (topBar) {
-            const rightIcon = topBar.querySelector('#rightNavDrawerIcon');
-            const leftIcon = topBar.querySelector('#leftNavDrawerIcon');
-            if (rightIcon) {
-                rightIcon.parentElement.insertBefore(btn, rightIcon);
-            } else if (leftIcon) {
-                leftIcon.after(btn);
-            } else {
-                topBar.appendChild(btn);
-            }
-            btn.classList.add('sw-btn-topbar');
-            injected = true;
-        }
-
-        // Strategy 2: near send button
-        if (!injected) {
-            const sendBut = document.getElementById('send_but');
-            if (sendBut) {
-                sendBut.parentElement.insertBefore(btn, sendBut);
-                btn.classList.add('sw-btn-form');
-                injected = true;
+        for (const mes of botMessages) {
+            const av = mes.querySelector('.avatar');
+            if (av) {
+                avatarDiv = av;
+                break;  // use the first bot message avatar (greeting is at top)
             }
         }
 
-        // Strategy 3: floating
-        if (!injected) {
+        if (avatarDiv) {
+            // Ensure avatar can hold absolutely positioned children
+            avatarDiv.style.position = 'relative';
+            avatarDiv.appendChild(btn);
+            btn.classList.add('sw-btn-avatar');
+            swLog('INFO', 'Button injected on character avatar');
+        } else {
+            // Fallback: floating button
             document.body.appendChild(btn);
             btn.classList.add('sw-btn-floating');
+            swLog('INFO', 'Button injected floating (no avatar found)');
         }
-
-        swLog('INFO', `Button injected (${injected ? 'topbar/form' : 'floating'})`);
     }
 
     function updateButtonBadge() {
@@ -465,13 +462,24 @@
 
     ctx.eventSource.on(ctx.event_types.APP_READY, () => {
         createWardrobeSettingsUI();
-        setTimeout(injectWardrobeButton, 300);
+        setTimeout(injectWardrobeButton, 500);
         swLog('INFO', 'SillyWardrobe loaded');
     });
 
     ctx.eventSource.on(ctx.event_types.CHAT_CHANGED, () => {
-        setTimeout(injectWardrobeButton, 200);
+        // Chat changed — avatar elements are new, re-inject
+        setTimeout(injectWardrobeButton, 400);
     });
+
+    // Re-inject when new bot messages render (avatar might be fresh DOM)
+    if (ctx.event_types.CHARACTER_MESSAGE_RENDERED) {
+        ctx.eventSource.on(ctx.event_types.CHARACTER_MESSAGE_RENDERED, () => {
+            // Only inject if button is missing (avoids flicker)
+            if (!document.getElementById('sw-wardrobe-btn')) {
+                setTimeout(injectWardrobeButton, 150);
+            }
+        });
+    }
 
     swLog('INFO', 'SillyWardrobe initialized');
 })();
