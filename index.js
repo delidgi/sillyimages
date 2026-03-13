@@ -150,13 +150,6 @@
 
     let modalOpen = false;
 
-    /**
-     * Inject wardrobe button next to the send form — always visible.
-     * Strategy:
-     *   1. #send_form — insert before send button (best: always at bottom of screen)
-     *   2. #form_sheld — parent container
-     *   3. Floating fixed button (ultimate fallback)
-     */
     function injectWardrobeButton() {
         document.getElementById('sw-wardrobe-btn')?.remove();
         const charName = getCharName();
@@ -164,7 +157,6 @@
 
         const btn = document.createElement('div');
         btn.id = 'sw-wardrobe-btn';
-        btn.className = 'sw-wardrobe-trigger';
         btn.title = 'Гардероб — ' + charName;
         btn.innerHTML = '<i class="fa-solid fa-shirt"></i>';
 
@@ -178,35 +170,8 @@
             modalOpen ? closeModal() : openModal();
         });
 
-        let injected = false;
-
-        // Strategy 1: inside #send_form, before the send button
-        const sendForm = document.getElementById('send_form');
-        const sendBut = document.getElementById('send_but');
-        if (sendForm && sendBut) {
-            sendForm.insertBefore(btn, sendBut);
-            btn.classList.add('sw-btn-sendform');
-            injected = true;
-            swLog('INFO', 'Button injected into #send_form');
-        }
-
-        // Strategy 2: #form_sheld
-        if (!injected) {
-            const formSheld = document.getElementById('form_sheld');
-            if (formSheld) {
-                formSheld.prepend(btn);
-                btn.classList.add('sw-btn-sendform');
-                injected = true;
-                swLog('INFO', 'Button injected into #form_sheld');
-            }
-        }
-
-        // Strategy 3: floating
-        if (!injected) {
-            document.body.appendChild(btn);
-            btn.classList.add('sw-btn-floating');
-            swLog('INFO', 'Button injected floating (fallback)');
-        }
+        document.body.appendChild(btn);
+        swLog('INFO', 'Button injected (fixed position)');
     }
 
     function updateButtonBadge() {
@@ -239,8 +204,7 @@
         modal.innerHTML = `
             <div class="sw-modal-header">
                 <div class="sw-modal-title">
-                    <i class="fa-solid fa-shirt"></i>
-                    <span>Гардероб — <b>${sanitize(charName)}</b></span>
+                        <span>Гардероб — <b>${sanitize(charName)}</b></span>
                 </div>
                 <div class="sw-modal-close interactable" title="Закрыть">
                     <i class="fa-solid fa-xmark"></i>
@@ -248,10 +212,10 @@
             </div>
             <div class="sw-tabs">
                 <div class="sw-tab interactable ${currentTab === 'bot' ? 'sw-tab-active' : ''}" data-tab="bot">
-                    <i class="fa-solid fa-robot"></i> Бот
+                    Бот
                 </div>
                 <div class="sw-tab interactable ${currentTab === 'user' ? 'sw-tab-active' : ''}" data-tab="user">
-                    <i class="fa-solid fa-user"></i> Юзер
+                    Юзер
                 </div>
             </div>
             <div class="sw-active-info" id="sw-active-info"></div>
@@ -297,10 +261,10 @@
         if (infoBar) {
             const activeOutfit = activeId ? findOutfit(charName, currentTab, activeId) : null;
             if (activeOutfit) {
-                infoBar.innerHTML = `<i class="fa-solid fa-check-circle"></i> Активно: <b>${sanitize(activeOutfit.name)}</b>${activeOutfit.description ? ` — <i>${sanitize(activeOutfit.description)}</i>` : ''}`;
+                infoBar.innerHTML = `Активно: <b>${sanitize(activeOutfit.name)}</b>${activeOutfit.description ? ` — <i>${sanitize(activeOutfit.description)}</i>` : ''}`;
                 infoBar.classList.add('sw-active-visible');
             } else {
-                infoBar.innerHTML = '<i class="fa-solid fa-circle-xmark"></i> Ничего не надето';
+                infoBar.innerHTML = 'Ничего не надето';
                 infoBar.classList.remove('sw-active-visible');
             }
         }
@@ -457,12 +421,12 @@
         const html = `
             <div class="inline-drawer">
                 <div class="inline-drawer-toggle inline-drawer-header">
-                    <b><i class="fa-solid fa-shirt"></i> Гардероб</b>
+                    <b>Гардероб</b>
                     <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                 </div>
                 <div class="inline-drawer-content">
                     <div class="sw-settings">
-                        <p class="sw-hint">Кнопка <i class="fa-solid fa-shirt"></i> в верхней панели открывает гардероб. Активный аутфит = reference при генерации.</p>
+                        <p class="sw-hint">Кнопка гардероба всегда внизу справа. Активный аутфит = reference при генерации.</p>
                         <hr>
                         <div class="sw-settings-row">
                             <label for="sw_max_dim">Макс. размер (px)</label>
@@ -476,7 +440,7 @@
                         <hr>
                         <div class="sw-settings-row">
                             <label>Очистить все аутфиты</label>
-                            <div id="sw_clear_all" class="menu_button menu_button_icon"><i class="fa-solid fa-trash-can"></i> Очистить</div>
+                            <div id="sw_clear_all" class="menu_button menu_button_icon">Очистить</div>
                         </div>
                     </div>
                 </div>
