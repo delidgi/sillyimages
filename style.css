@@ -87,9 +87,10 @@
     position: fixed; inset: 0;
     background: rgba(0, 0, 0, 0.6);
     backdrop-filter: blur(3px);
-    z-index: 9999;
+    z-index: 99999;
     display: flex; align-items: center; justify-content: center;
     animation: sw-fade-in 0.2s ease-out;
+    pointer-events: all !important;
 }
 @keyframes sw-fade-in { from { opacity: 0; } to { opacity: 1; } }
 
@@ -105,6 +106,7 @@
     border: 1px solid rgba(255, 255, 255, 0.08);
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.06);
     animation: sw-modal-in 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+    pointer-events: all !important;
 }
 @keyframes sw-modal-in {
     from { transform: scale(0.92) translateY(12px); opacity: 0; }
@@ -184,7 +186,11 @@
 
 /* Image */
 .sw-outfit-img-wrap { position: relative; aspect-ratio: 3 / 4; overflow: hidden; background: rgba(0, 0, 0, 0.2); }
-.sw-outfit-img { width: 100%; height: 100%; object-fit: cover; cursor: pointer; transition: transform 0.2s; }
+.sw-outfit-img {
+    width: 100%; height: 100%; object-fit: cover;
+    cursor: pointer !important; pointer-events: all !important;
+    transition: transform 0.2s;
+}
 .sw-outfit-img:hover { transform: scale(1.04); }
 .sw-active-badge {
     position: absolute; top: 6px; right: 6px;
@@ -209,9 +215,11 @@
 .sw-outfit-btns > div {
     width: 24px; height: 24px;
     display: flex; align-items: center; justify-content: center;
-    border-radius: 5px; cursor: pointer; font-size: 11px;
+    border-radius: 5px; cursor: pointer !important; font-size: 11px;
     color: var(--SmartThemeQuoteColor, #999);
     transition: background 0.15s, color 0.15s;
+    pointer-events: all !important;
+    user-select: none;
 }
 .sw-outfit-btns > div:hover { background: rgba(255, 255, 255, 0.08); color: var(--SmartThemeBodyColor, #e2e2e2); }
 .sw-btn-activate i.fa-toggle-on { color: #6ee7b7; }

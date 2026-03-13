@@ -78,16 +78,40 @@
 
     function getActiveIds() {
         const ctx = SillyTavern.getContext();
-        if (!ctx.chat_metadata) return { bot: null, user: null };
-        return ctx.chat_metadata.wardrobe_active || { bot: null, user: null };
+        if (!ctx.chat_metadata) {
+            swLog('WARN', 'chat_metadata is not available');
+            return { bot: null, user: null };
+        }
+        if (!ctx.chat_metadata.wardrobe_active) {
+            ctx.chat_metadata.wardrobe_active = { bot: null, user: null };
+        }
+        return ctx.chat_metadata.wardrobe_active;
     }
 
     function setActiveId(type, outfitId) {
         const ctx = SillyTavern.getContext();
-        if (!ctx.chat_metadata) return;
-        if (!ctx.chat_metadata.wardrobe_active) ctx.chat_metadata.wardrobe_active = { bot: null, user: null };
+        if (!ctx.chat_metadata) {
+            swLog('ERROR', 'Cannot set active outfit — no chat_metadata (is a chat open?)');
+            toastr.error('Откройте чат, чтобы использовать гардероб', 'Гардероб');
+            return false;
+        }
+        if (!ctx.chat_metadata.wardrobe_active) {
+            ctx.chat_metadata.wardrobe_active = { bot: null, user: null };
+        }
         ctx.chat_metadata.wardrobe_active[type] = outfitId;
-        if (typeof ctx.saveMetadata === 'function') ctx.saveMetadata();
+
+        // Try all known ST metadata save methods
+        if (typeof ctx.saveMetadataDebounced === 'function') {
+            ctx.saveMetadataDebounced();
+        } else if (typeof ctx.saveMetadata === 'function') {
+            ctx.saveMetadata();
+        } else if (typeof ctx.saveChat === 'function') {
+            ctx.saveChat();
+        } else {
+            swLog('WARN', 'No metadata save function found — active outfit may not persist');
+        }
+        swLog('INFO', `Set active ${type} outfit: ${outfitId}`);
+        return true;
     }
 
     function addOutfit(charName, type, outfit) {
@@ -302,9 +326,9 @@
                     <div class="sw-outfit-footer">
                         <span class="sw-outfit-name" title="${sanitize(o.description || o.name)}">${sanitize(o.name)}</span>
                         <div class="sw-outfit-btns">
-                            <div class="sw-btn-activate interactable" title="${isActive ? 'Снять' : 'Надеть'}"><i class="fa-solid ${isActive ? 'fa-toggle-on' : 'fa-toggle-off'}"></i></div>
-                            <div class="sw-btn-edit interactable" title="Редактировать"><i class="fa-solid fa-pen"></i></div>
-                            <div class="sw-btn-delete interactable" title="Удалить"><i class="fa-solid fa-trash-can"></i></div>
+                            <div class="sw-btn-activate" title="${isActive ? 'Снять' : 'Надеть'}"><i class="fa-solid ${isActive ? 'fa-toggle-on' : 'fa-toggle-off'}"></i></div>
+                            <div class="sw-btn-edit" title="Редактировать"><i class="fa-solid fa-pen"></i></div>
+                            <div class="sw-btn-delete" title="Удалить"><i class="fa-solid fa-trash-can"></i></div>
                         </div>
                     </div>
                 </div>`;
@@ -317,11 +341,20 @@
 
         for (const card of container.querySelectorAll('.sw-outfit-card[data-id]')) {
             const id = card.dataset.id;
-            card.querySelector('.sw-outfit-img')?.addEventListener('click', () => toggleActive(id));
-            card.querySelector('.sw-btn-activate')?.addEventListener('click', (e) => { e.stopPropagation(); toggleActive(id); });
-            card.querySelector('.sw-btn-edit')?.addEventListener('click', (e) => { e.stopPropagation(); handleEdit(charName, currentTab, id); });
+            card.querySelector('.sw-outfit-img')?.addEventListener('click', (e) => {
+                e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+                toggleActive(id);
+            });
+            card.querySelector('.sw-btn-activate')?.addEventListener('click', (e) => {
+                e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+                toggleActive(id);
+            });
+            card.querySelector('.sw-btn-edit')?.addEventListener('click', (e) => {
+                e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+                handleEdit(charName, currentTab, id);
+            });
             card.querySelector('.sw-btn-delete')?.addEventListener('click', (e) => {
-                e.stopPropagation();
+                e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
                 if (confirm('Удалить этот аутфит?')) {
                     removeOutfit(charName, currentTab, id);
                     renderTabContent();
@@ -333,10 +366,29 @@
     }
 
     function toggleActive(id) {
-        const a = getActiveIds();
-        setActiveId(currentTab, a[currentTab] === id ? null : id);
-        renderTabContent();
-        updateButtonBadge();
+        swLog('INFO', `toggleActive called: id=${id}, tab=${currentTab}`);
+        try {
+            const a = getActiveIds();
+            const isDeactivating = a[currentTab] === id;
+            const charName = getCharName();
+            const outfit = findOutfit(charName, currentTab, id);
+            const outfitName = outfit?.name || id;
+
+            const ok = setActiveId(currentTab, isDeactivating ? null : id);
+            if (ok === false) return;  // setActiveId showed error
+
+            renderTabContent();
+            updateButtonBadge();
+
+            if (isDeactivating) {
+                toastr.info(`«${outfitName}» снят`, 'Гардероб', { timeOut: 2000 });
+            } else {
+                toastr.success(`«${outfitName}» надет`, 'Гардероб', { timeOut: 2000 });
+            }
+        } catch (err) {
+            swLog('ERROR', 'toggleActive failed:', err);
+            toastr.error('Ошибка: ' + err.message, 'Гардероб');
+        }
     }
 
     /* ── upload & edit ── */
