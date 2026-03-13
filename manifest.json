@@ -1,12 +1,12 @@
 {
-    "display_name": "SillyWardrobe — Гардероб",
-    "loading_order": 99,
+    "display_name": "SillyImages + Wardrobe",
+    "loading_order": 100,
     "requires": [],
     "optional": [],
     "js": "index.js",
     "css": "style.css",
-    "author": "kissa",
+    "author": "local / kissa",
     "version": "1.0.0",
-    "homePage": "",
+    "homePage": "https://github.com/0xl0cal/sillyimages/",
     "auto_update": false
 }
