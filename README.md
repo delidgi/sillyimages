@@ -1,96 +1,83 @@
-# Inline Image Generation
+# SillyWardrobe — Гардероб для SillyTavern
 
-Расширение для SillyTavern. Ловит теги генерации в сообщениях ИИ и генерирует картинки через API.
+Расширение добавляет систему аутфитов для бота и юзера. Загружай картинки одежды, выбирай активный аутфит — он автоматически отправляется как reference-изображение при генерации картинок через sillyimages.
 
-## Формат тега
+## Фичи
 
-### Новый формат (рекомендуется)
+- **Кнопка-гардероб** рядом с аватаром персонажа (с индикатором активного аутфита)
+- **Два таба**: Бот / Юзер — раздельные коллекции одежды
+- **Per-chat активация**: в каждом чате свой активный аутфит
+- **Per-character коллекция**: у каждого персонажа своя одежда (shared across chats)
+- **Интеграция с sillyimages**: активный аутфит → reference image при генерации
+- **Glassmorphism UI** с приятными гlow-эффектами
 
-```html
-<img data-iig-instruction='{"style":"anime","prompt":"девушка с красными волосами"}' src="[IMG:GEN]">
+## Установка
+
+### 1. SillyWardrobe (расширение гардероба)
+
+Скопируй папку `sillywardrobe` в:
+```
+SillyTavern/public/scripts/extensions/third-party/sillywardrobe/
 ```
 
-После генерации расширение заменяет `src="[IMG:GEN]"` на реальный путь:
-```html
-<img data-iig-instruction='{"style":"anime","prompt":"..."}' src="/user/images/character/image.jpg">
+Файлы:
+```
+sillywardrobe/
+├── manifest.json
+├── index.js
+├── style.css
+└── (README.md, INTEGRATION_PATCH.js — справочные, не обязательны)
 ```
 
-LLM видит тот же формат, но понимает: есть реальный путь = уже сгенерировано.
+### 2. Патч sillyimages (интеграция)
 
-### Legacy формат (поддерживается)
-
+Замени файл `index.js` в своём форке sillyimages на `sillyimages_patched_index.js`:
 ```
-[IMG:GEN:{"style":"anime","prompt":"девушка с красными волосами"}]
+SillyTavern/public/scripts/extensions/third-party/sillyimages/index.js
 ```
 
-### Параметры
+Или примени патч вручную — см. `INTEGRATION_PATCH.js` для точного описания.
 
-| Параметр | Описание | Пример |
-|----------|----------|--------|
-| `style` | Стиль генерации (опционально) | `"anime"`, `"realistic"` |
-| `prompt` | Описание картинки | `"девушка с красными волосами"` |
-| `aspect_ratio` | Соотношение сторон | `"16:9"`, `"9:16"`, `"1:1"` |
-| `image_size` | Разрешение (для nano-banana) | `"1K"`, `"2K"`, `"4K"` |
-| `quality` | Качество (для OpenAI) | `"standard"`, `"hd"` |
+### 3. Перезапусти SillyTavern
+
+## Использование
+
+1. Открой чат с персонажем
+2. Нажми на иконку 👕 рядом с аватаром (или в top bar)
+3. Выбери таб (Бот / Юзер)
+4. Загрузи картинки аутфитов (jpg/png/webp)
+5. Кликни на аутфит или нажми toggle чтобы активировать
+6. Зелёный глоу = активно, точка на кнопке = что-то надето
+7. При генерации картинок через sillyimages активные аутфиты автоматически идут как reference
+
+## Public API
+
+Для кастомных интеграций, расширение выставляет `window.sillyWardrobe`:
+
+```js
+// Получить base64 активного аутфита (без data: префикса)
+window.sillyWardrobe.getActiveOutfitBase64('bot')  // string | null
+window.sillyWardrobe.getActiveOutfitBase64('user') // string | null
+
+// Получить как data URL (для Naistera и подобных)
+window.sillyWardrobe.getActiveOutfitDataUrl('bot')  // "data:image/jpeg;base64,..." | null
+
+// Получить полный объект { id, name, description, base64, addedAt }
+window.sillyWardrobe.getActiveOutfitData('bot')
+
+// Проверить что расширение загружено
+window.sillyWardrobe.isReady() // true
+```
 
 ## Настройки
 
-Открыть Extensions → Генерация картинок
+В панели Extensions → Гардероб:
+- **Макс. размер (px)**: максимальная сторона сохраняемого изображения (default: 512)
+- **Качество JPEG**: сжатие при сохранении (default: 0.80)
+- **Очистить всё**: удалить все аутфиты для всех персонажей
 
-### Основные
+## Хранение
 
-- **Тип API**: OpenAI-совместимый, Gemini (nano-banana) или Naistera/Grok
-- **URL эндпоинта**: базовый URL API
-- **API ключ**: ключ авторизации (для Naistera/Grok это ваш токен)
-- **Модель**: выбрать из списка (кнопка обновления подтягивает модели с `/v1/models`)
-- **Размер**: 1024x1024, 1792x1024, 1024x1792, 512x512 (для OpenAI)
-- **Качество**: standard / hd (для OpenAI)
-
-### Для nano-banana
-
-- **Соотношение сторон**: 1:1, 2:3, 3:2, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9
-- **Разрешение**: 1K, 2K, 4K
-
-### Референсы (nano-banana)
-
-Отправка аватарок как референсов для консистентной генерации персонажей:
-
-- **Отправлять аватар {{char}}** — автоматически берётся аватар текущего персонажа
-- **Отправлять аватар {{user}}** — выбирается вручную из списка `/User Avatars/`
-
-### Отладка
-
-- **Экспорт логов** — скачать файл с логами для диагностики проблем
-
-## Поддерживаемые API
-
-**OpenAI-совместимый** — `/v1/images/generations`
-- DALL-E, Midjourney, Stable Diffusion, FLUX и прочие через различных провайдеров/прокси
-
-**Gemini-совместимый** — `/v1beta/models/{model}:generateContent`
-- Nano Banana/Nano Banana Pro через Google/прокси
-
-**Naistera/Grok** — `/api/generate`
-- Авторизация: `Authorization: Bearer <token>`
-- URL эндпоинта в настройках: `https://naistera.org/api/generate` (или `https://naistera.org` — расширение добавит `/api/generate`)
-- Тело: `{ "prompt": "...", "aspect_ratio": "3:2", "preset": "digital", "parent_post_id": "<grok-post-id>" }`
-- Ответ: `{ "data_url": "data:image/png;base64,...", "content_type": "image/png" }`
-- В настройках Naistera/Grok доступны параметры: `aspect_ratio` и `preset` (по умолчанию).
-
-## Как работает
-
-1. ИИ пишет сообщение с тегом `<img data-iig-instruction='...' src="[IMG:GEN]">`
-2. Расширение парсит тег, показывает спиннер
-3. Собирает референсы (если включены)
-4. Отправляет запрос на API
-5. Заменяет `src="[IMG:GEN]"` на реальный путь к картинке
-6. Сохраняет в чат
-
-## Файлы
-
-```
-manifest.json  — метаданные расширения
-index.js       — логика
-style.css      — стили
-prompt.md      — пример промпта для ИИ
-```
+- Аутфиты хранятся как base64 в `extensionSettings` (settings.json)
+- Активный аутфит per-chat — в `chat_metadata`
+- При ~512px / 0.8 quality одна картинка ≈ 20-40KB base64
