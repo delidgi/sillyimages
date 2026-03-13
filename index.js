@@ -40,7 +40,6 @@
         wardrobes: {},       // { charName: { bot: [outfit…], user: [outfit…] } }
         activeOutfits: {},   // { charName: { bot: outfitId|null, user: outfitId|null } }
         maxDimension: 512,
-        jpegQuality: 0.80,
     });
 
     function getSettings() {
@@ -121,7 +120,7 @@
 
     /* ── image processing ── */
 
-    function resizeImage(file, maxDim, quality) {
+    function resizeImage(file, maxDim) {
         return new Promise((resolve, reject) => {
             const reader = new FileReader();
             reader.onload = (e) => {
@@ -136,7 +135,8 @@
                     const c = document.createElement('canvas');
                     c.width = width; c.height = height;
                     c.getContext('2d').drawImage(img, 0, 0, width, height);
-                    resolve({ base64: c.toDataURL('image/jpeg', quality).split(',')[1] });
+                    // PNG to match avatar format (sillyimages hardcodes image/png)
+                    resolve({ base64: c.toDataURL('image/png').split(',')[1] });
                 };
                 img.onerror = () => reject(new Error('Image decode failed'));
                 img.src = e.target.result;
@@ -279,7 +279,7 @@
             html += `
                 <div class="sw-outfit-card ${isActive ? 'sw-outfit-active' : ''}" data-id="${o.id}">
                     <div class="sw-outfit-img-wrap">
-                        <img src="data:image/jpeg;base64,${o.base64}" alt="${sanitize(o.name)}" class="sw-outfit-img" loading="lazy">
+                        <img src="data:image/png;base64,${o.base64}" alt="${sanitize(o.name)}" class="sw-outfit-img" loading="lazy">
                         ${isActive ? '<div class="sw-active-badge"><i class="fa-solid fa-check"></i></div>' : ''}
                     </div>
                     <div class="sw-outfit-footer">
@@ -364,7 +364,7 @@
             const description = prompt('Описание (опционально):', '') || '';
             try {
                 const s = getSettings();
-                const { base64 } = await resizeImage(file, s.maxDimension, s.jpegQuality);
+                const { base64 } = await resizeImage(file, s.maxDimension);
                 addOutfit(getCharName(), currentTab, { id: uid(), name: name.trim(), description: description.trim(), base64, addedAt: Date.now() });
                 renderTabContent();
                 toastr.success(`«${name.trim()}» добавлен`, 'Гардероб');
@@ -401,7 +401,7 @@
         },
         getActiveOutfitDataUrl(type) {
             const b64 = this.getActiveOutfitBase64(type);
-            return b64 ? `data:image/jpeg;base64,${b64}` : null;
+            return b64 ? `data:image/png;base64,${b64}` : null;
         },
         getActiveOutfitData(type) {
             const cn = getCharName();
@@ -432,11 +432,6 @@
                             <label for="sw_max_dim">Макс. размер (px)</label>
                             <input type="number" id="sw_max_dim" class="text_pole" value="${s.maxDimension}" min="128" max="1024" step="64">
                         </div>
-                        <div class="sw-settings-row">
-                            <label for="sw_quality">Качество JPEG</label>
-                            <input type="range" id="sw_quality" min="0.3" max="1.0" step="0.05" value="${s.jpegQuality}">
-                            <span id="sw_quality_val">${s.jpegQuality}</span>
-                        </div>
                         <hr>
                         <div class="sw-settings-row">
                             <label>Очистить все аутфиты</label>
@@ -449,12 +444,6 @@
 
         document.getElementById('sw_max_dim')?.addEventListener('change', (e) => {
             getSettings().maxDimension = Math.max(128, Math.min(1024, parseInt(e.target.value) || 512));
-            saveSettings();
-        });
-        document.getElementById('sw_quality')?.addEventListener('input', (e) => {
-            const v = parseFloat(e.target.value);
-            getSettings().jpegQuality = v;
-            document.getElementById('sw_quality_val').textContent = v.toFixed(2);
             saveSettings();
         });
         document.getElementById('sw_clear_all')?.addEventListener('click', () => {
@@ -1199,22 +1188,39 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
     if (window.sillyWardrobe?.isReady()) {
         const botOutfitB64 = window.sillyWardrobe.getActiveOutfitBase64('bot');
         const userOutfitB64 = window.sillyWardrobe.getActiveOutfitBase64('user');
+        const botData = window.sillyWardrobe.getActiveOutfitData('bot');
+        const userData = window.sillyWardrobe.getActiveOutfitData('user');
+
+        iigLog('INFO', `Wardrobe check: bot=${botData?.name || 'none'}, user=${userData?.name || 'none'}, apiType=${settings.apiType}`);
+
+        let addedCount = 0;
 
         if (settings.apiType === 'gemini' || isGeminiModel(settings.model)) {
-            if (botOutfitB64) { referenceImages.push(botOutfitB64); iigLog('INFO', 'Added bot outfit ref (wardrobe)'); }
-            if (userOutfitB64) { referenceImages.push(userOutfitB64); iigLog('INFO', 'Added user outfit ref (wardrobe)'); }
+            if (botOutfitB64) { referenceImages.push(botOutfitB64); addedCount++; iigLog('INFO', `Added bot outfit ref "${botData?.name}" (gemini)`); }
+            if (userOutfitB64) { referenceImages.push(userOutfitB64); addedCount++; iigLog('INFO', `Added user outfit ref "${userData?.name}" (gemini)`); }
         } else if (settings.apiType === 'naistera') {
             const botUrl = window.sillyWardrobe.getActiveOutfitDataUrl('bot');
             const userUrl = window.sillyWardrobe.getActiveOutfitDataUrl('user');
-            if (botUrl) { referenceDataUrls.push(botUrl); iigLog('INFO', 'Added bot outfit ref dataUrl (wardrobe)'); }
-            if (userUrl) { referenceDataUrls.push(userUrl); iigLog('INFO', 'Added user outfit ref dataUrl (wardrobe)'); }
+            if (botUrl) { referenceDataUrls.push(botUrl); addedCount++; iigLog('INFO', `Added bot outfit ref "${botData?.name}" (naistera)`); }
+            if (userUrl) { referenceDataUrls.push(userUrl); addedCount++; iigLog('INFO', `Added user outfit ref "${userData?.name}" (naistera)`); }
         } else {
-            if (botOutfitB64) { referenceImages.push(botOutfitB64); iigLog('INFO', 'Added bot outfit ref (wardrobe)'); }
-            if (userOutfitB64) { referenceImages.push(userOutfitB64); iigLog('INFO', 'Added user outfit ref (wardrobe)'); }
+            // OpenAI-compatible: body.image — only some models support this (gpt-image-1, flux, etc.)
+            if (botOutfitB64) { referenceImages.push(botOutfitB64); addedCount++; iigLog('INFO', `Added bot outfit ref "${botData?.name}" (openai)`); }
+            if (userOutfitB64) { referenceImages.push(userOutfitB64); addedCount++; iigLog('INFO', `Added user outfit ref "${userData?.name}" (openai)`); }
         }
+
+        if (addedCount > 0) {
+            toastr.info(`Аутфитов добавлено: ${addedCount} (${settings.apiType})`, 'Гардероб → Генерация', { timeOut: 3000 });
+        } else {
+            iigLog('INFO', 'Wardrobe active but no outfits found for current character');
+        }
+    } else {
+        iigLog('INFO', 'SillyWardrobe not available or not ready');
     }
     
     let lastError;
+
+    iigLog('INFO', `Pre-generation summary: ${referenceImages.length} base64 refs, ${referenceDataUrls.length} dataUrl refs, apiType=${settings.apiType}`);
     
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
