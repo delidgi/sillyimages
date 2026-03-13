@@ -20,27 +20,21 @@
     transform: scale(1.15);
 }
 
-/* Avatar overlay — main placement */
-#sw-wardrobe-btn.sw-btn-avatar {
-    position: absolute;
-    bottom: 4px;
-    right: 4px;
-    width: 30px;
-    height: 30px;
-    font-size: 13px;
+/* Send form placement — next to send button, always visible */
+#sw-wardrobe-btn.sw-btn-sendform {
+    width: var(--bottomFormIconSize, 24px);
+    height: var(--bottomFormIconSize, 24px);
+    font-size: calc(var(--bottomFormIconSize, 24px) * 0.7);
     border-radius: 50%;
-    background: rgba(0, 0, 0, 0.6);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
-    z-index: 50;
-    opacity: 0.75;
-    transition: opacity 0.2s, color 0.25s, transform 0.2s, background 0.2s;
+    flex-shrink: 0;
+    opacity: 0.7;
+    transition: opacity 0.2s, color 0.25s, transform 0.2s;
 }
-#sw-wardrobe-btn.sw-btn-avatar:hover {
+#sw-wardrobe-btn.sw-btn-sendform:hover {
     opacity: 1;
-    background: rgba(30, 30, 50, 0.85);
+}
+#sw-wardrobe-btn.sw-btn-sendform.sw-has-active {
+    opacity: 0.9;
 }
 
 /* Floating fallback */
@@ -63,19 +57,13 @@
 #sw-wardrobe-btn.sw-has-active::after {
     content: '';
     position: absolute;
-    top: 2px; right: 2px;
+    top: 0; right: 0;
     width: 7px; height: 7px;
     border-radius: 50%;
     background: #6ee7b7;
     box-shadow: 0 0 6px 2px rgba(110, 231, 183, 0.6);
     animation: sw-pulse 2s ease-in-out infinite;
     pointer-events: none;
-}
-/* Active state — persistent glow ring on the button itself */
-#sw-wardrobe-btn.sw-btn-avatar.sw-has-active {
-    border-color: rgba(110, 231, 183, 0.5);
-    box-shadow: 0 0 10px 2px rgba(110, 231, 183, 0.3), 0 2px 8px rgba(0, 0, 0, 0.4);
-    opacity: 0.9;
 }
 @keyframes sw-pulse {
     0%, 100% { opacity: 1; box-shadow: 0 0 6px 2px rgba(110, 231, 183, 0.6); }

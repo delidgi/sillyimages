@@ -37,7 +37,8 @@
     /* ── settings ── */
 
     const defaultSettings = Object.freeze({
-        wardrobes: {},
+        wardrobes: {},       // { charName: { bot: [outfit…], user: [outfit…] } }
+        activeOutfits: {},   // { charName: { bot: outfitId|null, user: outfitId|null } }
         maxDimension: 512,
         jpegQuality: 0.80,
     });
@@ -77,40 +78,28 @@
     }
 
     function getActiveIds() {
-        const ctx = SillyTavern.getContext();
-        if (!ctx.chat_metadata) {
-            swLog('WARN', 'chat_metadata is not available');
-            return { bot: null, user: null };
+        const charName = getCharName();
+        if (!charName) return { bot: null, user: null };
+        const s = getSettings();
+        if (!s.activeOutfits[charName]) {
+            s.activeOutfits[charName] = { bot: null, user: null };
         }
-        if (!ctx.chat_metadata.wardrobe_active) {
-            ctx.chat_metadata.wardrobe_active = { bot: null, user: null };
-        }
-        return ctx.chat_metadata.wardrobe_active;
+        return s.activeOutfits[charName];
     }
 
     function setActiveId(type, outfitId) {
-        const ctx = SillyTavern.getContext();
-        if (!ctx.chat_metadata) {
-            swLog('ERROR', 'Cannot set active outfit — no chat_metadata (is a chat open?)');
-            toastr.error('Откройте чат, чтобы использовать гардероб', 'Гардероб');
+        const charName = getCharName();
+        if (!charName) {
+            toastr.error('Персонаж не выбран', 'Гардероб');
             return false;
         }
-        if (!ctx.chat_metadata.wardrobe_active) {
-            ctx.chat_metadata.wardrobe_active = { bot: null, user: null };
+        const s = getSettings();
+        if (!s.activeOutfits[charName]) {
+            s.activeOutfits[charName] = { bot: null, user: null };
         }
-        ctx.chat_metadata.wardrobe_active[type] = outfitId;
-
-        // Try all known ST metadata save methods
-        if (typeof ctx.saveMetadataDebounced === 'function') {
-            ctx.saveMetadataDebounced();
-        } else if (typeof ctx.saveMetadata === 'function') {
-            ctx.saveMetadata();
-        } else if (typeof ctx.saveChat === 'function') {
-            ctx.saveChat();
-        } else {
-            swLog('WARN', 'No metadata save function found — active outfit may not persist');
-        }
-        swLog('INFO', `Set active ${type} outfit: ${outfitId}`);
+        s.activeOutfits[charName][type] = outfitId;
+        saveSettings();
+        swLog('INFO', `Set active ${type} outfit for ${charName}: ${outfitId}`);
         return true;
     }
 
@@ -162,9 +151,11 @@
     let modalOpen = false;
 
     /**
-     * Inject wardrobe button as overlay on the character's avatar.
-     * Targets: .mes[is_user="false"] .avatar containing the character thumbnail.
-     * Re-injects on CHAT_CHANGED and CHARACTER_MESSAGE_RENDERED.
+     * Inject wardrobe button next to the send form — always visible.
+     * Strategy:
+     *   1. #send_form — insert before send button (best: always at bottom of screen)
+     *   2. #form_sheld — parent container
+     *   3. Floating fixed button (ultimate fallback)
      */
     function injectWardrobeButton() {
         document.getElementById('sw-wardrobe-btn')?.remove();
@@ -187,30 +178,34 @@
             modalOpen ? closeModal() : openModal();
         });
 
-        // Find the character's avatar in chat messages
-        // Look for the FIRST bot message avatar (greeting / most recent visible)
-        const botMessages = document.querySelectorAll('#chat .mes:not([is_user="true"])');
-        let avatarDiv = null;
+        let injected = false;
 
-        for (const mes of botMessages) {
-            const av = mes.querySelector('.avatar');
-            if (av) {
-                avatarDiv = av;
-                break;  // use the first bot message avatar (greeting is at top)
+        // Strategy 1: inside #send_form, before the send button
+        const sendForm = document.getElementById('send_form');
+        const sendBut = document.getElementById('send_but');
+        if (sendForm && sendBut) {
+            sendForm.insertBefore(btn, sendBut);
+            btn.classList.add('sw-btn-sendform');
+            injected = true;
+            swLog('INFO', 'Button injected into #send_form');
+        }
+
+        // Strategy 2: #form_sheld
+        if (!injected) {
+            const formSheld = document.getElementById('form_sheld');
+            if (formSheld) {
+                formSheld.prepend(btn);
+                btn.classList.add('sw-btn-sendform');
+                injected = true;
+                swLog('INFO', 'Button injected into #form_sheld');
             }
         }
 
-        if (avatarDiv) {
-            // Ensure avatar can hold absolutely positioned children
-            avatarDiv.style.position = 'relative';
-            avatarDiv.appendChild(btn);
-            btn.classList.add('sw-btn-avatar');
-            swLog('INFO', 'Button injected on character avatar');
-        } else {
-            // Fallback: floating button
+        // Strategy 3: floating
+        if (!injected) {
             document.body.appendChild(btn);
             btn.classList.add('sw-btn-floating');
-            swLog('INFO', 'Button injected floating (no avatar found)');
+            swLog('INFO', 'Button injected floating (fallback)');
         }
     }
 
@@ -519,19 +514,8 @@
     });
 
     ctx.eventSource.on(ctx.event_types.CHAT_CHANGED, () => {
-        // Chat changed — avatar elements are new, re-inject
-        setTimeout(injectWardrobeButton, 400);
+        setTimeout(injectWardrobeButton, 300);
     });
-
-    // Re-inject when new bot messages render (avatar might be fresh DOM)
-    if (ctx.event_types.CHARACTER_MESSAGE_RENDERED) {
-        ctx.eventSource.on(ctx.event_types.CHARACTER_MESSAGE_RENDERED, () => {
-            // Only inject if button is missing (avoids flicker)
-            if (!document.getElementById('sw-wardrobe-btn')) {
-                setTimeout(injectWardrobeButton, 150);
-            }
-        });
-    }
 
     swLog('INFO', 'SillyWardrobe initialized');
 })();
