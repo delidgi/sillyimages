@@ -15,7 +15,7 @@
     function swLog(l, ...a) { (l === 'ERROR' ? console.error : l === 'WARN' ? console.warn : console.log)('[SW]', ...a); }
     function esc(t) { const d = document.createElement('div'); d.textContent = t || ''; return d.innerHTML; }
 
-    const swDefaults = Object.freeze({ wardrobes: {}, activeOutfits: {}, maxDimension: 512 });
+    const swDefaults = Object.freeze({ wardrobes: {}, activeOutfits: {}, maxDimension: 512, showFloatingBtn: false });
 
     function swGetSettings() {
         const ctx = SillyTavern.getContext();
@@ -123,56 +123,38 @@
         if (swSetActive(swTab, off ? null : id) === false) return;
         swRender();
         swUpdatePromptInjection();
+        swInjectFloatingBtn();
         off ? toastr.info(`«${nm}» снят`, 'Гардероб', { timeOut: 2000 }) : toastr.success(`«${nm}» надет`, 'Гардероб', { timeOut: 2000 });
     }
 
     /**
-     * Analyze outfit image via LLM vision to auto-generate description.
-     * Strategy chain: generateQuietPrompt with quietImage → generateRaw with vision → null (manual).
+     * Analyze outfit image via vision model.
+     * Uses generateQuietPrompt with image — sends chat context (~15-17K tokens)
+     * but this only happens ONCE per outfit upload, not per message.
      */
     async function swAnalyzeOutfit(base64) {
         const ctx = SillyTavern.getContext();
-        const imageDataUrl = `data:image/png;base64,${base64}`;
         const analyzePrompt = 'Describe the outfit/clothing visible in the attached image in 1-2 concise sentences in English. Focus ONLY on garments, colors, fabrics, accessories, shoes. Do NOT describe the person, background, or pose.';
 
-        // Strategy 1: generateQuietPrompt with quietImage (modern ST, most reliable)
         if (typeof ctx.generateQuietPrompt === 'function') {
             try {
-                toastr.info('Анализ образа через ИИ...', 'Гардероб', { timeOut: 10000 });
+                toastr.info('Анализ образа...', 'Гардероб', { timeOut: 15000 });
                 const result = await ctx.generateQuietPrompt({
                     quietPrompt: analyzePrompt,
-                    quietImage: imageDataUrl,
+                    quietImage: `data:image/png;base64,${base64}`,
+                    maxTokens: 150,
                 });
                 const desc = (result || '').trim();
                 if (desc && desc.length > 10) {
-                    swLog('INFO', 'Auto-described via generateQuietPrompt+quietImage:', desc.substring(0, 80));
+                    swLog('INFO', 'Auto-described outfit:', desc.substring(0, 100));
                     return desc;
                 }
             } catch (e) {
-                swLog('WARN', 'generateQuietPrompt with image failed:', e.message);
+                swLog('WARN', 'generateQuietPrompt failed:', e.message);
             }
         }
 
-        // Strategy 2: generateRaw with OpenAI-style vision message (Chat Completion APIs)
-        if (typeof ctx.generateRaw === 'function') {
-            try {
-                toastr.info('Анализ образа (raw)...', 'Гардероб', { timeOut: 10000 });
-                const result = await ctx.generateRaw(
-                    analyzePrompt + '\n[Image attached as reference]',
-                    null,  // use current API
-                    false  // no instruct override
-                );
-                const desc = (result || '').trim();
-                if (desc && desc.length > 10) {
-                    swLog('INFO', 'Auto-described via generateRaw:', desc.substring(0, 80));
-                    return desc;
-                }
-            } catch (e) {
-                swLog('WARN', 'generateRaw failed:', e.message);
-            }
-        }
-
-        swLog('WARN', 'Auto-describe unavailable — user will input manually');
+        swLog('WARN', 'Auto-describe unavailable');
         return null;
     }
 
@@ -256,6 +238,33 @@
         }
     }
 
+    // ── Floating button (optional, like Fetish Manager) ──
+
+    function swInjectFloatingBtn() {
+        let $btn = $('#sw-float-btn');
+        if ($btn.length === 0) {
+            $('body').append('<div id="sw-float-btn" class="sw-float-btn"><i class="fa-solid fa-shirt"></i></div>');
+            $btn = $('#sw-float-btn');
+            $btn.on('click touchend', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                swOpenModal();
+            });
+        }
+        const active = swGetActive();
+        const hasActive = !!(active.bot || active.user);
+        $btn.toggleClass('sw-has-active', hasActive);
+        if (hasActive) {
+            let count = 0;
+            if (active.bot) count++;
+            if (active.user) count++;
+            $btn.html(`<i class="fa-solid fa-shirt"></i><span class="sw-float-count">${count}</span>`);
+        } else {
+            $btn.html('<i class="fa-solid fa-shirt"></i>');
+        }
+        $btn.toggle(!!swGetSettings().showFloatingBtn);
+    }
+
     // ── Public API ──
     window.sillyWardrobe = {
         getActiveOutfitBase64(type) { const cn = swCharName(); if (!cn) return null; const a = swGetActive(); return a[type] ? (swFind(cn, type, a[type])?.base64 || null) : null; },
@@ -269,11 +278,11 @@
     const ctx = SillyTavern.getContext();
 
     ctx.eventSource.on(ctx.event_types.APP_READY, () => {
-        setTimeout(swUpdatePromptInjection, 500);
+        setTimeout(() => { swUpdatePromptInjection(); swInjectFloatingBtn(); }, 500);
     });
 
     ctx.eventSource.on(ctx.event_types.CHAT_CHANGED, () => {
-        setTimeout(swUpdatePromptInjection, 300);
+        setTimeout(() => { swUpdatePromptInjection(); swInjectFloatingBtn(); }, 300);
     });
 
     swLog('INFO', 'SillyWardrobe initialized');
@@ -2781,6 +2790,10 @@ function createSettingsUI() {
                                 <i class="fa-solid fa-shirt"></i> Открыть гардероб
                             </div>
                         </div>
+                        <label class="checkbox_label" style="margin-top:8px;">
+                            <input type="checkbox" id="sw_show_float">
+                            <span>Плавающая кнопка в чате</span>
+                        </label>
                         <div class="flex-row" style="margin-top:6px;">
                             <label for="sw_max_dim">Макс. размер (px)</label>
                             <input type="number" id="sw_max_dim" class="text_pole flex1" value="512" min="128" max="1024" step="64">
@@ -3137,6 +3150,16 @@ function bindSettingsEvents() {
             toastr.error('Гардероб не загружен', 'Гардероб');
         }
     });
+    const swFloatCheck = document.getElementById('sw_show_float');
+    if (swFloatCheck) {
+        const swS = SillyTavern.getContext().extensionSettings.silly_wardrobe;
+        if (swS) swFloatCheck.checked = !!swS.showFloatingBtn;
+        swFloatCheck.addEventListener('change', () => {
+            const s = SillyTavern.getContext().extensionSettings.silly_wardrobe;
+            if (s) { s.showFloatingBtn = swFloatCheck.checked; SillyTavern.getContext().saveSettingsDebounced(); }
+            $('#sw-float-btn').toggle(swFloatCheck.checked);
+        });
+    }
     document.getElementById('sw_max_dim')?.addEventListener('change', (e) => {
         const ctx = SillyTavern.getContext();
         if (ctx.extensionSettings.silly_wardrobe) {
