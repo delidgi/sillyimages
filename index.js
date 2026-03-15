@@ -125,14 +125,69 @@
         off ? toastr.info(`«${nm}» снят`, 'Гардероб', { timeOut: 2000 }) : toastr.success(`«${nm}» надет`, 'Гардероб', { timeOut: 2000 });
     }
 
+    /**
+     * Analyze outfit image via LLM vision to auto-generate description.
+     * Strategy chain: generateQuietPrompt with quietImage → generateRaw with vision → null (manual).
+     */
+    async function swAnalyzeOutfit(base64) {
+        const ctx = SillyTavern.getContext();
+        const imageDataUrl = `data:image/png;base64,${base64}`;
+        const analyzePrompt = 'Describe the outfit/clothing visible in the attached image in 1-2 concise sentences in English. Focus ONLY on garments, colors, fabrics, accessories, shoes. Do NOT describe the person, background, or pose.';
+
+        // Strategy 1: generateQuietPrompt with quietImage (modern ST, most reliable)
+        if (typeof ctx.generateQuietPrompt === 'function') {
+            try {
+                toastr.info('Анализ образа через ИИ...', 'Гардероб', { timeOut: 10000 });
+                const result = await ctx.generateQuietPrompt({
+                    quietPrompt: analyzePrompt,
+                    quietImage: imageDataUrl,
+                });
+                const desc = (result || '').trim();
+                if (desc && desc.length > 10) {
+                    swLog('INFO', 'Auto-described via generateQuietPrompt+quietImage:', desc.substring(0, 80));
+                    return desc;
+                }
+            } catch (e) {
+                swLog('WARN', 'generateQuietPrompt with image failed:', e.message);
+            }
+        }
+
+        // Strategy 2: generateRaw with OpenAI-style vision message (Chat Completion APIs)
+        if (typeof ctx.generateRaw === 'function') {
+            try {
+                toastr.info('Анализ образа (raw)...', 'Гардероб', { timeOut: 10000 });
+                const result = await ctx.generateRaw(
+                    analyzePrompt + '\n[Image attached as reference]',
+                    null,  // use current API
+                    false  // no instruct override
+                );
+                const desc = (result || '').trim();
+                if (desc && desc.length > 10) {
+                    swLog('INFO', 'Auto-described via generateRaw:', desc.substring(0, 80));
+                    return desc;
+                }
+            } catch (e) {
+                swLog('WARN', 'generateRaw failed:', e.message);
+            }
+        }
+
+        swLog('WARN', 'Auto-describe unavailable — user will input manually');
+        return null;
+    }
+
     async function swUpload() {
         const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*';
         inp.addEventListener('change', async () => {
             const f = inp.files?.[0]; if (!f) return;
             const name = prompt('Название:', f.name.replace(/\.[^.]+$/, '')); if (!name?.trim()) return;
-            const desc = prompt('Описание (опционально):', '') || '';
             try {
                 const { base64 } = await swResize(f, swGetSettings().maxDimension);
+
+                // Auto-analyze image to generate description
+                let autoDesc = await swAnalyzeOutfit(base64);
+                // Let user edit/confirm the generated description
+                const desc = prompt('Описание образа (авто-сгенерировано, можете отредактировать):', autoDesc || '') || '';
+
                 swAdd(swCharName(), swTab, { id: uid(), name: name.trim(), description: desc.trim(), base64, addedAt: Date.now() });
                 swRender(); toastr.success(`«${name.trim()}» добавлен`, 'Гардероб');
             } catch (e) { toastr.error('Ошибка: ' + e.message, 'Гардероб'); }
@@ -140,10 +195,19 @@
         inp.click();
     }
 
-    function swEdit(cn, type, id) {
+    async function swEdit(cn, type, id) {
         const o = swFind(cn, type, id); if (!o) return;
         const n = prompt('Название:', o.name); if (n === null) return;
-        const d = prompt('Описание:', o.description || ''); if (d === null) return;
+
+        // Offer to re-analyze image
+        let currentDesc = o.description || '';
+        const reAnalyze = confirm('Пере-анализировать образ через ИИ?\n\nОК = да (текущее описание заменится)\nОтмена = редактировать вручную');
+        if (reAnalyze) {
+            const autoDesc = await swAnalyzeOutfit(o.base64);
+            if (autoDesc) currentDesc = autoDesc;
+        }
+
+        const d = prompt('Описание:', currentDesc); if (d === null) return;
         o.name = n.trim() || o.name; o.description = d.trim(); swSave(); swRender(); toastr.info('Обновлён', 'Гардероб');
     }
 
@@ -1460,6 +1524,19 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
         && shouldUseNaisteraVideoTest(options.model || settings.naisteraModel)
         && shouldTriggerNaisteraVideoForMessage(options.messageId, settings.naisteraVideoEveryN);
     
+    // ── Inject wardrobe outfit descriptions into prompt ──
+    if (window.sillyWardrobe?.isReady()) {
+        const botData = window.sillyWardrobe.getActiveOutfitData('bot');
+        const userData = window.sillyWardrobe.getActiveOutfitData('user');
+        const parts = [];
+        if (botData?.description) parts.push(`[Character's current outfit: ${botData.description}]`);
+        if (userData?.description) parts.push(`[User's current outfit: ${userData.description}]`);
+        if (parts.length > 0) {
+            prompt = `${parts.join(' ')}\n${prompt}`;
+            iigLog('INFO', `Wardrobe descriptions injected: ${parts.join(', ')}`);
+        }
+    }
+
     let lastError;
     
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
