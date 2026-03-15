@@ -36,7 +36,7 @@
     function swSetActive(type, id) { const cn = swCharName(); if (!cn) { toastr.error('Персонаж не выбран', 'Гардероб'); return false; } const s = swGetSettings(); if (!s.activeOutfits[cn]) s.activeOutfits[cn] = { bot: null, user: null }; s.activeOutfits[cn][type] = id; swSave(); return true; }
     function swFind(cn, type, id) { return swGetWardrobe(cn)[type].find(o => o.id === id) || null; }
     function swAdd(cn, type, o) { swGetWardrobe(cn)[type].push(o); swSave(); }
-    function swRemove(cn, type, id) { const w = swGetWardrobe(cn); w[type] = w[type].filter(o => o.id !== id); swSave(); if (swGetActive()[type] === id) swSetActive(type, null); }
+    function swRemove(cn, type, id) { const w = swGetWardrobe(cn); w[type] = w[type].filter(o => o.id !== id); swSave(); if (swGetActive()[type] === id) { swSetActive(type, null); swUpdatePromptInjection(); } }
 
     function swResize(file, maxDim) {
         return new Promise((res, rej) => {
@@ -122,6 +122,7 @@
         const off = a[swTab] === id;
         if (swSetActive(swTab, off ? null : id) === false) return;
         swRender();
+        swUpdatePromptInjection();
         off ? toastr.info(`«${nm}» снят`, 'Гардероб', { timeOut: 2000 }) : toastr.success(`«${nm}» надет`, 'Гардероб', { timeOut: 2000 });
     }
 
@@ -208,7 +209,51 @@
         }
 
         const d = prompt('Описание:', currentDesc); if (d === null) return;
-        o.name = n.trim() || o.name; o.description = d.trim(); swSave(); swRender(); toastr.info('Обновлён', 'Гардероб');
+        o.name = n.trim() || o.name; o.description = d.trim(); swSave(); swRender(); swUpdatePromptInjection(); toastr.info('Обновлён', 'Гардероб');
+    }
+
+    // ── Prompt injection: outfit descriptions into main RP chat ──
+
+    const SW_PROMPT_KEY = 'sillywardrobe_outfit';
+
+    /**
+     * Update the prompt injection with current active outfit descriptions.
+     * Called on toggle, chat change, and app ready.
+     */
+    function swUpdatePromptInjection() {
+        try {
+            const ctx = SillyTavern.getContext();
+            if (typeof ctx.setExtensionPrompt !== 'function') {
+                swLog('WARN', 'setExtensionPrompt not available');
+                return;
+            }
+
+            const cn = swCharName();
+            if (!cn) {
+                ctx.setExtensionPrompt(SW_PROMPT_KEY, '', 1, 1);
+                return;
+            }
+
+            const botData = swGetActive().bot ? swFind(cn, 'bot', swGetActive().bot) : null;
+            const userData = swGetActive().user ? swFind(cn, 'user', swGetActive().user) : null;
+
+            const lines = [];
+            if (botData?.description) lines.push(`[${cn} сейчас одет(а): ${botData.description}]`);
+            if (userData?.description) lines.push(`[{{user}} сейчас одет(а): ${userData.description}]`);
+
+            const injectionText = lines.length > 0 ? lines.join('\n') : '';
+
+            // position 1 = IN_CHAT, depth 1 = before last message (like Author's Note)
+            ctx.setExtensionPrompt(SW_PROMPT_KEY, injectionText, 1, 1);
+
+            if (injectionText) {
+                swLog('INFO', `Prompt injection updated: ${lines.length} outfit(s)`);
+            } else {
+                swLog('INFO', 'Prompt injection cleared (no active outfits)');
+            }
+        } catch (e) {
+            swLog('ERROR', 'Failed to update prompt injection:', e.message);
+        }
     }
 
     // ── Public API ──
@@ -219,6 +264,17 @@
         openModal: () => swOpenModal(),
         isReady: () => true,
     };
+
+    // ── Init hooks ──
+    const ctx = SillyTavern.getContext();
+
+    ctx.eventSource.on(ctx.event_types.APP_READY, () => {
+        setTimeout(swUpdatePromptInjection, 500);
+    });
+
+    ctx.eventSource.on(ctx.event_types.CHAT_CHANGED, () => {
+        setTimeout(swUpdatePromptInjection, 300);
+    });
 
     swLog('INFO', 'SillyWardrobe initialized');
 })();
