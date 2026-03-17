@@ -129,24 +129,56 @@
 
     /**
      * Analyze outfit image via vision model.
-     * Uses generateQuietPrompt with image — sends chat context (~15-17K tokens)
-     * but this only happens ONCE per outfit upload, not per message.
+     * Uses generateRaw with a CLEAN message array (no chat context) to prevent
+     * the model from continuing RP instead of describing clothing.
      */
     async function swAnalyzeOutfit(base64) {
         const ctx = SillyTavern.getContext();
-        const analyzePrompt = 'Describe the outfit/clothing visible in the attached image in 1-2 concise sentences in English. Focus ONLY on garments, colors, fabrics, accessories, shoes. Do NOT describe the person, background, or pose.';
 
-        if (typeof ctx.generateQuietPrompt === 'function') {
+        // Strategy 1: generateRaw with isolated vision messages (NO chat context)
+        if (typeof ctx.generateRaw === 'function') {
             try {
                 toastr.info('Анализ образа...', 'Гардероб', { timeOut: 15000 });
+                const messages = [
+                    {
+                        role: 'system',
+                        content: 'You are a fashion catalog assistant. You ONLY describe clothing. You never roleplay, narrate, or write fiction. Respond with 1-2 sentences in English describing ONLY the garments, colors, fabrics, accessories, and shoes visible in the image. Nothing else.'
+                    },
+                    {
+                        role: 'user',
+                        content: [
+                            { type: 'image_url', image_url: { url: `data:image/png;base64,${base64}` } },
+                            { type: 'text', text: 'Describe the clothing in this image.' },
+                        ],
+                    },
+                ];
+                const result = await ctx.generateRaw({ prompt: messages, maxTokens: 150 });
+                const desc = (result || '').trim()
+                    // Strip any accidental markdown/quotes
+                    .replace(/^["'`]+|["'`]+$/g, '')
+                    .replace(/^(Here|This|The image|I see|In this).{0,20}(shows?|features?|depicts?|displays?)\s*/i, '');
+                if (desc && desc.length > 10 && desc.length < 500) {
+                    swLog('INFO', 'Auto-described via generateRaw:', desc.substring(0, 100));
+                    return desc;
+                }
+            } catch (e) {
+                swLog('WARN', 'generateRaw vision failed:', e.message);
+            }
+        }
+
+        // Strategy 2: generateQuietPrompt fallback (sends chat context, might RP)
+        if (typeof ctx.generateQuietPrompt === 'function') {
+            try {
+                toastr.info('Анализ образа (fallback)...', 'Гардероб', { timeOut: 15000 });
                 const result = await ctx.generateQuietPrompt({
-                    quietPrompt: analyzePrompt,
+                    quietPrompt: '[OOC: STOP ROLEPLAY. You are now a fashion assistant. Describe ONLY the clothing visible in the attached image in 1-2 sentences in English. List garments, colors, fabrics, accessories, shoes. Do NOT write any narrative, dialogue, or RP content.]',
                     quietImage: `data:image/png;base64,${base64}`,
                     maxTokens: 150,
                 });
-                const desc = (result || '').trim();
-                if (desc && desc.length > 10) {
-                    swLog('INFO', 'Auto-described outfit:', desc.substring(0, 100));
+                const desc = (result || '').trim()
+                    .replace(/^["'`]+|["'`]+$/g, '');
+                if (desc && desc.length > 10 && desc.length < 500) {
+                    swLog('INFO', 'Auto-described via quietPrompt:', desc.substring(0, 100));
                     return desc;
                 }
             } catch (e) {
@@ -1219,31 +1251,61 @@ async function generateImageGemini(prompt, style, referenceImages = [], options 
     
     iigLog('INFO', `Using aspect ratio: ${aspectRatio}, image size: ${imageSize}`);
     
-    // Build parts array
+    // Build parts array — each reference gets a label so Gemini knows what it is
     const parts = [];
+    const refLabels = options.refLabels || [];
     
-    // Add reference images first
-    for (const imgB64 of referenceImages.slice(0, MAX_GENERATION_REFERENCE_IMAGES)) {
+    // Add reference images with explicit text labels
+    for (let i = 0; i < Math.min(referenceImages.length, MAX_GENERATION_REFERENCE_IMAGES); i++) {
+        const label = refLabels[i] || 'reference';
+        const labelMap = {
+            'char_face': '⬇️ CHARACTER FACE REFERENCE — copy this face exactly:',
+            'user_face': '⬇️ USER FACE REFERENCE — copy this face exactly:',
+            'char_outfit': '⬇️ CHARACTER OUTFIT REFERENCE — copy this clothing:',
+            'user_outfit': '⬇️ USER OUTFIT REFERENCE — copy this clothing:',
+            'context': '⬇️ SCENE CONTEXT (for style/mood consistency):',
+        };
+        // Add text label before each image
+        parts.push({ text: labelMap[label] || '⬇️ REFERENCE IMAGE:' });
         parts.push({
             inlineData: {
                 mimeType: 'image/png',
-                data: imgB64
+                data: referenceImages[i]
             }
         });
     }
     
-    // Add prompt with style and reference instruction
-    let fullPrompt = style ? `[Style: ${style}] ${prompt}` : prompt;
+    // Build detailed instruction based on what references we have
+    const hasFaces = refLabels.some(l => l.endsWith('_face'));
+    const hasOutfits = refLabels.some(l => l.endsWith('_outfit'));
+    const hasContext = refLabels.includes('context');
     
-    // If reference images provided, add instruction to copy appearance
+    let refInstruction = '';
     if (referenceImages.length > 0) {
-        const refInstruction = `[CRITICAL: The reference image(s) above show the EXACT appearance of the character(s). You MUST precisely copy their: face structure, eye color, hair color and style, skin tone, body type, clothing, and all distinctive features. Do not deviate from the reference appearances.]`;
-        fullPrompt = `${refInstruction}\n\n${fullPrompt}`;
+        const rules = [];
+        if (hasFaces) {
+            rules.push('FACE CONSISTENCY: You MUST precisely replicate the facial features (face structure, eye color/shape, hair color/style/length, skin tone, facial hair, age) from the FACE REFERENCE images. These faces must be recognizable as the same people across all generated images. This is the HIGHEST priority.');
+        }
+        if (hasOutfits) {
+            rules.push('OUTFIT ACCURACY: The characters must wear EXACTLY the clothing shown in the OUTFIT REFERENCE images — same garments, colors, fabrics, accessories. Do not invent or change any clothing details.');
+        }
+        if (hasContext) {
+            rules.push('STYLE CONSISTENCY: Match the art style, lighting, color palette, and rendering quality of the CONTEXT reference images. The generated image should look like it belongs to the same series.');
+        }
+        if (!hasContext && style) {
+            rules.push(`STYLE: Generate in "${style}" style consistently. Do not mix styles.`);
+        }
+        refInstruction = `[STRICT IMAGE GENERATION RULES]\n${rules.join('\n')}\n[END RULES]\n\n`;
     }
+    
+    // Add prompt with style and instruction
+    let fullPrompt = style ? `[Style: ${style}] ${prompt}` : prompt;
+    fullPrompt = `${refInstruction}${fullPrompt}`;
     
     parts.push({ text: fullPrompt });
     
-    console.log(`[IIG] Gemini request: ${referenceImages.length} reference image(s) + prompt (${fullPrompt.length} chars)`);
+    const labelSummary = refLabels.reduce((acc, l) => { acc[l] = (acc[l] || 0) + 1; return acc; }, {});
+    console.log(`[IIG] Gemini request: ${referenceImages.length} refs (${JSON.stringify(labelSummary)}) + prompt (${fullPrompt.length} chars)`);
     
     const body = {
         contents: [{
@@ -1516,15 +1578,34 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
     const referenceImages = [];
     const referenceDataUrls = [];
 
-    // Gemini/nano-banana references: base64 only
+    // For Gemini: collect with labels for smart instruction
+    const refLabels = []; // parallel array: 'char_face', 'user_face', 'char_outfit', 'user_outfit', 'context'
+
+    // Gemini/nano-banana references: PRIORITY ORDER — faces first, outfits second, context last
     if (settings.apiType === 'gemini' || isGeminiModel(settings.model)) {
+        // 1. Character avatar (FACE — highest priority)
         if (settings.sendCharAvatar) {
             const charAvatar = await getCharacterAvatarBase64();
-            if (charAvatar) referenceImages.push(charAvatar);
+            if (charAvatar) { referenceImages.push(charAvatar); refLabels.push('char_face'); }
         }
+        // 2. User avatar (FACE)
         if (settings.sendUserAvatar) {
             const userAvatar = await getUserAvatarBase64();
-            if (userAvatar) referenceImages.push(userAvatar);
+            if (userAvatar) { referenceImages.push(userAvatar); refLabels.push('user_face'); }
+        }
+        // 3. Wardrobe outfits (APPEARANCE — before context!)
+        if (window.sillyWardrobe?.isReady()) {
+            const botB64 = window.sillyWardrobe.getActiveOutfitBase64('bot');
+            const userB64 = window.sillyWardrobe.getActiveOutfitBase64('user');
+            if (botB64) { referenceImages.push(botB64); refLabels.push('char_outfit'); }
+            if (userB64) { referenceImages.push(userB64); refLabels.push('user_outfit'); }
+            if (botB64 || userB64) iigLog('INFO', `Wardrobe refs added: bot=${!!botB64}, user=${!!userB64}`);
+        }
+        // 4. Context (previous generated images — LOWEST priority, fills remaining slots)
+        if (settings.imageContextEnabled) {
+            const contextCount = normalizeImageContextCount(settings.imageContextCount);
+            const contextRefs = await collectPreviousContextReferences(options.messageId, 'base64', contextCount);
+            for (const cr of contextRefs) { referenceImages.push(cr); refLabels.push('context'); }
         }
     }
 
@@ -1538,47 +1619,32 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
             const d = await getUserAvatarDataUrl();
             if (d) referenceDataUrls.push(d);
         }
-    }
-
-    if (settings.imageContextEnabled) {
-        const contextCount = normalizeImageContextCount(settings.imageContextCount);
-        if (settings.apiType === 'gemini' || isGeminiModel(settings.model)) {
-            const contextRefs = await collectPreviousContextReferences(
-                options.messageId,
-                'base64',
-                contextCount
-            );
-            referenceImages.push(...contextRefs);
-        }
-        if (settings.apiType === 'naistera') {
-            const contextRefs = await collectPreviousContextReferences(
-                options.messageId,
-                'dataUrl',
-                contextCount
-            );
+        if (settings.imageContextEnabled) {
+            const contextCount = normalizeImageContextCount(settings.imageContextCount);
+            const contextRefs = await collectPreviousContextReferences(options.messageId, 'dataUrl', contextCount);
             referenceDataUrls.push(...contextRefs);
         }
-    }
-
-    // ── SillyWardrobe integration: active outfits as references ──
-    if (window.sillyWardrobe?.isReady()) {
-        const botB64 = window.sillyWardrobe.getActiveOutfitBase64('bot');
-        const userB64 = window.sillyWardrobe.getActiveOutfitBase64('user');
-        if (settings.apiType === 'gemini' || isGeminiModel(settings.model)) {
-            if (botB64) referenceImages.push(botB64);
-            if (userB64) referenceImages.push(userB64);
-        } else if (settings.apiType === 'naistera') {
+        if (window.sillyWardrobe?.isReady()) {
+            const botB64 = window.sillyWardrobe.getActiveOutfitBase64('bot');
+            const userB64 = window.sillyWardrobe.getActiveOutfitBase64('user');
             if (botB64) referenceDataUrls.push(`data:image/png;base64,${botB64}`);
             if (userB64) referenceDataUrls.push(`data:image/png;base64,${userB64}`);
-        } else {
+        }
+    }
+
+    // OpenAI: same old order (only slot 0 matters anyway)
+    if (settings.apiType !== 'gemini' && !isGeminiModel(settings.model) && settings.apiType !== 'naistera') {
+        if (window.sillyWardrobe?.isReady()) {
+            const botB64 = window.sillyWardrobe.getActiveOutfitBase64('bot');
+            const userB64 = window.sillyWardrobe.getActiveOutfitBase64('user');
             if (botB64) referenceImages.push(botB64);
             if (userB64) referenceImages.push(userB64);
         }
-        if (botB64 || userB64) iigLog('INFO', `Wardrobe refs added: bot=${!!botB64}, user=${!!userB64}`);
     }
 
     if (referenceImages.length > MAX_GENERATION_REFERENCE_IMAGES) {
         referenceImages.length = MAX_GENERATION_REFERENCE_IMAGES;
+        refLabels.length = MAX_GENERATION_REFERENCE_IMAGES;
     }
     if (referenceDataUrls.length > MAX_GENERATION_REFERENCE_IMAGES) {
         referenceDataUrls.length = MAX_GENERATION_REFERENCE_IMAGES;
@@ -1617,7 +1683,7 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
                     videoEveryN: settings.naisteraVideoEveryN,
                 });
             } else if (settings.apiType === 'gemini' || isGeminiModel(settings.model)) {
-                generated = await generateImageGemini(prompt, style, referenceImages, options);
+                generated = await generateImageGemini(prompt, style, referenceImages, { ...options, refLabels });
             } else {
                 generated = await generateImageOpenAI(prompt, style, referenceImages, options);
             }
