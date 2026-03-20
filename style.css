@@ -406,46 +406,45 @@
 .sw-tab-content::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.1); border-radius: 3px; }
 
 /* ═══════════════════════════════════════════
-   Floating wardrobe button (optional)
+   SillyWardrobe — Bar button (in leftSendForm)
    ═══════════════════════════════════════════ */
-.sw-float-btn {
-    position: fixed;
-    z-index: 99999;
-    top: 120px;
-    right: 15px;
-    width: 44px;
-    height: 44px;
-    background: var(--SmartThemeBlurTintColor, rgba(50, 50, 60, 0.9));
-    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.15));
-    border-radius: 50%;
-    display: flex;
+#sw-bar-btn {
+    display: inline-flex;
     align-items: center;
     justify-content: center;
-    color: var(--SmartThemeBodyColor, #eee);
-    font-size: 1.2em;
+    position: relative;
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.4);
     cursor: pointer;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
-    transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.2s;
+    transition: all .15s;
+    font-size: 14px;
+    flex-shrink: 0;
+    padding: 0;
+    margin: 0 2px;
 }
-.sw-float-btn:hover {
-    transform: scale(1.08);
-    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+#sw-bar-btn:hover {
+    background: rgba(255, 255, 255, 0.06);
+    color: rgba(255, 255, 255, 0.8);
 }
-.sw-float-btn.sw-has-active {
-    border-color: rgba(110, 231, 183, 0.5);
-    box-shadow: 0 0 10px 2px rgba(110, 231, 183, 0.2), 0 4px 12px rgba(0, 0, 0, 0.35);
+#sw-bar-btn.sw-bar-active {
+    color: rgba(110, 231, 183, 0.9);
 }
-.sw-float-count {
+.sw-bar-count {
     position: absolute;
-    top: -4px;
-    right: -4px;
+    top: -3px;
+    right: -3px;
     background: #6ee7b7;
     color: #111;
-    font-size: 10px;
-    padding: 1px 5px;
-    border-radius: 10px;
+    font-size: 9px;
+    padding: 1px 4px;
+    border-radius: 8px;
     font-weight: 700;
     line-height: 1.4;
+    pointer-events: none;
 }
 
 /* ═══════════════════════════════════════════
@@ -465,13 +464,5 @@
     .sw-outfit-grid {
         grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
         gap: 8px;
-    }
-    .sw-float-btn {
-        top: auto;
-        bottom: 70px;
-        right: 12px;
-        width: 40px;
-        height: 40px;
-        font-size: 1em;
     }
 }

@@ -270,31 +270,33 @@
         }
     }
 
-    // ── Floating button (optional, like Fetish Manager) ──
+    // ── Bar button (inline in leftSendForm, like sims-action-btn) ──
 
     function swInjectFloatingBtn() {
-        let $btn = $('#sw-float-btn');
+        let $btn = $('#sw-bar-btn');
         if ($btn.length === 0) {
-            $('body').append('<div id="sw-float-btn" class="sw-float-btn"><i class="fa-solid fa-shirt"></i></div>');
-            $btn = $('#sw-float-btn');
+            $btn = $('<div id="sw-bar-btn" title="Гардероб"><i class="fa-solid fa-shirt"></i></div>');
             $btn.on('click touchend', function(e) {
                 e.preventDefault();
                 e.stopPropagation();
                 swOpenModal();
             });
+            const $left = $('#leftSendForm');
+            if ($left.length) $left.append($btn);
+            else $('body').append($btn);
         }
         const active = swGetActive();
         const hasActive = !!(active.bot || active.user);
-        $btn.toggleClass('sw-has-active', hasActive);
+        $btn.toggleClass('sw-bar-active', hasActive);
         if (hasActive) {
             let count = 0;
             if (active.bot) count++;
             if (active.user) count++;
-            $btn.html(`<i class="fa-solid fa-shirt"></i><span class="sw-float-count">${count}</span>`);
+            $btn.html(`<i class="fa-solid fa-shirt"></i><span class="sw-bar-count">${count}</span>`);
         } else {
             $btn.html('<i class="fa-solid fa-shirt"></i>');
         }
-        $btn.toggle(!!swGetSettings().showFloatingBtn);
+        $btn.show();
     }
 
     // ── Public API ──
