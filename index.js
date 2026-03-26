@@ -89,7 +89,7 @@
 
         if (ib) {
             const ao = aid ? swFind(cn, swTab, aid) : null;
-            ib.innerHTML = ao ? `Активно: <b>${esc(ao.name)}</b>${ao.description ? ` — <i>${esc(ao.description)}</i>` : ''}` : 'Ничего не надето';
+            ib.innerHTML = ao ? `Активно: <b>${esc(ao.name)}</b>${ao.description ? ` — <i>${esc(ao.description.length > 60 ? ao.description.slice(0, 60) + '...' : ao.description)}</i>` : ''}` : 'Ничего не надето';
             ib.classList.toggle('sw-active-visible', !!ao);
         }
 

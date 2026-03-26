@@ -332,6 +332,8 @@
     display: flex; align-items: center; padding: 8px 18px; font-size: 12px;
     color: var(--SmartThemeQuoteColor, #999);
     border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    max-height: 36px; flex-shrink: 0;
 }
 .sw-active-info.sw-active-visible { color: #6ee7b7; }
 
