@@ -71,7 +71,8 @@
             <div class="sw-active-info" id="sw-active-info"></div>
             <div class="sw-tab-content" id="sw-tab-content"></div>`;
 
-        ov.appendChild(m); document.body.appendChild(ov);
+        ov.appendChild(m);
+        document.body.appendChild(ov);
         m.querySelector('.sw-modal-close').addEventListener('click', swCloseModal);
         for (const t of m.querySelectorAll('.sw-tab')) t.addEventListener('click', () => {
             swTab = t.dataset.tab; m.querySelectorAll('.sw-tab').forEach(x => x.classList.toggle('sw-tab-active', x.dataset.tab === swTab)); swRender();
@@ -403,6 +404,9 @@ const defaultSettings = Object.freeze({
     naisteraSendUserAvatar: false,
     naisteraVideoTest: false,
     naisteraVideoEveryN: 1,
+    // Style reference
+    styleRefBase64: '',
+    styleRefName: '',
 });
 
 const MAX_CONTEXT_IMAGES = 3;
@@ -1165,8 +1169,8 @@ async function generateImageOpenAI(prompt, style, referenceImages = [], options 
     const settings = getSettings();
     const url = `${settings.endpoint.replace(/\/$/, '')}/v1/images/generations`;
     
-    // Combine style and prompt
-    const fullPrompt = style ? `[Style: ${style}] ${prompt}` : prompt;
+    // Combine style and prompt (skip text style when style ref image is active)
+    const fullPrompt = (style && !settings.styleRefBase64) ? `[Style: ${style}] ${prompt}` : prompt;
     
     // Map aspect ratio to size if provided in tag
     let size = settings.size;
@@ -1266,6 +1270,7 @@ async function generateImageGemini(prompt, style, referenceImages = [], options 
             'char_outfit': '⬇️ CHARACTER OUTFIT REFERENCE — copy this clothing:',
             'user_outfit': '⬇️ USER OUTFIT REFERENCE — copy this clothing:',
             'context': '⬇️ SCENE CONTEXT (for style/mood consistency):',
+            'style_ref': '⬇️ STYLE REFERENCE — you MUST draw the output image in the EXACT SAME art style as this image. Copy the rendering technique, line work, shading, coloring, and visual feel precisely:',
         };
         // Add text label before each image
         parts.push({ text: labelMap[label] || '⬇️ REFERENCE IMAGE:' });
@@ -1281,10 +1286,14 @@ async function generateImageGemini(prompt, style, referenceImages = [], options 
     const hasFaces = refLabels.some(l => l.endsWith('_face'));
     const hasOutfits = refLabels.some(l => l.endsWith('_outfit'));
     const hasContext = refLabels.includes('context');
+    const hasStyleRef = refLabels.includes('style_ref');
     
     let refInstruction = '';
     if (referenceImages.length > 0) {
         const rules = [];
+        if (hasStyleRef) {
+            rules.push('STYLE REFERENCE (HIGHEST PRIORITY): A style reference image is provided. The ENTIRE generated image MUST be drawn in the EXACT SAME art style as the style reference — same rendering technique, line work, shading, color palette, texture, and overall visual feel. If the style reference is anime/manga, the output MUST be anime/manga. If it is watercolor, the output MUST be watercolor. Do NOT copy characters, objects, or scenes from it — only replicate the artistic style precisely.');
+        }
         if (hasFaces) {
             rules.push('FACE CONSISTENCY: You MUST precisely replicate the facial features (face structure, eye color/shape, hair color/style/length, skin tone, facial hair, age) from the FACE REFERENCE images. These faces must be recognizable as the same people across all generated images. This is the HIGHEST priority.');
         }
@@ -1294,14 +1303,15 @@ async function generateImageGemini(prompt, style, referenceImages = [], options 
         if (hasContext) {
             rules.push('STYLE CONSISTENCY: Match the art style, lighting, color palette, and rendering quality of the CONTEXT reference images. The generated image should look like it belongs to the same series.');
         }
-        if (!hasContext && style) {
+        if (!hasStyleRef && !hasContext && style) {
             rules.push(`STYLE: Generate in "${style}" style consistently. Do not mix styles.`);
         }
         refInstruction = `[STRICT IMAGE GENERATION RULES]\n${rules.join('\n')}\n[END RULES]\n\n`;
     }
     
     // Add prompt with style and instruction
-    let fullPrompt = style ? `[Style: ${style}] ${prompt}` : prompt;
+    // When style ref image is present, skip text style to avoid conflicting instructions
+    let fullPrompt = (style && !hasStyleRef) ? `[Style: ${style}] ${prompt}` : prompt;
     fullPrompt = `${refInstruction}${fullPrompt}`;
     
     parts.push({ text: fullPrompt });
@@ -1411,7 +1421,8 @@ async function generateImageNaistera(prompt, style, options = {}) {
     const endpoint = getEffectiveEndpoint(settings);
     const url = endpoint.endsWith('/api/generate') ? endpoint : `${endpoint}/api/generate`;
 
-    const fullPrompt = style ? `[Style: ${style}] ${prompt}` : prompt;
+    // Skip text style when style ref image is active
+    const fullPrompt = (style && !settings.styleRefBase64) ? `[Style: ${style}] ${prompt}` : prompt;
 
     const aspectRatio = options.aspectRatio || settings.naisteraAspectRatio || '1:1';
     const model = normalizeNaisteraModel(options.model || settings.naisteraModel || 'grok');
@@ -1585,6 +1596,12 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
 
     // Gemini/nano-banana references: PRIORITY ORDER — faces first, outfits second, context last
     if (settings.apiType === 'gemini' || isGeminiModel(settings.model)) {
+        // 0. Style reference (STYLE ONLY — highest visual priority)
+        if (settings.styleRefBase64) {
+            referenceImages.push(settings.styleRefBase64);
+            refLabels.push('style_ref');
+            iigLog('INFO', 'Style reference added for Gemini');
+        }
         // 1. Character avatar (FACE — highest priority)
         if (settings.sendCharAvatar) {
             const charAvatar = await getCharacterAvatarBase64();
@@ -1613,6 +1630,10 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
 
     // Naistera references: data URLs (server uploads to Grok)
     if (settings.apiType === 'naistera') {
+        if (settings.styleRefBase64) {
+            referenceDataUrls.push(`data:image/png;base64,${settings.styleRefBase64}`);
+            iigLog('INFO', 'Style reference added for Naistera');
+        }
         if (settings.naisteraSendCharAvatar) {
             const d = await getCharacterAvatarDataUrl();
             if (d) referenceDataUrls.push(d);
@@ -1636,6 +1657,10 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
 
     // OpenAI: same old order (only slot 0 matters anyway)
     if (settings.apiType !== 'gemini' && !isGeminiModel(settings.model) && settings.apiType !== 'naistera') {
+        if (settings.styleRefBase64) {
+            referenceImages.push(settings.styleRefBase64);
+            iigLog('INFO', 'Style reference added for OpenAI');
+        }
         if (window.sillyWardrobe?.isReady()) {
             const botB64 = window.sillyWardrobe.getActiveOutfitBase64('bot');
             const userB64 = window.sillyWardrobe.getActiveOutfitBase64('user');
@@ -1668,6 +1693,12 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
             prompt = `${parts.join(' ')}\n${prompt}`;
             iigLog('INFO', `Wardrobe descriptions injected: ${parts.join(', ')}`);
         }
+    }
+
+    // ── Inject style reference instruction into prompt (for non-Gemini APIs) ──
+    if (settings.styleRefBase64 && settings.apiType !== 'gemini' && !isGeminiModel(settings.model)) {
+        prompt = `[STYLE REFERENCE: A reference image is attached for art style ONLY. Copy ONLY the art style, color palette, rendering technique, and visual texture. Do NOT take any characters, objects, scenes, or content from it.]\n${prompt}`;
+        iigLog('INFO', 'Style reference instruction prepended to prompt');
     }
 
     let lastError;
@@ -1871,7 +1902,7 @@ async function parseImageTags(text, options = {}) {
         // Skip error images - user must click to retry manually (prevents conflict on swipe)
         if (hasErrorImage && !forceAll) {
             iigLog('INFO', `Skipping error image (click to retry): ${srcValue.substring(0, 50)}`);
-            searchPos = imgEnd;
+            searchPos = mediaEnd;
             continue;
         }
         
@@ -1895,12 +1926,12 @@ async function parseImageTags(text, options = {}) {
         } else if (hasPath) {
             // Has path but not checking existence - skip
             iigLog('INFO', `Skipping path (no existence check): ${srcValue.substring(0, 50)}`);
-            searchPos = imgEnd;
+            searchPos = mediaEnd;
             continue;
         }
         
         if (!needsGeneration) {
-            searchPos = imgEnd;
+            searchPos = mediaEnd;
             continue;
         }
         
@@ -2313,7 +2344,9 @@ async function processMessageTags(messageId) {
                 }
             }
 
-            loadingPlaceholder.replaceWith(mediaElement);
+            // Wrap image with zoom/fullscreen/regen actions
+            const wrappedElement = wrapImageWithActions(mediaElement, tag, messageId, index, tags.length);
+            loadingPlaceholder.replaceWith(wrappedElement);
 
             if (tag.isNewFormat) {
                 const updatedTag = isGeneratedVideoResult(generated)
@@ -2389,6 +2422,9 @@ async function processMessageTags(messageId) {
             console.log('[IIG] Attempting manual refresh...');
         }
     }
+
+    // Re-enhance images after the re-render (above re-render destroys wrappers)
+    enhanceRenderedImages(mesTextEl, messageId);
 }
 
 /**
@@ -2493,7 +2529,10 @@ async function regenerateMessageImages(messageId) {
                 if (instruction) {
                     mediaElement.setAttribute('data-iig-instruction', instruction);
                 }
-                loadingPlaceholder.replaceWith(mediaElement);
+
+                // Wrap with actions
+                const wrappedElement = wrapImageWithActions(mediaElement, tag, messageId, index, tags.length);
+                loadingPlaceholder.replaceWith(wrappedElement);
                 
                 // Update message.mes
                 const updatedTag = isGeneratedVideoResult(generated)
@@ -2561,6 +2600,8 @@ function addButtonsToExistingMessages() {
         // Only add to AI messages (not user messages)
         if (message && !message.is_user) {
             addRegenerateButton(messageElement, messageId);
+            const mesText = messageElement.querySelector('.mes_text');
+            if (mesText) enhanceRenderedImages(mesText, messageId);
             addedCount++;
         }
     }
@@ -2593,6 +2634,13 @@ async function onMessageReceived(messageId) {
     addRegenerateButton(messageElement, messageId);
     
     await processMessageTags(messageId);
+    
+    // Enhance already-rendered images with zoom/fullscreen/regen buttons
+    // Called AFTER processMessageTags to survive the messageFormatting re-render
+    const mesTextElForEnhance = messageElement.querySelector('.mes_text');
+    if (mesTextElForEnhance) {
+        enhanceRenderedImages(mesTextElForEnhance, messageId);
+    }
 }
 
 /**
@@ -2847,6 +2895,23 @@ function createSettingsUI() {
                             <label for="iig_retry_delay">Задержка (мс)</label>
                             <input type="number" id="iig_retry_delay" class="text_pole flex1" 
                                    value="${settings.retryDelay}" min="500" max="10000" step="500">
+                        </div>
+                    </div>
+
+                    <div class="iig-settings-card">
+                        <h4>Референс стиля</h4>
+                        <p class="hint">Загрузите картинку-референс. Из неё будет браться ТОЛЬКО стиль рисовки (палитра, техника, текстуры). Содержимое/сюжет картинки будут проигнорированы.</p>
+                        <div class="flex-row">
+                            <div id="iig_style_ref_upload" class="menu_button" style="width: 100%;">
+                                <i class="fa-solid fa-palette"></i> Загрузить референс стиля
+                            </div>
+                        </div>
+                        <div id="iig_style_ref_preview" class="iig-style-ref-preview" style="${settings.styleRefBase64 ? '' : 'display:none'}">
+                            <img id="iig_style_ref_img" src="${settings.styleRefBase64 ? 'data:image/png;base64,' + settings.styleRefBase64 : ''}" alt="Style ref">
+                            <span id="iig_style_ref_name">${settings.styleRefName || ''}</span>
+                            <div id="iig_style_ref_remove" class="menu_button iig-style-ref-remove" title="Удалить референс">
+                                <i class="fa-solid fa-trash-can"></i>
+                            </div>
                         </div>
                     </div>
 
@@ -3210,6 +3275,65 @@ function bindSettingsEvents() {
         exportLogs();
     });
 
+    // ── Style reference handlers ──
+    document.getElementById('iig_style_ref_upload')?.addEventListener('click', () => {
+        const inp = document.createElement('input');
+        inp.type = 'file';
+        inp.accept = 'image/*';
+        inp.addEventListener('change', async () => {
+            const f = inp.files?.[0];
+            if (!f) return;
+            try {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        // Resize to max 512px
+                        let { width: w, height: h } = img;
+                        const maxDim = 512;
+                        if (w > maxDim || h > maxDim) {
+                            const s = Math.min(maxDim / w, maxDim / h);
+                            w = Math.round(w * s);
+                            h = Math.round(h * s);
+                        }
+                        const c = document.createElement('canvas');
+                        c.width = w;
+                        c.height = h;
+                        c.getContext('2d').drawImage(img, 0, 0, w, h);
+                        const base64 = c.toDataURL('image/png').split(',')[1];
+
+                        settings.styleRefBase64 = base64;
+                        settings.styleRefName = f.name.replace(/\.[^.]+$/, '');
+                        saveSettings();
+
+                        const preview = document.getElementById('iig_style_ref_preview');
+                        const previewImg = document.getElementById('iig_style_ref_img');
+                        const nameEl = document.getElementById('iig_style_ref_name');
+                        if (preview) preview.style.display = '';
+                        if (previewImg) previewImg.src = `data:image/png;base64,${base64}`;
+                        if (nameEl) nameEl.textContent = settings.styleRefName;
+                        toastr.success('Референс стиля загружен', 'Генерация картинок');
+                    };
+                    img.onerror = () => toastr.error('Ошибка декодирования', 'Генерация картинок');
+                    img.src = e.target.result;
+                };
+                reader.readAsDataURL(f);
+            } catch (e) {
+                toastr.error('Ошибка: ' + e.message, 'Генерация картинок');
+            }
+        });
+        inp.click();
+    });
+
+    document.getElementById('iig_style_ref_remove')?.addEventListener('click', () => {
+        settings.styleRefBase64 = '';
+        settings.styleRefName = '';
+        saveSettings();
+        const preview = document.getElementById('iig_style_ref_preview');
+        if (preview) preview.style.display = 'none';
+        toastr.info('Референс стиля удалён', 'Генерация картинок');
+    });
+
     // ── Wardrobe handlers ──
     document.getElementById('sw_open_wardrobe')?.addEventListener('click', () => {
         if (window.sillyWardrobe?.isReady()) {
@@ -3241,6 +3365,377 @@ function bindSettingsEvents() {
 }
 
 /**
+ * ═══════════════════════════════════════════
+ * Fullscreen image viewer with zoom
+ * ═══════════════════════════════════════════
+ */
+function openFullscreenViewer(imgSrc) {
+    closeFullscreenViewer();
+    const overlay = document.createElement('div');
+    overlay.id = 'iig-fullscreen-overlay';
+    overlay.classList.add('iig-fs-fit');
+
+    const img = document.createElement('img');
+    img.className = 'iig-fs-image';
+    img.src = imgSrc;
+    img.alt = 'Fullscreen';
+    img.draggable = false;
+
+    const closeBtn = document.createElement('div');
+    closeBtn.className = 'iig-fs-close';
+    closeBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+
+    const handleKey = (e) => {
+        if (e.key === 'Escape') closeFullscreenViewer();
+    };
+    document.addEventListener('keydown', handleKey);
+    overlay._iigKeyHandler = handleKey;
+
+    overlay.appendChild(img);
+    overlay.appendChild(closeBtn);
+    document.body.appendChild(overlay);
+}
+
+function closeFullscreenViewer() {
+    const existing = document.getElementById('iig-fullscreen-overlay');
+    if (existing) {
+        if (existing._iigKeyHandler) document.removeEventListener('keydown', existing._iigKeyHandler);
+        existing.remove();
+    }
+}
+
+/**
+ * Global delegated click handler for all IIG image interactions.
+ * Uses capture phase to intercept before SillyTavern's own handlers.
+ * This is robust against DOM re-renders since it doesn't rely on per-element handlers.
+ */
+function initGlobalClickHandler() {
+    document.addEventListener('click', (e) => {
+        // Don't interfere with SillyWardrobe modal clicks
+        if (e.target.closest('#sw-modal-overlay, #sw-modal')) return;
+
+        // === Fullscreen overlay interactions ===
+        const overlay = document.getElementById('iig-fullscreen-overlay');
+        if (overlay) {
+            // Close button
+            if (e.target.closest('.iig-fs-close')) {
+                e.preventDefault();
+                e.stopPropagation();
+                closeFullscreenViewer();
+                return;
+            }
+
+            // Click on fullscreen image → toggle zoom
+            const fsImg = e.target.closest('.iig-fs-image');
+            if (fsImg) {
+                e.preventDefault();
+                e.stopPropagation();
+                const isFit = overlay.classList.contains('iig-fs-fit');
+                if (isFit) {
+                    // Switch to zoom mode
+                    overlay.classList.remove('iig-fs-fit');
+                    overlay.classList.add('iig-fs-zoom');
+                    // Wait for layout, then scroll to center of image
+                    requestAnimationFrame(() => {
+                        requestAnimationFrame(() => {
+                            const scrollX = Math.max(0, (overlay.scrollWidth - overlay.clientWidth) / 2);
+                            const scrollY = Math.max(0, (overlay.scrollHeight - overlay.clientHeight) / 2);
+                            overlay.scrollTo(scrollX, scrollY);
+                        });
+                    });
+                } else {
+                    // Switch back to fit mode
+                    overlay.classList.remove('iig-fs-zoom');
+                    overlay.classList.add('iig-fs-fit');
+                }
+                return;
+            }
+
+            // Click on overlay background → close
+            if (e.target === overlay) {
+                e.preventDefault();
+                e.stopPropagation();
+                closeFullscreenViewer();
+                return;
+            }
+            return;
+        }
+
+        // === Chat image interactions ===
+
+        // Fullscreen button on image wrapper
+        const fsBtn = e.target.closest('.iig-image-action-btn:not(.iig-regen-single-btn)');
+        if (fsBtn) {
+            e.preventDefault();
+            e.stopPropagation();
+            const wrapper = fsBtn.closest('.iig-image-wrapper');
+            const img = wrapper?.querySelector('img');
+            if (img?.src) openFullscreenViewer(img.src);
+            return;
+        }
+
+        // Per-image regen button
+        const regenBtn = e.target.closest('.iig-regen-single-btn');
+        if (regenBtn) {
+            e.preventDefault();
+            e.stopPropagation();
+            const msgId = parseInt(regenBtn.dataset.messageId, 10);
+            const tagIdx = parseInt(regenBtn.dataset.tagIndex, 10);
+            if (!isNaN(msgId) && !isNaN(tagIdx)) {
+                regenerateSingleImage(msgId, tagIdx);
+            }
+            return;
+        }
+
+        // Direct click on an IIG image (either wrapped or bare) → fullscreen
+        const clickedImg = e.target.closest('.iig-image-wrapper img, img.iig-generated-image, img[data-iig-instruction]');
+        if (clickedImg) {
+            const src = clickedImg.getAttribute('src') || '';
+            iigLog('INFO', `Image click detected: src=${src.substring(0, 80)}, hasWrapper=${!!clickedImg.closest('.iig-image-wrapper')}`);
+            if (src && !src.includes('error.svg') && !src.includes('[IMG:') && !src.includes('[VID:')) {
+                e.preventDefault();
+                e.stopPropagation();
+                openFullscreenViewer(src);
+                return;
+            }
+        }
+
+        // Fallback: any img inside .mes_text that has a real path src (not base64, not marker)
+        const anyMesImg = e.target.closest('.mes_text img');
+        if (anyMesImg) {
+            const src = anyMesImg.getAttribute('src') || '';
+            if (src && src.startsWith('/') && !src.includes('error.svg')) {
+                iigLog('INFO', `Fallback img click: src=${src.substring(0, 80)}`);
+                e.preventDefault();
+                e.stopPropagation();
+                openFullscreenViewer(src);
+                return;
+            }
+        }
+    }, true); // CAPTURE phase — fires before any other handler
+}
+
+/**
+ * Wrap a generated image element with action buttons (zoom, fullscreen, per-image regen).
+ * Click handlers are NOT attached here — they use global event delegation instead.
+ */
+function wrapImageWithActions(mediaElement, tag, messageId, tagIndex, totalTags) {
+    if (mediaElement.tagName !== 'IMG') return mediaElement;
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'iig-image-wrapper';
+
+    const actions = document.createElement('div');
+    actions.className = 'iig-image-actions';
+
+    // Fullscreen button (handler via delegation)
+    const fullscreenBtn = document.createElement('div');
+    fullscreenBtn.className = 'iig-image-action-btn iig-fullscreen-btn';
+    fullscreenBtn.title = 'На весь экран';
+    fullscreenBtn.innerHTML = '<i class="fa-solid fa-expand"></i>';
+    actions.appendChild(fullscreenBtn);
+
+    // Per-image regeneration button (always shown — subtle, on hover)
+    const regenBtn = document.createElement('div');
+    regenBtn.className = 'iig-image-action-btn iig-regen-single-btn';
+    regenBtn.title = 'Перегенерировать эту картинку';
+    regenBtn.innerHTML = '<i class="fa-solid fa-rotate"></i>';
+    regenBtn.dataset.messageId = String(messageId);
+    regenBtn.dataset.tagIndex = String(tagIndex);
+    actions.appendChild(regenBtn);
+
+    wrapper.appendChild(actions);
+    mediaElement.style.cursor = 'zoom-in';
+    wrapper.appendChild(mediaElement);
+    return wrapper;
+}
+
+/**
+ * Wrap an error image with ONLY a regen button (no fullscreen).
+ */
+function wrapErrorImageWithRegen(errorImg, messageId, tagIndex) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'iig-image-wrapper';
+
+    const actions = document.createElement('div');
+    actions.className = 'iig-image-actions';
+
+    const regenBtn = document.createElement('div');
+    regenBtn.className = 'iig-image-action-btn iig-regen-single-btn';
+    regenBtn.title = 'Перегенерировать эту картинку';
+    regenBtn.innerHTML = '<i class="fa-solid fa-rotate"></i>';
+    regenBtn.dataset.messageId = String(messageId);
+    regenBtn.dataset.tagIndex = String(tagIndex);
+    actions.appendChild(regenBtn);
+
+    wrapper.appendChild(actions);
+    wrapper.appendChild(errorImg);
+    return wrapper;
+}
+
+/**
+ * Regenerate a single image in a message by tag index
+ */
+async function regenerateSingleImage(messageId, targetTagIndex) {
+    const context = SillyTavern.getContext();
+    const message = context.chat[messageId];
+    if (!message) {
+        toastr.error('Сообщение не найдено', 'Генерация картинок');
+        return;
+    }
+
+    const tags = await parseMessageImageTags(message, { forceAll: true });
+    if (targetTagIndex < 0 || targetTagIndex >= tags.length) {
+        toastr.error('Тег не найден', 'Генерация картинок');
+        return;
+    }
+
+    const tag = tags[targetTagIndex];
+    iigLog('INFO', `Regenerating single image ${targetTagIndex} in message ${messageId}`);
+    toastr.info('Перегенерация 1 картинки...', 'Генерация картинок');
+
+    const messageElement = document.querySelector(`#chat .mes[mesid="${messageId}"]`);
+    if (!messageElement) return;
+    const mesTextEl = messageElement.querySelector('.mes_text');
+    if (!mesTextEl) return;
+
+    const tagId = `iig-regen-single-${messageId}-${targetTagIndex}`;
+
+    try {
+        // Find the existing rendered media element
+        const allWrappers = Array.from(mesTextEl.querySelectorAll('.iig-image-wrapper'));
+        const allBareMedia = Array.from(mesTextEl.querySelectorAll('img[data-iig-instruction], video[data-iig-instruction]'));
+        // Combine: wrapped images (via wrapper) + bare images with instruction
+        let targetEl = null;
+        if (allWrappers[targetTagIndex]) {
+            targetEl = allWrappers[targetTagIndex];
+        } else if (allBareMedia[targetTagIndex]) {
+            targetEl = allBareMedia[targetTagIndex];
+        }
+        if (!targetEl) {
+            toastr.error('Элемент картинки не найден', 'Генерация картинок');
+            return;
+        }
+
+        const instruction = targetEl.querySelector?.('img[data-iig-instruction]')?.getAttribute('data-iig-instruction')
+            || targetEl.getAttribute?.('data-iig-instruction');
+
+        const loadingPlaceholder = createLoadingPlaceholder(tagId);
+        targetEl.replaceWith(loadingPlaceholder);
+
+        const statusEl = loadingPlaceholder.querySelector('.iig-status');
+
+        const generated = await generateImageWithRetry(
+            tag.prompt,
+            tag.style,
+            (status) => { statusEl.textContent = status; },
+            { aspectRatio: tag.aspectRatio, imageSize: tag.imageSize, quality: tag.quality, preset: tag.preset, messageId }
+        );
+
+        let persistedSrc = '';
+        if (isGeneratedVideoResult(generated)) {
+            statusEl.textContent = 'Сохранение видео...';
+            persistedSrc = await saveNaisteraMediaToFile(generated.dataUrl, 'video', { messageId, tagIndex: targetTagIndex, mode: 'regen-single-video', apiType: getSettings().apiType });
+        } else {
+            statusEl.textContent = 'Сохранение...';
+            persistedSrc = await saveImageToFile(generated, { messageId, tagIndex: targetTagIndex, mode: 'regen-single', apiType: getSettings().apiType });
+        }
+
+        const mediaElement = createGeneratedMediaElement(
+            isGeneratedVideoResult(generated)
+                ? { ...generated, dataUrl: persistedSrc }
+                : persistedSrc,
+            tag,
+        );
+        if (instruction) {
+            mediaElement.setAttribute('data-iig-instruction', instruction);
+        }
+
+        // Wrap with actions again
+        const wrapped = wrapImageWithActions(mediaElement, tag, messageId, targetTagIndex, tags.length);
+        loadingPlaceholder.replaceWith(wrapped);
+
+        // Update message source
+        const updatedTag = isGeneratedVideoResult(generated)
+            ? buildPersistedVideoTag(tag.fullMatch, persistedSrc, '')
+            : tag.fullMatch.replace(/src\s*=\s*(['"])[^'"]*\1/i, `src="${persistedSrc}"`);
+        replaceTagInMessageSource(message, tag, updatedTag);
+
+        await context.saveChat();
+        toastr.success('Картинка перегенерирована', 'Генерация картинок', { timeOut: 2000 });
+    } catch (error) {
+        iigLog('ERROR', `Single image regeneration failed: ${error.message}`);
+        toastr.error(`Ошибка: ${error.message}`, 'Генерация картинок');
+    }
+}
+
+/**
+ * Add zoom/fullscreen/regen buttons to already rendered images in a message
+ */
+function enhanceRenderedImages(mesTextEl, messageId) {
+    // Match both freshly generated (.iig-generated-image) AND history images (img[data-iig-instruction] with valid src)
+    // Also include error images (.iig-error-image) for regen button
+    const images = Array.from(mesTextEl.querySelectorAll('img.iig-generated-image, img[data-iig-instruction], img.iig-error-image'));
+    iigLog('INFO', `enhanceRenderedImages: messageId=${messageId}, found ${images.length} candidate images`);
+    if (images.length === 0) return;
+
+    // Deduplicate (an img might match both selectors)
+    const seen = new Set();
+    const unique = [];
+    for (const img of images) {
+        if (seen.has(img)) continue;
+        seen.add(img);
+        // Skip empty/marker src (but INCLUDE error images — they need regen button)
+        const src = img.getAttribute('src') || '';
+        if (src.includes('[IMG:') || !src) continue;
+        unique.push(img);
+    }
+    if (unique.length === 0) return;
+
+    iigLog('INFO', `enhanceRenderedImages: ${unique.length} valid images to wrap`);
+    for (let i = 0; i < unique.length; i++) {
+        const img = unique[i];
+        // Skip if already wrapped
+        if (img.closest('.iig-image-wrapper')) continue;
+
+        const src = img.getAttribute('src') || '';
+        iigLog('INFO', `  wrapping img[${i}]: src=${src.substring(0, 100)}, class=${img.className}, naturalWidth=${img.naturalWidth}, parent=${img.parentNode?.tagName}.${img.parentNode?.className}`);
+
+        // Try to extract prompt/style from instruction attribute
+        let prompt = img.alt || '';
+        let style = '';
+        const instruction = img.getAttribute('data-iig-instruction');
+        if (instruction) {
+            try {
+                const decoded = instruction
+                    .replace(/&quot;/g, '"')
+                    .replace(/&apos;/g, "'")
+                    .replace(/&#39;/g, "'")
+                    .replace(/&#34;/g, '"')
+                    .replace(/&amp;/g, '&');
+                const data = JSON.parse(decoded);
+                prompt = data.prompt || prompt;
+                style = data.style || style;
+            } catch (_e) { /* ignore parse errors */ }
+        }
+
+        const tag = { prompt, style };
+        // Insert a placeholder before the img (or its error wrapper), then build the new wrapper
+        const errorWrapper = img.closest('.iig-error-wrapper');
+        const anchorNode = errorWrapper || img;
+        const placeholder = document.createComment('iig-enhance');
+        anchorNode.parentNode.insertBefore(placeholder, anchorNode);
+        if (errorWrapper) errorWrapper.remove(); // remove old error wrapper shell
+        
+        const isError = (img.getAttribute('src') || '').includes('error.svg');
+        const wrapped = isError
+            ? wrapErrorImageWithRegen(img, messageId, i)
+            : wrapImageWithActions(img, tag, messageId, i, unique.length);
+        placeholder.replaceWith(wrapped);
+    }
+}
+
+/**
  * Initialize extension
  */
 (function init() {
@@ -3253,6 +3748,9 @@ function bindSettingsEvents() {
     
     // Load settings
     getSettings();
+    
+    // Initialize global click handler (event delegation — survives DOM re-renders)
+    initGlobalClickHandler();
     
     // Create settings UI when app is ready
     context.eventSource.on(context.event_types.APP_READY, () => {
