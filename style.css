@@ -344,7 +344,10 @@ img[data-iig-instruction] {
 /* Fullscreen overlay */
 #iig-fullscreen-overlay {
     position: fixed;
-    inset: 0;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
     z-index: 100000;
     background: rgba(0, 0, 0, 0.92);
     overflow: hidden;
