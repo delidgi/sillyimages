@@ -3410,6 +3410,21 @@ function closeFullscreenViewer() {
  * This is robust against DOM re-renders since it doesn't rely on per-element handlers.
  */
 function initGlobalClickHandler() {
+    // ── Touch support: tap image to show buttons, tap button to act ──
+    const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    if (isTouchDevice) {
+        document.addEventListener('touchstart', (e) => {
+            const wrapper = e.target.closest('.iig-image-wrapper');
+            if (wrapper) {
+                // Show buttons on this wrapper
+                wrapper.classList.add('iig-touch-active');
+            } else {
+                // Tapped outside any wrapper — hide all
+                document.querySelectorAll('.iig-image-wrapper.iig-touch-active').forEach(w => w.classList.remove('iig-touch-active'));
+            }
+        }, { passive: true });
+    }
+
     document.addEventListener('click', (e) => {
         // Don't interfere with SillyWardrobe modal clicks
         if (e.target.closest('#sw-modal-overlay, #sw-modal')) return;
@@ -3488,10 +3503,20 @@ function initGlobalClickHandler() {
         }
 
         // Direct click on an IIG image (either wrapped or bare) → fullscreen
+        // On touch: first tap shows buttons (iig-touch-active), only open fullscreen if buttons already visible
         const clickedImg = e.target.closest('.iig-image-wrapper img, img.iig-generated-image, img[data-iig-instruction]');
         if (clickedImg) {
+            const wrapper = clickedImg.closest('.iig-image-wrapper');
+            if (isTouchDevice && wrapper && !wrapper.classList.contains('iig-touch-active')) {
+                // First tap — just show buttons, don't open fullscreen
+                e.preventDefault();
+                e.stopPropagation();
+                document.querySelectorAll('.iig-image-wrapper.iig-touch-active').forEach(w => w.classList.remove('iig-touch-active'));
+                wrapper.classList.add('iig-touch-active');
+                return;
+            }
             const src = clickedImg.getAttribute('src') || '';
-            iigLog('INFO', `Image click detected: src=${src.substring(0, 80)}, hasWrapper=${!!clickedImg.closest('.iig-image-wrapper')}`);
+            iigLog('INFO', `Image click detected: src=${src.substring(0, 80)}, hasWrapper=${!!wrapper}`);
             if (src && !src.includes('error.svg') && !src.includes('[IMG:') && !src.includes('[VID:')) {
                 e.preventDefault();
                 e.stopPropagation();
