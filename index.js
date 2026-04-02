@@ -3370,6 +3370,8 @@ function bindSettingsEvents() {
  * ═══════════════════════════════════════════
  */
 function openFullscreenViewer(imgSrc) {
+    console.log('[IIG] openFullscreenViewer called with src:', imgSrc ? imgSrc.substring(0, 120) : 'EMPTY');
+    if (!imgSrc) { console.error('[IIG] openFullscreenViewer: no src!'); return; }
     closeFullscreenViewer();
     const overlay = document.createElement('div');
     overlay.id = 'iig-fullscreen-overlay';
@@ -3601,16 +3603,15 @@ function wrapImageWithActions(mediaElement, tag, messageId, tagIndex, totalTags)
     fullscreenBtn.className = 'iig-image-action-btn iig-fullscreen-btn';
     fullscreenBtn.title = 'На весь экран';
     fullscreenBtn.innerHTML = '<i class="fa-solid fa-expand"></i>';
-    fullscreenBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        if (mediaElement.src) openFullscreenViewer(mediaElement.src);
-    });
-    fullscreenBtn.addEventListener('touchend', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        if (mediaElement.src) openFullscreenViewer(mediaElement.src);
-    });
+    const _openFs = () => {
+        // Get src from the actual img inside the wrapper at click time
+        const curImg = wrapper.querySelector('img');
+        const src = curImg?.src || mediaElement.src || '';
+        console.log('[IIG] FS btn: src=', src.substring(0, 120));
+        if (src) openFullscreenViewer(src);
+    };
+    fullscreenBtn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); _openFs(); });
+    fullscreenBtn.addEventListener('touchend', (e) => { e.preventDefault(); e.stopPropagation(); _openFs(); });
     actions.appendChild(fullscreenBtn);
 
     // Per-image regeneration button — direct handler for reliability on mobile
@@ -3634,11 +3635,11 @@ function wrapImageWithActions(mediaElement, tag, messageId, tagIndex, totalTags)
 
     wrapper.appendChild(actions);
     mediaElement.style.cursor = 'zoom-in';
-    // Direct tap on image → fullscreen (backup for delegation)
+    // Direct tap on image → fullscreen
     mediaElement.addEventListener('click', (e) => {
-        // Don't fire if a button was tapped
         if (e.target.closest('.iig-image-action-btn')) return;
-        const src = mediaElement.getAttribute('src') || '';
+        const curImg = wrapper.querySelector('img');
+        const src = curImg?.src || mediaElement.src || '';
         if (src && !src.includes('error.svg')) {
             e.preventDefault();
             e.stopPropagation();
