@@ -3521,7 +3521,7 @@ function initGlobalClickHandler() {
             e.preventDefault();
             e.stopPropagation();
             const src = fsBtn.dataset.imgSrc || '';
-            console.log('[IIG] FS delegation: src=', src.substring(0, 120));
+            toastr.info('FS btn tapped, src=' + (src ? src.substring(0, 60) : 'EMPTY'), 'DEBUG');
             if (src) openFullscreenViewer(src);
             return;
         }
@@ -3543,6 +3543,7 @@ function initGlobalClickHandler() {
         const clickedImg = e.target.closest('.iig-image-wrapper img, img.iig-generated-image, img[data-iig-instruction]');
         if (clickedImg) {
             const src = clickedImg.getAttribute('src') || '';
+            toastr.info('Image tapped, src=' + (src ? src.substring(0, 60) : 'EMPTY'), 'DEBUG');
             if (src && !src.includes('error.svg') && !src.includes('[IMG:') && !src.includes('[VID:')) {
                 e.preventDefault();
                 e.stopPropagation();
