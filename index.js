@@ -3412,15 +3412,30 @@ function closeFullscreenViewer() {
 function initGlobalClickHandler() {
     // ── Touch support: tap image to show buttons, tap button to act ──
     const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    let _iigTouchJustActivated = null; // track which wrapper was activated on this touch
     if (isTouchDevice) {
         document.addEventListener('touchstart', (e) => {
             const wrapper = e.target.closest('.iig-image-wrapper');
+            const btn = e.target.closest('.iig-image-action-btn');
+            if (btn) {
+                // Tapping a button — don't change activation state
+                _iigTouchJustActivated = null;
+                return;
+            }
             if (wrapper) {
-                // Show buttons on this wrapper
-                wrapper.classList.add('iig-touch-active');
+                if (wrapper.classList.contains('iig-touch-active')) {
+                    // Already active — this is a second tap on the image
+                    _iigTouchJustActivated = null;
+                } else {
+                    // First tap — activate and remember
+                    document.querySelectorAll('.iig-image-wrapper.iig-touch-active').forEach(w => w.classList.remove('iig-touch-active'));
+                    wrapper.classList.add('iig-touch-active');
+                    _iigTouchJustActivated = wrapper;
+                }
             } else {
                 // Tapped outside any wrapper — hide all
                 document.querySelectorAll('.iig-image-wrapper.iig-touch-active').forEach(w => w.classList.remove('iig-touch-active'));
+                _iigTouchJustActivated = null;
             }
         }, { passive: true });
     }
@@ -3503,18 +3518,18 @@ function initGlobalClickHandler() {
         }
 
         // Direct click on an IIG image (either wrapped or bare) → fullscreen
-        // On touch: first tap shows buttons (iig-touch-active), only open fullscreen if buttons already visible
+        // On touch: first tap shows buttons, only open fullscreen on second tap
         const clickedImg = e.target.closest('.iig-image-wrapper img, img.iig-generated-image, img[data-iig-instruction]');
         if (clickedImg) {
             const wrapper = clickedImg.closest('.iig-image-wrapper');
-            if (isTouchDevice && wrapper && !wrapper.classList.contains('iig-touch-active')) {
-                // First tap — just show buttons, don't open fullscreen
+            if (isTouchDevice && wrapper && _iigTouchJustActivated === wrapper) {
+                // First tap — just showed buttons, don't open fullscreen
+                _iigTouchJustActivated = null;
                 e.preventDefault();
                 e.stopPropagation();
-                document.querySelectorAll('.iig-image-wrapper.iig-touch-active').forEach(w => w.classList.remove('iig-touch-active'));
-                wrapper.classList.add('iig-touch-active');
                 return;
             }
+            _iigTouchJustActivated = null;
             const src = clickedImg.getAttribute('src') || '';
             iigLog('INFO', `Image click detected: src=${src.substring(0, 80)}, hasWrapper=${!!wrapper}`);
             if (src && !src.includes('error.svg') && !src.includes('[IMG:') && !src.includes('[VID:')) {
