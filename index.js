@@ -3447,33 +3447,18 @@ function closeFullscreenViewer() {
  * This is robust against DOM re-renders since it doesn't rely on per-element handlers.
  */
 function initGlobalClickHandler() {
-    // ── Touch support: tap image to show buttons, tap button to act ──
+    // ── Touch support: detect touch device ──
     const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-    let _iigTouchJustActivated = null; // track which wrapper was activated on this touch
     if (isTouchDevice) {
+        // On touch devices, toggle iig-touch-active to show/hide action buttons
         document.addEventListener('touchstart', (e) => {
-            const wrapper = e.target.closest('.iig-image-wrapper');
             const btn = e.target.closest('.iig-image-action-btn');
-            if (btn) {
-                // Tapping a button — don't change activation state
-                _iigTouchJustActivated = null;
-                return;
-            }
-            if (wrapper) {
-                if (wrapper.classList.contains('iig-touch-active')) {
-                    // Already active — this is a second tap on the image
-                    _iigTouchJustActivated = null;
-                } else {
-                    // First tap — activate and remember
-                    document.querySelectorAll('.iig-image-wrapper.iig-touch-active').forEach(w => w.classList.remove('iig-touch-active'));
-                    wrapper.classList.add('iig-touch-active');
-                    _iigTouchJustActivated = wrapper;
-                }
-            } else {
-                // Tapped outside any wrapper — hide all
-                document.querySelectorAll('.iig-image-wrapper.iig-touch-active').forEach(w => w.classList.remove('iig-touch-active'));
-                _iigTouchJustActivated = null;
-            }
+            if (btn) return; // don't interfere with button taps
+            const wrapper = e.target.closest('.iig-image-wrapper');
+            document.querySelectorAll('.iig-image-wrapper.iig-touch-active').forEach(w => {
+                if (w !== wrapper) w.classList.remove('iig-touch-active');
+            });
+            if (wrapper) wrapper.classList.toggle('iig-touch-active');
         }, { passive: true });
     }
 
@@ -3530,14 +3515,14 @@ function initGlobalClickHandler() {
 
         // === Chat image interactions ===
 
-        // Fullscreen button on image wrapper
-        const fsBtn = e.target.closest('.iig-image-action-btn:not(.iig-regen-single-btn)');
+        // Fullscreen button on image wrapper — read src from dataset
+        const fsBtn = e.target.closest('.iig-fullscreen-btn');
         if (fsBtn) {
             e.preventDefault();
             e.stopPropagation();
-            const wrapper = fsBtn.closest('.iig-image-wrapper');
-            const img = wrapper?.querySelector('img');
-            if (img?.src) openFullscreenViewer(img.src);
+            const src = fsBtn.dataset.imgSrc || '';
+            console.log('[IIG] FS delegation: src=', src.substring(0, 120));
+            if (src) openFullscreenViewer(src);
             return;
         }
 
@@ -3554,21 +3539,10 @@ function initGlobalClickHandler() {
             return;
         }
 
-        // Direct click on an IIG image (either wrapped or bare) → fullscreen
-        // On touch: first tap shows buttons, only open fullscreen on second tap
+        // Direct click/tap on an IIG image → fullscreen
         const clickedImg = e.target.closest('.iig-image-wrapper img, img.iig-generated-image, img[data-iig-instruction]');
         if (clickedImg) {
-            const wrapper = clickedImg.closest('.iig-image-wrapper');
-            if (isTouchDevice && wrapper && _iigTouchJustActivated === wrapper) {
-                // First tap — just showed buttons, don't open fullscreen
-                _iigTouchJustActivated = null;
-                e.preventDefault();
-                e.stopPropagation();
-                return;
-            }
-            _iigTouchJustActivated = null;
             const src = clickedImg.getAttribute('src') || '';
-            iigLog('INFO', `Image click detected: src=${src.substring(0, 80)}, hasWrapper=${!!wrapper}`);
             if (src && !src.includes('error.svg') && !src.includes('[IMG:') && !src.includes('[VID:')) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -3606,54 +3580,25 @@ function wrapImageWithActions(mediaElement, tag, messageId, tagIndex, totalTags)
     const actions = document.createElement('div');
     actions.className = 'iig-image-actions';
 
-    // Fullscreen button — direct handler for reliability on mobile
+    // Fullscreen button — stores src in dataset, handled by delegation
     const fullscreenBtn = document.createElement('div');
     fullscreenBtn.className = 'iig-image-action-btn iig-fullscreen-btn';
     fullscreenBtn.title = 'На весь экран';
     fullscreenBtn.innerHTML = '<i class="fa-solid fa-expand"></i>';
-    const _openFs = () => {
-        // Get src from the actual img inside the wrapper at click time
-        const curImg = wrapper.querySelector('img');
-        const src = curImg?.src || mediaElement.src || '';
-        console.log('[IIG] FS btn: src=', src.substring(0, 120));
-        if (src) openFullscreenViewer(src);
-    };
-    fullscreenBtn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); _openFs(); });
-    fullscreenBtn.addEventListener('touchend', (e) => { e.preventDefault(); e.stopPropagation(); _openFs(); });
+    fullscreenBtn.dataset.imgSrc = mediaElement.src || mediaElement.getAttribute('src') || '';
     actions.appendChild(fullscreenBtn);
 
-    // Per-image regeneration button — direct handler for reliability on mobile
+    // Per-image regeneration button — stores ids in dataset, handled by delegation
     const regenBtn = document.createElement('div');
     regenBtn.className = 'iig-image-action-btn iig-regen-single-btn';
     regenBtn.title = 'Перегенерировать эту картинку';
     regenBtn.innerHTML = '<i class="fa-solid fa-rotate"></i>';
     regenBtn.dataset.messageId = String(messageId);
     regenBtn.dataset.tagIndex = String(tagIndex);
-    regenBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        regenerateSingleImage(messageId, tagIndex);
-    });
-    regenBtn.addEventListener('touchend', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        regenerateSingleImage(messageId, tagIndex);
-    });
     actions.appendChild(regenBtn);
 
     wrapper.appendChild(actions);
     mediaElement.style.cursor = 'zoom-in';
-    // Direct tap on image → fullscreen
-    mediaElement.addEventListener('click', (e) => {
-        if (e.target.closest('.iig-image-action-btn')) return;
-        const curImg = wrapper.querySelector('img');
-        const src = curImg?.src || mediaElement.src || '';
-        if (src && !src.includes('error.svg')) {
-            e.preventDefault();
-            e.stopPropagation();
-            openFullscreenViewer(src);
-        }
-    });
     wrapper.appendChild(mediaElement);
     return wrapper;
 }
@@ -3675,16 +3620,6 @@ function wrapErrorImageWithRegen(errorImg, messageId, tagIndex) {
     regenBtn.innerHTML = '<i class="fa-solid fa-rotate"></i>';
     regenBtn.dataset.messageId = String(messageId);
     regenBtn.dataset.tagIndex = String(tagIndex);
-    regenBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        regenerateSingleImage(messageId, tagIndex);
-    });
-    regenBtn.addEventListener('touchend', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        regenerateSingleImage(messageId, tagIndex);
-    });
     actions.appendChild(regenBtn);
 
     wrapper.appendChild(actions);
