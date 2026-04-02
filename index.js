@@ -3370,8 +3370,7 @@ function bindSettingsEvents() {
  * ═══════════════════════════════════════════
  */
 function openFullscreenViewer(imgSrc) {
-    console.log('[IIG] openFullscreenViewer called with src:', imgSrc ? imgSrc.substring(0, 200) : 'EMPTY');
-    if (!imgSrc) { console.error('[IIG] openFullscreenViewer: no src!'); return; }
+    if (!imgSrc) return;
     closeFullscreenViewer();
     const overlay = document.createElement('div');
     overlay.id = 'iig-fullscreen-overlay';
@@ -3382,13 +3381,6 @@ function openFullscreenViewer(imgSrc) {
     img.src = imgSrc;
     img.alt = 'Fullscreen';
     img.draggable = false;
-
-    // Debug: show src and load status on overlay
-    const dbg = document.createElement('div');
-    dbg.style.cssText = 'position:fixed;bottom:10px;left:10px;right:10px;color:lime;font-size:11px;word-break:break-all;z-index:100002;background:rgba(0,0,0,0.8);padding:8px;border-radius:6px;max-height:30vh;overflow:auto;';
-    dbg.textContent = 'SRC: ' + imgSrc.substring(0, 300);
-    img.onload = () => { dbg.textContent += ' | LOADED OK (' + img.naturalWidth + 'x' + img.naturalHeight + ')'; };
-    img.onerror = () => { dbg.textContent += ' | LOAD ERROR'; };
 
     const closeBtn = document.createElement('div');
     closeBtn.className = 'iig-fs-close';
@@ -3429,23 +3421,7 @@ function openFullscreenViewer(imgSrc) {
 
     overlay.appendChild(img);
     overlay.appendChild(closeBtn);
-    overlay.appendChild(dbg);
     document.body.appendChild(overlay);
-    
-    // Debug: verify overlay is in DOM and visible
-    const check = document.getElementById('iig-fullscreen-overlay');
-    toastr.info(
-        'Overlay in DOM: ' + !!check + 
-        ', display: ' + (check ? getComputedStyle(check).display : 'N/A') +
-        ', zIndex: ' + (check ? getComputedStyle(check).zIndex : 'N/A') +
-        ', size: ' + (check ? check.offsetWidth + 'x' + check.offsetHeight : 'N/A'),
-        'FS DEBUG'
-    );
-    // Also check after a tick
-    setTimeout(() => {
-        const check2 = document.getElementById('iig-fullscreen-overlay');
-        if (!check2) toastr.error('OVERLAY WAS REMOVED after creation!', 'FS DEBUG');
-    }, 200);
 }
 
 function closeFullscreenViewer() {
@@ -3536,7 +3512,6 @@ function initGlobalClickHandler() {
             e.preventDefault();
             e.stopPropagation();
             const src = fsBtn.dataset.imgSrc || '';
-            toastr.info('FS btn tapped, src=' + (src ? src.substring(0, 60) : 'EMPTY'), 'DEBUG');
             if (src) openFullscreenViewer(src);
             return;
         }
@@ -3558,7 +3533,6 @@ function initGlobalClickHandler() {
         const clickedImg = e.target.closest('.iig-image-wrapper img, img.iig-generated-image, img[data-iig-instruction]');
         if (clickedImg) {
             const src = clickedImg.getAttribute('src') || '';
-            toastr.info('Image tapped, src=' + (src ? src.substring(0, 60) : 'EMPTY'), 'DEBUG');
             if (src && !src.includes('error.svg') && !src.includes('[IMG:') && !src.includes('[VID:')) {
                 e.preventDefault();
                 e.stopPropagation();
