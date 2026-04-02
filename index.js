@@ -3370,7 +3370,7 @@ function bindSettingsEvents() {
  * ═══════════════════════════════════════════
  */
 function openFullscreenViewer(imgSrc) {
-    console.log('[IIG] openFullscreenViewer called with src:', imgSrc ? imgSrc.substring(0, 120) : 'EMPTY');
+    console.log('[IIG] openFullscreenViewer called with src:', imgSrc ? imgSrc.substring(0, 200) : 'EMPTY');
     if (!imgSrc) { console.error('[IIG] openFullscreenViewer: no src!'); return; }
     closeFullscreenViewer();
     const overlay = document.createElement('div');
@@ -3382,6 +3382,13 @@ function openFullscreenViewer(imgSrc) {
     img.src = imgSrc;
     img.alt = 'Fullscreen';
     img.draggable = false;
+
+    // Debug: show src and load status on overlay
+    const dbg = document.createElement('div');
+    dbg.style.cssText = 'position:fixed;bottom:10px;left:10px;right:10px;color:lime;font-size:11px;word-break:break-all;z-index:100002;background:rgba(0,0,0,0.8);padding:8px;border-radius:6px;max-height:30vh;overflow:auto;';
+    dbg.textContent = 'SRC: ' + imgSrc.substring(0, 300);
+    img.onload = () => { dbg.textContent += ' | LOADED OK (' + img.naturalWidth + 'x' + img.naturalHeight + ')'; };
+    img.onerror = () => { dbg.textContent += ' | LOAD ERROR'; };
 
     const closeBtn = document.createElement('div');
     closeBtn.className = 'iig-fs-close';
@@ -3422,6 +3429,7 @@ function openFullscreenViewer(imgSrc) {
 
     overlay.appendChild(img);
     overlay.appendChild(closeBtn);
+    overlay.appendChild(dbg);
     document.body.appendChild(overlay);
 }
 
