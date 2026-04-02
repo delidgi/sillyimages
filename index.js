@@ -3524,6 +3524,7 @@ function wrapImageWithActions(mediaElement, tag, messageId, tagIndex, totalTags)
 
     const wrapper = document.createElement('div');
     wrapper.className = 'iig-image-wrapper';
+    wrapper.dataset.tagIndex = String(tagIndex);
 
     const actions = document.createElement('div');
     actions.className = 'iig-image-actions';
@@ -3556,6 +3557,7 @@ function wrapImageWithActions(mediaElement, tag, messageId, tagIndex, totalTags)
 function wrapErrorImageWithRegen(errorImg, messageId, tagIndex) {
     const wrapper = document.createElement('div');
     wrapper.className = 'iig-image-wrapper';
+    wrapper.dataset.tagIndex = String(tagIndex);
 
     const actions = document.createElement('div');
     actions.className = 'iig-image-actions';
@@ -3602,15 +3604,17 @@ async function regenerateSingleImage(messageId, targetTagIndex) {
     const tagId = `iig-regen-single-${messageId}-${targetTagIndex}`;
 
     try {
-        // Find the existing rendered media element
-        const allWrappers = Array.from(mesTextEl.querySelectorAll('.iig-image-wrapper'));
-        const allBareMedia = Array.from(mesTextEl.querySelectorAll('img[data-iig-instruction], video[data-iig-instruction]'));
-        // Combine: wrapped images (via wrapper) + bare images with instruction
-        let targetEl = null;
-        if (allWrappers[targetTagIndex]) {
-            targetEl = allWrappers[targetTagIndex];
-        } else if (allBareMedia[targetTagIndex]) {
-            targetEl = allBareMedia[targetTagIndex];
+        // Find the existing rendered media element by data-tag-index (reliable) or positional fallback
+        let targetEl = mesTextEl.querySelector(`.iig-image-wrapper[data-tag-index="${targetTagIndex}"]`);
+        if (!targetEl) {
+            // Fallback: try bare media with instruction attribute at positional index
+            const allBareMedia = Array.from(mesTextEl.querySelectorAll('img[data-iig-instruction], video[data-iig-instruction]'));
+            targetEl = allBareMedia[targetTagIndex] || null;
+        }
+        if (!targetEl) {
+            // Last resort: positional index among all wrappers
+            const allWrappers = Array.from(mesTextEl.querySelectorAll('.iig-image-wrapper'));
+            targetEl = allWrappers[targetTagIndex] || null;
         }
         if (!targetEl) {
             toastr.error('Элемент картинки не найден', 'Генерация картинок');
@@ -3777,12 +3781,44 @@ function enhanceRenderedImages(mesTextEl, messageId) {
     
     // Listen for new messages AFTER they're rendered in DOM
     // CHARACTER_MESSAGE_RENDERED fires after addOneMessage() completes
-    // This is the ONLY event we handle - no auto-retry on swipe/update
     context.eventSource.makeLast(context.event_types.CHARACTER_MESSAGE_RENDERED, handleMessage);
     
-    // NOTE: We intentionally DO NOT handle MESSAGE_SWIPED or MESSAGE_UPDATED
-    // Swipe = user wants NEW content, not to retry old error images
-    // If user wants to retry failed images, they use the regenerate button in menu
+    // Re-add button after swipe (DOM is rebuilt, old button lost)
+    context.eventSource.on(context.event_types.MESSAGE_SWIPED, (messageId) => {
+        setTimeout(() => {
+            const el = document.querySelector(`#chat .mes[mesid="${messageId}"]`);
+            if (!el) return;
+            const msg = context.chat[messageId];
+            if (msg && !msg.is_user) {
+                addRegenerateButton(el, messageId);
+                const mesText = el.querySelector('.mes_text');
+                if (mesText) enhanceRenderedImages(mesText, messageId);
+            }
+        }, 100);
+    });
+
+    // Safety net: MutationObserver re-adds buttons if DOM is rebuilt for any reason
+    const chatEl = document.getElementById('chat');
+    if (chatEl) {
+        const observer = new MutationObserver((mutations) => {
+            for (const m of mutations) {
+                for (const node of m.addedNodes) {
+                    if (node.nodeType !== 1) continue;
+                    const mesEls = node.classList?.contains('mes') ? [node] : node.querySelectorAll?.('.mes') || [];
+                    for (const el of mesEls) {
+                        const mesId = el.getAttribute('mesid');
+                        if (mesId === null) continue;
+                        const id = parseInt(mesId, 10);
+                        const msg = context.chat[id];
+                        if (msg && !msg.is_user && !el.querySelector('.iig-regenerate-btn')) {
+                            addRegenerateButton(el, id);
+                        }
+                    }
+                }
+            }
+        });
+        observer.observe(chatEl, { childList: true, subtree: true });
+    }
     
     console.log('[IIG] Inline Image Generation extension initialized');
 })();
