@@ -3384,6 +3384,33 @@ function openFullscreenViewer(imgSrc) {
     const closeBtn = document.createElement('div');
     closeBtn.className = 'iig-fs-close';
     closeBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+    closeBtn.addEventListener('click', (e) => { e.stopPropagation(); closeFullscreenViewer(); });
+    closeBtn.addEventListener('touchend', (e) => { e.preventDefault(); e.stopPropagation(); closeFullscreenViewer(); });
+
+    // Tap on overlay background → close
+    overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) closeFullscreenViewer();
+    });
+
+    // Tap on image → toggle zoom/fit
+    img.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (overlay.classList.contains('iig-fs-fit')) {
+            overlay.classList.remove('iig-fs-fit');
+            overlay.classList.add('iig-fs-zoom');
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    overlay.scrollTo(
+                        Math.max(0, (overlay.scrollWidth - overlay.clientWidth) / 2),
+                        Math.max(0, (overlay.scrollHeight - overlay.clientHeight) / 2)
+                    );
+                });
+            });
+        } else {
+            overlay.classList.remove('iig-fs-zoom');
+            overlay.classList.add('iig-fs-fit');
+        }
+    });
 
     const handleKey = (e) => {
         if (e.key === 'Escape') closeFullscreenViewer();
@@ -3569,24 +3596,55 @@ function wrapImageWithActions(mediaElement, tag, messageId, tagIndex, totalTags)
     const actions = document.createElement('div');
     actions.className = 'iig-image-actions';
 
-    // Fullscreen button (handler via delegation)
+    // Fullscreen button — direct handler for reliability on mobile
     const fullscreenBtn = document.createElement('div');
     fullscreenBtn.className = 'iig-image-action-btn iig-fullscreen-btn';
     fullscreenBtn.title = 'На весь экран';
     fullscreenBtn.innerHTML = '<i class="fa-solid fa-expand"></i>';
+    fullscreenBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (mediaElement.src) openFullscreenViewer(mediaElement.src);
+    });
+    fullscreenBtn.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (mediaElement.src) openFullscreenViewer(mediaElement.src);
+    });
     actions.appendChild(fullscreenBtn);
 
-    // Per-image regeneration button (always shown — subtle, on hover)
+    // Per-image regeneration button — direct handler for reliability on mobile
     const regenBtn = document.createElement('div');
     regenBtn.className = 'iig-image-action-btn iig-regen-single-btn';
     regenBtn.title = 'Перегенерировать эту картинку';
     regenBtn.innerHTML = '<i class="fa-solid fa-rotate"></i>';
     regenBtn.dataset.messageId = String(messageId);
     regenBtn.dataset.tagIndex = String(tagIndex);
+    regenBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        regenerateSingleImage(messageId, tagIndex);
+    });
+    regenBtn.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        regenerateSingleImage(messageId, tagIndex);
+    });
     actions.appendChild(regenBtn);
 
     wrapper.appendChild(actions);
     mediaElement.style.cursor = 'zoom-in';
+    // Direct tap on image → fullscreen (backup for delegation)
+    mediaElement.addEventListener('click', (e) => {
+        // Don't fire if a button was tapped
+        if (e.target.closest('.iig-image-action-btn')) return;
+        const src = mediaElement.getAttribute('src') || '';
+        if (src && !src.includes('error.svg')) {
+            e.preventDefault();
+            e.stopPropagation();
+            openFullscreenViewer(src);
+        }
+    });
     wrapper.appendChild(mediaElement);
     return wrapper;
 }
@@ -3608,6 +3666,16 @@ function wrapErrorImageWithRegen(errorImg, messageId, tagIndex) {
     regenBtn.innerHTML = '<i class="fa-solid fa-rotate"></i>';
     regenBtn.dataset.messageId = String(messageId);
     regenBtn.dataset.tagIndex = String(tagIndex);
+    regenBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        regenerateSingleImage(messageId, tagIndex);
+    });
+    regenBtn.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        regenerateSingleImage(messageId, tagIndex);
+    });
     actions.appendChild(regenBtn);
 
     wrapper.appendChild(actions);
