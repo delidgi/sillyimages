@@ -3431,6 +3431,21 @@ function openFullscreenViewer(imgSrc) {
     overlay.appendChild(closeBtn);
     overlay.appendChild(dbg);
     document.body.appendChild(overlay);
+    
+    // Debug: verify overlay is in DOM and visible
+    const check = document.getElementById('iig-fullscreen-overlay');
+    toastr.info(
+        'Overlay in DOM: ' + !!check + 
+        ', display: ' + (check ? getComputedStyle(check).display : 'N/A') +
+        ', zIndex: ' + (check ? getComputedStyle(check).zIndex : 'N/A') +
+        ', size: ' + (check ? check.offsetWidth + 'x' + check.offsetHeight : 'N/A'),
+        'FS DEBUG'
+    );
+    // Also check after a tick
+    setTimeout(() => {
+        const check2 = document.getElementById('iig-fullscreen-overlay');
+        if (!check2) toastr.error('OVERLAY WAS REMOVED after creation!', 'FS DEBUG');
+    }, 200);
 }
 
 function closeFullscreenViewer() {
