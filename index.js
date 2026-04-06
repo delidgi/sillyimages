@@ -196,7 +196,7 @@
             ];
         }
 
-        // Strategy 0: Dedicated wardrobe extra API
+        // Strategy 0: Dedicated wardrobe extra API (via ST CORS proxy with CSRF)
         const wEndpoint = (iigSettings.wardrobeEndpoint || '').replace(/\/$/, '');
         const wApiKey = iigSettings.wardrobeApiKey || '';
         swLog('INFO', `Wardrobe settings: endpoint="${wEndpoint || '(empty)'}", key=${wApiKey ? '***' + wApiKey.slice(-4) : '(empty)'}, model="${iigSettings.wardrobeModel || '(auto)'}"`);
@@ -205,15 +205,13 @@
                 toastr.info('Анализ образа (extra API)...', 'Гардероб', { timeOut: 15000 });
                 let model = iigSettings.wardrobeModel || '';
                 if (!model) {
-                    // Try fetching model list from wardrobe endpoint (also via proxy)
                     try {
                         const modelsUrl = `${wEndpoint}/v1/models`;
-                        let modelsResp;
-                        try {
-                            modelsResp = await fetch(`/proxy/${modelsUrl}`, { headers: { 'Authorization': `Bearer ${wApiKey}` } });
-                        } catch (_) {
-                            modelsResp = await fetch(modelsUrl, { headers: { 'Authorization': `Bearer ${wApiKey}` } });
-                        }
+                        // Use ST headers (includes CSRF) + merge Authorization
+                        const stHeaders = ctx.getRequestHeaders ? ctx.getRequestHeaders() : { 'Content-Type': 'application/json' };
+                        const modelsResp = await fetch(`/proxy/${modelsUrl}`, {
+                            headers: { ...stHeaders, 'Authorization': `Bearer ${wApiKey}` },
+                        });
                         if (modelsResp?.ok) {
                             const modelsData = await modelsResp.json();
                             const ids = (modelsData.data || []).map(m => m.id);
@@ -234,27 +232,16 @@
                         messages: buildVisionMessages(),
                         max_tokens: 150,
                     };
-                    const fetchOpts = {
-                        method: 'POST',
-                        headers: {
-                            'Authorization': `Bearer ${wApiKey}`,
-                            'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify(body),
-                    };
-
-                    // Try through ST CORS proxy first (avoids CORS on mobile), then direct
-                    let response;
+                    // ST headers include CSRF token — required for /proxy/ endpoint
+                    const stHeaders = ctx.getRequestHeaders ? ctx.getRequestHeaders() : { 'Content-Type': 'application/json' };
                     const proxyUrl = `/proxy/${apiUrl}`;
-                    swLog('INFO', `Wardrobe API: model=${model}, trying proxy: ${proxyUrl}, imageSize=~${Math.round(visionB64.length / 1024)}KB`);
-                    try {
-                        response = await fetch(proxyUrl, fetchOpts);
-                        swLog('INFO', `Proxy response status: ${response.status}`);
-                    } catch (proxyErr) {
-                        swLog('INFO', `Proxy unavailable (${proxyErr.message}), trying direct fetch: ${apiUrl}`);
-                        response = await fetch(apiUrl, fetchOpts);
-                        swLog('INFO', `Direct response status: ${response.status}`);
-                    }
+                    swLog('INFO', `Wardrobe API: model=${model}, url=${proxyUrl}, imageSize=~${Math.round(visionB64.length / 1024)}KB`);
+                    const response = await fetch(proxyUrl, {
+                        method: 'POST',
+                        headers: { ...stHeaders, 'Authorization': `Bearer ${wApiKey}` },
+                        body: JSON.stringify(body),
+                    });
+                    swLog('INFO', `Wardrobe proxy response status: ${response.status}`);
 
                     if (!response.ok) {
                         const errText = await response.text().catch(() => '');
@@ -277,27 +264,10 @@
             swLog('WARN', 'Wardrobe extra API not configured — using main API fallback');
         }
 
-        // Strategy 1: generateRaw with isolated vision messages (NO chat context)
-        if (typeof ctx.generateRaw === 'function') {
-            try {
-                toastr.info('Анализ образа...', 'Гардероб', { timeOut: 15000 });
-                const result = await ctx.generateRaw({ prompt: buildVisionMessages(), maxTokens: 150 });
-                swLog('INFO', `generateRaw raw response: "${(result || '').substring(0, 200)}"`);
-                const desc = cleanDesc(result);
-                if (desc && desc.length > 10 && desc.length < 500) {
-                    swLog('INFO', 'Auto-described via generateRaw:', desc.substring(0, 100));
-                    return desc;
-                }
-                swLog('WARN', `generateRaw response rejected (len=${desc.length}): "${desc.substring(0, 100)}"`);
-            } catch (e) {
-                swLog('WARN', 'generateRaw vision failed:', e.message);
-            }
-        }
-
-        // Strategy 2: generateQuietPrompt fallback (sends chat context, might RP)
+        // Strategy 1: generateQuietPrompt with quietImage (proper ST vision pipeline)
         if (typeof ctx.generateQuietPrompt === 'function') {
             try {
-                toastr.info('Анализ образа (fallback)...', 'Гардероб', { timeOut: 15000 });
+                toastr.info('Анализ образа...', 'Гардероб', { timeOut: 15000 });
                 const result = await ctx.generateQuietPrompt({
                     quietPrompt: '[OOC: STOP ROLEPLAY. You are now a fashion assistant. Describe ONLY the clothing visible in the attached image in 1-2 sentences in English. List garments, colors, fabrics, accessories, shoes. Do NOT write any narrative, dialogue, or RP content.]',
                     quietImage: visionDataUrl,
