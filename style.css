@@ -248,6 +248,230 @@
     background: #000;
 }
 
+/* ═══════════════════════════════════════════
+   Image zoom/fullscreen viewer
+   ═══════════════════════════════════════════ */
+
+/* Wrapper for generated images with action buttons */
+.iig-image-wrapper {
+    position: relative;
+    display: inline-block;
+    max-width: 100%;
+    margin: 5px 0;
+}
+
+.iig-image-wrapper img {
+    margin: 0;
+    cursor: zoom-in;
+    display: block;
+    max-width: 100%;
+    min-width: 80px;
+    min-height: 80px;
+    width: auto;
+    height: auto;
+    border-radius: 8px;
+}
+
+/* Overlay buttons on image hover */
+.iig-image-actions {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    display: flex;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity 0.2s;
+    z-index: 10;
+}
+
+.iig-image-wrapper:hover .iig-image-actions,
+.iig-image-wrapper.iig-touch-active .iig-image-actions {
+    opacity: 1;
+}
+
+.iig-image-action-btn {
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.55);
+    color: rgba(255, 255, 255, 0.85);
+    cursor: pointer;
+    font-size: 13px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(4px);
+    transition: background 0.15s, color 0.15s, transform 0.15s;
+}
+
+.iig-image-action-btn:hover {
+    background: rgba(0, 0, 0, 0.75);
+    color: #fff;
+    transform: scale(1.08);
+}
+
+.iig-image-action-btn.iig-regen-single-btn:hover {
+    color: #f59e0b;
+}
+
+/* Mobile/touch: always show action buttons since there's no hover */
+@media (hover: none), (pointer: coarse) {
+    .iig-image-actions {
+        opacity: 1;
+    }
+    .iig-image-action-btn {
+        width: 38px;
+        height: 38px;
+        font-size: 15px;
+        touch-action: manipulation;
+    }
+    #iig-fullscreen-overlay .iig-fs-close {
+        width: 48px;
+        height: 48px;
+        font-size: 22px;
+        top: 10px;
+        right: 10px;
+        touch-action: manipulation;
+    }
+}
+
+/* Make any IIG image clickable even without wrapper */
+img[data-iig-instruction] {
+    cursor: zoom-in;
+}
+
+/* Fullscreen overlay */
+#iig-fullscreen-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 100000;
+    background: rgba(0, 0, 0, 0.92);
+    overflow: hidden;
+    animation: iig-fs-fade-in 0.2s ease-out;
+}
+
+@keyframes iig-fs-fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+/* Fit mode: centered in viewport */
+#iig-fullscreen-overlay.iig-fs-fit {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: zoom-in;
+}
+
+/* Zoom mode: scrollable, natural size */
+#iig-fullscreen-overlay.iig-fs-zoom {
+    overflow: auto;
+    cursor: zoom-out;
+}
+
+#iig-fullscreen-overlay .iig-fs-scroll-area {
+    display: inline-block;
+}
+
+/* Fit: constrain image */
+#iig-fullscreen-overlay.iig-fs-fit .iig-fs-image {
+    max-width: 95vw;
+    max-height: 95vh;
+    object-fit: contain;
+    border-radius: 6px;
+    display: block;
+}
+
+/* Zoom: image at native size, padding so you can scroll to center */
+#iig-fullscreen-overlay.iig-fs-zoom .iig-fs-image {
+    display: block;
+    border-radius: 6px;
+    padding: 50vh 50vw;
+    /* padding makes scrollable area large enough to center any part of the image */
+}
+
+#iig-fullscreen-overlay .iig-fs-close {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.6);
+    color: #fff;
+    font-size: 18px;
+    cursor: pointer;
+    z-index: 100001;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    transition: background 0.15s;
+}
+
+#iig-fullscreen-overlay .iig-fs-close:hover {
+    background: rgba(255, 255, 255, 0.15);
+}
+
+/* ═══════════════════════════════════════════
+   Reference Slots
+   ═══════════════════════════════════════════ */
+.iig-ref-slot {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+}
+.iig-ref-slot:last-child {
+    border-bottom: none;
+}
+.iig-ref-slot-thumb {
+    width: 48px;
+    height: 48px;
+    min-width: 48px;
+    border-radius: 6px;
+    border: 1px dashed var(--SmartThemeBorderColor);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    overflow: hidden;
+    background: var(--SmartThemeBlurTintColor);
+}
+.iig-ref-slot-thumb:hover {
+    border-color: var(--SmartThemeBodyColor);
+}
+.iig-ref-slot-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+.iig-ref-slot-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+.iig-ref-slot-label {
+    font-size: 0.8em;
+    color: var(--SmartThemeQuoteColor);
+}
+.iig-ref-name-input {
+    font-size: 0.9em;
+    padding: 2px 6px;
+}
+.iig-ref-slot-delete {
+    padding: 4px 8px;
+    cursor: pointer;
+    font-size: 12px;
+}
+
 /* Model refresh button */
 .iig-refresh-btn {
     padding: 5px 10px;
