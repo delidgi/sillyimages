@@ -162,7 +162,7 @@
      */
     async function swAnalyzeOutfit(base64) {
         const ctx = SillyTavern.getContext();
-        const iigSettings = ctx.extensionSettings?.sillyimages || {};
+        const iigSettings = ctx.extensionSettings?.inline_image_gen || {};
 
         const SYSTEM_MSG = 'You are a fashion catalog assistant. You ONLY describe clothing. You never roleplay, narrate, or write fiction. Respond with 1-2 sentences in English describing ONLY the garments, colors, fabrics, accessories, and shoes visible in the image. Nothing else.';
         const USER_TEXT = 'Describe the clothing in this image.';
