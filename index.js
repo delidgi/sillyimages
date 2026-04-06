@@ -199,32 +199,63 @@
         // Strategy 0: Dedicated wardrobe extra API
         const wEndpoint = (iigSettings.wardrobeEndpoint || '').replace(/\/$/, '');
         const wApiKey = iigSettings.wardrobeApiKey || '';
+        swLog('INFO', `Wardrobe settings: endpoint="${wEndpoint || '(empty)'}", key=${wApiKey ? '***' + wApiKey.slice(-4) : '(empty)'}, model="${iigSettings.wardrobeModel || '(auto)'}"`);
         if (wEndpoint && wApiKey) {
             try {
                 toastr.info('Анализ образа (extra API)...', 'Гардероб', { timeOut: 15000 });
                 let model = iigSettings.wardrobeModel || '';
                 if (!model) {
-                    model = await (typeof autoSelectWardrobeModel === 'function' ? autoSelectWardrobeModel() : null);
-                    if (model) swLog('INFO', `Auto-selected wardrobe model: ${model}`);
+                    // Try fetching model list from wardrobe endpoint (also via proxy)
+                    try {
+                        const modelsUrl = `${wEndpoint}/v1/models`;
+                        let modelsResp;
+                        try {
+                            modelsResp = await fetch(`/proxy/${modelsUrl}`, { headers: { 'Authorization': `Bearer ${wApiKey}` } });
+                        } catch (_) {
+                            modelsResp = await fetch(modelsUrl, { headers: { 'Authorization': `Bearer ${wApiKey}` } });
+                        }
+                        if (modelsResp?.ok) {
+                            const modelsData = await modelsResp.json();
+                            const ids = (modelsData.data || []).map(m => m.id);
+                            const vision = ids.filter(m => /vision|4o|gemini|claude|pixtral|llava|qwen.*vl|internvl/i.test(m));
+                            model = vision[0] || ids[0] || '';
+                            if (model) swLog('INFO', `Auto-selected wardrobe model: ${model}`);
+                        }
+                    } catch (e) {
+                        swLog('WARN', 'Failed to fetch wardrobe models:', e.message);
+                    }
                 }
                 if (!model) {
                     swLog('WARN', 'No wardrobe model available, skipping extra API');
                 } else {
-                    const url = `${wEndpoint}/v1/chat/completions`;
+                    const apiUrl = `${wEndpoint}/v1/chat/completions`;
                     const body = {
                         model,
                         messages: buildVisionMessages(),
                         max_tokens: 150,
                     };
-                    swLog('INFO', `Wardrobe API request: model=${model}, url=${url}, imageSize=~${Math.round(visionB64.length / 1024)}KB`);
-                    const response = await fetch(url, {
+                    const fetchOpts = {
                         method: 'POST',
                         headers: {
                             'Authorization': `Bearer ${wApiKey}`,
                             'Content-Type': 'application/json',
                         },
                         body: JSON.stringify(body),
-                    });
+                    };
+
+                    // Try through ST CORS proxy first (avoids CORS on mobile), then direct
+                    let response;
+                    const proxyUrl = `/proxy/${apiUrl}`;
+                    swLog('INFO', `Wardrobe API: model=${model}, trying proxy: ${proxyUrl}, imageSize=~${Math.round(visionB64.length / 1024)}KB`);
+                    try {
+                        response = await fetch(proxyUrl, fetchOpts);
+                        swLog('INFO', `Proxy response status: ${response.status}`);
+                    } catch (proxyErr) {
+                        swLog('INFO', `Proxy unavailable (${proxyErr.message}), trying direct fetch: ${apiUrl}`);
+                        response = await fetch(apiUrl, fetchOpts);
+                        swLog('INFO', `Direct response status: ${response.status}`);
+                    }
+
                     if (!response.ok) {
                         const errText = await response.text().catch(() => '');
                         throw new Error(`HTTP ${response.status}: ${errText.substring(0, 200)}`);
@@ -242,6 +273,8 @@
             } catch (e) {
                 swLog('WARN', 'Wardrobe extra API failed:', e.message);
             }
+        } else {
+            swLog('WARN', 'Wardrobe extra API not configured — using main API fallback');
         }
 
         // Strategy 1: generateRaw with isolated vision messages (NO chat context)
@@ -2760,10 +2793,14 @@ async function fetchWardrobeVisionModels() {
         throw new Error('Эндпоинт или API ключ гардероба не настроены');
     }
     const url = `${endpoint}/v1/models`;
-    const response = await fetch(url, {
-        method: 'GET',
-        headers: { 'Authorization': `Bearer ${apiKey}` },
-    });
+    const headers = { 'Authorization': `Bearer ${apiKey}` };
+    // Try through ST CORS proxy first (avoids CORS on mobile), then direct
+    let response;
+    try {
+        response = await fetch(`/proxy/${url}`, { method: 'GET', headers });
+    } catch (_) {
+        response = await fetch(url, { method: 'GET', headers });
+    }
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     const models = data.data || [];
