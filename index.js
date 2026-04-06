@@ -129,6 +129,32 @@
     }
 
     /**
+     * Compress base64 PNG to smaller JPEG for vision analysis.
+     * Vision models don't need high-res: 384px JPEG is plenty for clothing.
+     */
+    function swCompressForVision(pngBase64, maxDim = 384) {
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload = () => {
+                let w = img.width, h = img.height;
+                if (w > maxDim || h > maxDim) {
+                    const s = maxDim / Math.max(w, h);
+                    w = Math.round(w * s); h = Math.round(h * s);
+                }
+                const c = document.createElement('canvas');
+                c.width = w; c.height = h;
+                c.getContext('2d').drawImage(img, 0, 0, w, h);
+                const jpegDataUrl = c.toDataURL('image/jpeg', 0.85);
+                const jpegB64 = jpegDataUrl.split(',')[1];
+                swLog('INFO', `Vision image compressed: ${img.width}x${img.height} → ${w}x${h}, ~${Math.round(jpegB64.length / 1024)}KB JPEG`);
+                resolve(jpegB64);
+            };
+            img.onerror = () => reject(new Error('Failed to decode image for vision compression'));
+            img.src = 'data:image/png;base64,' + pngBase64;
+        });
+    }
+
+    /**
      * Analyze outfit image via vision model.
      * Strategy 0: Use dedicated wardrobe API (wardrobeEndpoint + wardrobeApiKey).
      * Strategy 1: generateRaw with a CLEAN message array (no chat context).
@@ -141,10 +167,33 @@
         const SYSTEM_MSG = 'You are a fashion catalog assistant. You ONLY describe clothing. You never roleplay, narrate, or write fiction. Respond with 1-2 sentences in English describing ONLY the garments, colors, fabrics, accessories, and shoes visible in the image. Nothing else.';
         const USER_TEXT = 'Describe the clothing in this image.';
 
+        // Compress to smaller JPEG for vision — reduces payload 5-10x
+        let visionB64;
+        try {
+            visionB64 = await swCompressForVision(base64);
+        } catch (e) {
+            swLog('WARN', 'Vision compression failed, using original:', e.message);
+            visionB64 = base64;
+        }
+        const visionMime = visionB64 === base64 ? 'image/png' : 'image/jpeg';
+        const visionDataUrl = `data:${visionMime};base64,${visionB64}`;
+        swLog('INFO', `Vision image ready: ${visionMime}, ~${Math.round(visionB64.length / 1024)}KB`);
+
         function cleanDesc(raw) {
             return (raw || '').trim()
                 .replace(/^["'`]+|["'`]+$/g, '')
                 .replace(/^(Here|This|The image|I see|In this).{0,20}(shows?|features?|depicts?|displays?)\s*/i, '');
+        }
+
+        // Build OpenAI-compatible vision message (text FIRST, then image — required by many providers)
+        function buildVisionMessages() {
+            return [
+                { role: 'system', content: SYSTEM_MSG },
+                { role: 'user', content: [
+                    { type: 'text', text: USER_TEXT },
+                    { type: 'image_url', image_url: { url: visionDataUrl, detail: 'low' } },
+                ]},
+            ];
         }
 
         // Strategy 0: Dedicated wardrobe extra API
@@ -153,10 +202,8 @@
         if (wEndpoint && wApiKey) {
             try {
                 toastr.info('Анализ образа (extra API)...', 'Гардероб', { timeOut: 15000 });
-                // Auto-select model if not set
                 let model = iigSettings.wardrobeModel || '';
                 if (!model) {
-                    // Lazy auto-select: call the outer-scope function
                     model = await (typeof autoSelectWardrobeModel === 'function' ? autoSelectWardrobeModel() : null);
                     if (model) swLog('INFO', `Auto-selected wardrobe model: ${model}`);
                 }
@@ -166,15 +213,10 @@
                     const url = `${wEndpoint}/v1/chat/completions`;
                     const body = {
                         model,
-                        messages: [
-                            { role: 'system', content: SYSTEM_MSG },
-                            { role: 'user', content: [
-                                { type: 'image_url', image_url: { url: `data:image/png;base64,${base64}` } },
-                                { type: 'text', text: USER_TEXT },
-                            ]},
-                        ],
+                        messages: buildVisionMessages(),
                         max_tokens: 150,
                     };
+                    swLog('INFO', `Wardrobe API request: model=${model}, url=${url}, imageSize=~${Math.round(visionB64.length / 1024)}KB`);
                     const response = await fetch(url, {
                         method: 'POST',
                         headers: {
@@ -183,14 +225,19 @@
                         },
                         body: JSON.stringify(body),
                     });
-                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    if (!response.ok) {
+                        const errText = await response.text().catch(() => '');
+                        throw new Error(`HTTP ${response.status}: ${errText.substring(0, 200)}`);
+                    }
                     const result = await response.json();
-                    const text = result.choices?.[0]?.message?.content || '';
-                    const desc = cleanDesc(text);
+                    const rawText = result.choices?.[0]?.message?.content || '';
+                    swLog('INFO', `Wardrobe API raw response: "${rawText.substring(0, 200)}"`);
+                    const desc = cleanDesc(rawText);
                     if (desc && desc.length > 10 && desc.length < 500) {
                         swLog('INFO', 'Auto-described via extra API:', desc.substring(0, 100));
                         return desc;
                     }
+                    swLog('WARN', `Wardrobe API response rejected (len=${desc.length}): "${desc.substring(0, 100)}"`);
                 }
             } catch (e) {
                 swLog('WARN', 'Wardrobe extra API failed:', e.message);
@@ -201,19 +248,14 @@
         if (typeof ctx.generateRaw === 'function') {
             try {
                 toastr.info('Анализ образа...', 'Гардероб', { timeOut: 15000 });
-                const messages = [
-                    { role: 'system', content: SYSTEM_MSG },
-                    { role: 'user', content: [
-                        { type: 'image_url', image_url: { url: `data:image/png;base64,${base64}` } },
-                        { type: 'text', text: USER_TEXT },
-                    ]},
-                ];
-                const result = await ctx.generateRaw({ prompt: messages, maxTokens: 150 });
+                const result = await ctx.generateRaw({ prompt: buildVisionMessages(), maxTokens: 150 });
+                swLog('INFO', `generateRaw raw response: "${(result || '').substring(0, 200)}"`);
                 const desc = cleanDesc(result);
                 if (desc && desc.length > 10 && desc.length < 500) {
                     swLog('INFO', 'Auto-described via generateRaw:', desc.substring(0, 100));
                     return desc;
                 }
+                swLog('WARN', `generateRaw response rejected (len=${desc.length}): "${desc.substring(0, 100)}"`);
             } catch (e) {
                 swLog('WARN', 'generateRaw vision failed:', e.message);
             }
@@ -225,20 +267,22 @@
                 toastr.info('Анализ образа (fallback)...', 'Гардероб', { timeOut: 15000 });
                 const result = await ctx.generateQuietPrompt({
                     quietPrompt: '[OOC: STOP ROLEPLAY. You are now a fashion assistant. Describe ONLY the clothing visible in the attached image in 1-2 sentences in English. List garments, colors, fabrics, accessories, shoes. Do NOT write any narrative, dialogue, or RP content.]',
-                    quietImage: `data:image/png;base64,${base64}`,
+                    quietImage: visionDataUrl,
                     maxTokens: 150,
                 });
+                swLog('INFO', `generateQuietPrompt raw response: "${(result || '').substring(0, 200)}"`);
                 const desc = cleanDesc(result);
                 if (desc && desc.length > 10 && desc.length < 500) {
                     swLog('INFO', 'Auto-described via quietPrompt:', desc.substring(0, 100));
                     return desc;
                 }
+                swLog('WARN', `generateQuietPrompt response rejected (len=${desc.length}): "${desc.substring(0, 100)}"`);
             } catch (e) {
                 swLog('WARN', 'generateQuietPrompt failed:', e.message);
             }
         }
 
-        swLog('WARN', 'Auto-describe unavailable');
+        swLog('WARN', 'Auto-describe unavailable — all strategies failed');
         return null;
     }
 
@@ -1939,6 +1983,7 @@ async function parseImageTags(text, options = {}) {
         const hasMarker = srcValue.includes('[IMG:GEN]') || srcValue.includes('[IMG:');
         const hasErrorImage = srcValue.includes('error.svg'); // Our error placeholder - NO auto-retry
         const hasPath = srcValue && srcValue.startsWith('/') && srcValue.length > 5;
+        const hasExternalUrl = srcValue && /^https?:\/\//i.test(srcValue); // LLM hallucinated an external URL
         
         // Skip error images - user must click to retry manually (prevents conflict on swipe)
         if (hasErrorImage && !forceAll) {
@@ -1953,6 +1998,10 @@ async function parseImageTags(text, options = {}) {
             iigLog('INFO', `Force regeneration mode: including ${srcValue.substring(0, 30)}`);
         } else if (hasMarker || !srcValue) {
             // Explicit marker or empty src = needs generation
+            needsGeneration = true;
+        } else if (hasExternalUrl) {
+            // LLM hallucinated an external URL (pollinations.ai, etc.) — treat as needing generation
+            iigLog('WARN', `External URL in src (LLM hallucination): ${srcValue.substring(0, 80)}`);
             needsGeneration = true;
         } else if (hasPath && checkExistence) {
             // Has a path - check if file actually exists

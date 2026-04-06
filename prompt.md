@@ -39,5 +39,8 @@ Image generation:
   * NEVER reuse or copy src paths from chat history
   * Each response needs FRESH image generation with `src="[IMG:GEN]"`
   * If you see an existing path in src, that's a COMPLETED image - make a NEW one with [IMG:GEN]
+  * ABSOLUTELY FORBIDDEN: Do NOT use any external image URLs (pollinations.ai, imgur, unsplash, placeholder.com, picsum, etc.)
+  * The ONLY valid value for src in new images is exactly: src="[IMG:GEN]"
+  * Any other src value (URLs, paths, data URIs) in NEW images is a critical error
 {{setvar::largecothtml::
 - HTML Visuals: What additional HTML element could be added that would fit the story? Is the new element varied and different from those used previously?}}
