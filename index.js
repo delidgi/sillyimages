@@ -501,6 +501,12 @@ const defaultSettings = Object.freeze({
     charRef: { name: '', imageBase64: '', imagePath: '' },
     userRef: { name: '', imageBase64: '', imagePath: '' },
     npcReferences: [],
+    // Avatar auto-send (from ST avatars)
+    sendCharAvatar: false,
+    sendUserAvatar: false,
+    userAvatarFile: '',
+    charPhotoOpen: false,
+    userPhotoOpen: false,
     // Wardrobe extra API (for outfit vision analysis)
     wardrobeEndpoint: '',
     wardrobeApiKey: '',
@@ -766,6 +772,123 @@ async function loadRefImageAsBase64(path) {
         iigLog('WARN', `loadRefImageAsBase64 failed for ${path}:`, e.message);
         return null;
     }
+}
+
+/**
+ * Fetch list of user avatar files from ST server.
+ */
+async function fetchUserAvatars() {
+    try {
+        const context = SillyTavern.getContext();
+        const response = await fetch('/api/avatars/get', { method: 'POST', headers: context.getRequestHeaders() });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return await response.json();
+    } catch (e) { iigLog('WARN', 'fetchUserAvatars failed:', e.message); return []; }
+}
+
+/**
+ * Get current ST character avatar as base64.
+ */
+async function getCharacterAvatarBase64() {
+    try {
+        const context = SillyTavern.getContext();
+        if (context.characterId === undefined || context.characterId === null) return null;
+        if (typeof context.getCharacterAvatar === 'function') {
+            const url = context.getCharacterAvatar(context.characterId);
+            if (url) { const b = await imageUrlToBase64(url); if (b) return b; }
+        }
+        const character = context.characters?.[context.characterId];
+        if (character?.avatar) return await imageUrlToBase64(`/characters/${encodeURIComponent(character.avatar)}`);
+        return null;
+    } catch (e) { iigLog('WARN', 'getCharacterAvatarBase64 failed:', e.message); return null; }
+}
+
+/**
+ * Get current ST user persona avatar as base64.
+ */
+async function getUserAvatarBase64() {
+    try {
+        const context = SillyTavern.getContext();
+        const settings = getSettings();
+        const currentAvatar = context.user_avatar;
+        if (currentAvatar) {
+            const b = await imageUrlToBase64(`/User Avatars/${encodeURIComponent(currentAvatar)}`);
+            if (b) return b;
+        }
+        if (settings.userAvatarFile) return await imageUrlToBase64(`/User Avatars/${encodeURIComponent(settings.userAvatarFile)}`);
+        return null;
+    } catch (e) { iigLog('WARN', 'getUserAvatarBase64 failed:', e.message); return null; }
+}
+
+/**
+ * Render user avatar dropdown list.
+ */
+function renderUserAvatarDropdown(avatars = []) {
+    const settings = getSettings();
+    const list = document.getElementById('iig_user_avatar_dropdown_list');
+    if (!list) return;
+    list.innerHTML = '';
+
+    const emptyItem = document.createElement('div');
+    emptyItem.className = `iig-avatar-dropdown-item iig-no-avatar ${!settings.userAvatarFile ? 'selected' : ''}`;
+    emptyItem.dataset.value = '';
+    emptyItem.innerHTML = `
+        <div style="width:32px;height:32px;border-radius:5px;background:rgba(255,255,255,0.03);display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+            <i class="fa-solid fa-wand-magic-sparkles" style="color:#5a5252;font-size:12px;"></i>
+        </div>
+        <span class="iig-item-name">-- Авто (из персоны) --</span>`;
+    emptyItem.addEventListener('click', () => selectUserAvatar(''));
+    list.appendChild(emptyItem);
+
+    for (const avatarFile of avatars) {
+        const item = document.createElement('div');
+        item.className = `iig-avatar-dropdown-item ${settings.userAvatarFile === avatarFile ? 'selected' : ''}`;
+        item.dataset.value = avatarFile;
+        const thumb = document.createElement('img');
+        thumb.className = 'iig-item-thumb';
+        thumb.src = `/User Avatars/${encodeURIComponent(avatarFile)}`;
+        thumb.alt = avatarFile;
+        thumb.loading = 'lazy';
+        thumb.onerror = function() { this.style.display = 'none'; };
+        const name = document.createElement('span');
+        name.className = 'iig-item-name';
+        name.textContent = avatarFile;
+        item.appendChild(thumb);
+        item.appendChild(name);
+        item.addEventListener('click', () => selectUserAvatar(avatarFile));
+        list.appendChild(item);
+    }
+}
+
+async function loadAndRenderUserAvatars() {
+    try {
+        const avatars = await fetchUserAvatars();
+        renderUserAvatarDropdown(avatars);
+    } catch (e) {
+        iigLog('ERROR', 'loadAndRenderUserAvatars:', e.message);
+    }
+}
+
+function selectUserAvatar(avatarFile) {
+    const settings = getSettings();
+    settings.userAvatarFile = avatarFile;
+    saveSettings();
+    const selected = document.getElementById('iig_user_avatar_dropdown_selected');
+    if (selected) {
+        selected.innerHTML = avatarFile
+            ? `<img class="iig-dropdown-thumb" src="/User Avatars/${encodeURIComponent(avatarFile)}" alt="" onerror="this.style.display='none'">
+               <span class="iig-dropdown-text">${avatarFile}</span>
+               <span class="iig-dropdown-arrow fa-solid fa-chevron-down"></span>`
+            : `<div class="iig-dropdown-placeholder"><i class="fa-solid fa-user"></i></div>
+               <span class="iig-dropdown-text">-- Авто (из персоны) --</span>
+               <span class="iig-dropdown-arrow fa-solid fa-chevron-down"></span>`;
+    }
+    const list = document.getElementById('iig_user_avatar_dropdown_list');
+    if (list) list.querySelectorAll('.iig-avatar-dropdown-item').forEach(item => {
+        item.classList.toggle('selected', item.dataset.value === avatarFile);
+    });
+    const dropdown = document.getElementById('iig_user_avatar_dropdown');
+    if (dropdown) dropdown.classList.remove('open');
 }
 
 /**
@@ -1698,12 +1821,22 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
 
     // Gemini/nano-banana references: PRIORITY ORDER — chars first, outfits second, context last
     if (settings.apiType === 'gemini' || isGeminiModel(settings.model)) {
-        // 1. Character reference
-        const charRefB64 = await getRefBase64(refs.charRef, 'charRef');
-        if (charRefB64) { referenceImages.push(charRefB64); refLabels.push('char_ref'); }
-        // 2. User reference
-        const userRefB64 = await getRefBase64(refs.userRef, 'userRef');
-        if (userRefB64) { referenceImages.push(userRefB64); refLabels.push('user_ref'); }
+        // 1. Character reference: manual photo OR auto from ST avatar (checkbox)
+        const charManualB64 = await getRefBase64(refs.charRef, 'charRef');
+        if (charManualB64) {
+            referenceImages.push(charManualB64); refLabels.push('char_ref');
+        } else if (settings.sendCharAvatar) {
+            const charAvatarB64 = await getCharacterAvatarBase64();
+            if (charAvatarB64) { referenceImages.push(charAvatarB64); refLabels.push('char_ref'); }
+        }
+        // 2. User reference: manual photo OR auto from ST persona (checkbox)
+        const userManualB64 = await getRefBase64(refs.userRef, 'userRef');
+        if (userManualB64) {
+            referenceImages.push(userManualB64); refLabels.push('user_ref');
+        } else if (settings.sendUserAvatar) {
+            const userAvatarB64 = await getUserAvatarBase64();
+            if (userAvatarB64) { referenceImages.push(userAvatarB64); refLabels.push('user_ref'); }
+        }
         // 3. NPC references (auto-matched by name in prompt)
         const matchedNpcs = matchNpcReferences(prompt, refs.npcReferences);
         for (const npc of matchedNpcs) {
@@ -1729,10 +1862,20 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
 
     // Naistera references: data URLs
     if (settings.apiType === 'naistera') {
-        const charRefUrl = await getRefDataUrl(refs.charRef);
-        if (charRefUrl) referenceDataUrls.push(charRefUrl);
-        const userRefUrl = await getRefDataUrl(refs.userRef);
-        if (userRefUrl) referenceDataUrls.push(userRefUrl);
+        const charManualUrl = await getRefDataUrl(refs.charRef);
+        if (charManualUrl) {
+            referenceDataUrls.push(charManualUrl);
+        } else if (settings.sendCharAvatar) {
+            const charAvatarB64 = await getCharacterAvatarBase64();
+            if (charAvatarB64) referenceDataUrls.push(`data:image/png;base64,${charAvatarB64}`);
+        }
+        const userManualUrl = await getRefDataUrl(refs.userRef);
+        if (userManualUrl) {
+            referenceDataUrls.push(userManualUrl);
+        } else if (settings.sendUserAvatar) {
+            const userAvatarB64 = await getUserAvatarBase64();
+            if (userAvatarB64) referenceDataUrls.push(`data:image/png;base64,${userAvatarB64}`);
+        }
         const matchedNpcs = matchNpcReferences(prompt, refs.npcReferences);
         for (const npc of matchedNpcs) {
             const npcUrl = await getRefDataUrl(npc);
@@ -1753,8 +1896,13 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
 
     // OpenAI: only slot 0 matters
     if (settings.apiType !== 'gemini' && !isGeminiModel(settings.model) && settings.apiType !== 'naistera') {
-        const charRefB64 = await getRefBase64(refs.charRef, 'charRef');
-        if (charRefB64) referenceImages.push(charRefB64);
+        const charManualB64 = await getRefBase64(refs.charRef, 'charRef');
+        if (charManualB64) {
+            referenceImages.push(charManualB64);
+        } else if (settings.sendCharAvatar) {
+            const charAvatarB64 = await getCharacterAvatarBase64();
+            if (charAvatarB64) referenceImages.push(charAvatarB64);
+        }
         if (window.sillyWardrobe?.isReady()) {
             const botB64 = window.sillyWardrobe.getActiveOutfitBase64('bot');
             const userB64 = window.sillyWardrobe.getActiveOutfitBase64('user');
@@ -2817,35 +2965,124 @@ async function autoSelectWardrobeModel() {
 function renderRefSlots() {
     const container = document.getElementById('iig_ref_slots');
     if (!container) return;
+    const settings = getSettings();
     const refs = getCurrentCharacterRefs();
-    const slots = [
-        { key: 'charRef', label: '{{char}}', ref: refs.charRef },
-        { key: 'userRef', label: '{{user}}', ref: refs.userRef },
-    ];
-    for (let i = 0; i < 4; i++) {
-        const npc = refs.npcReferences[i] || { name: '', imageBase64: '', imagePath: '' };
-        slots.push({ key: `npc_${i}`, label: `NPC ${i + 1}`, ref: npc, npcIndex: i });
-    }
-    let html = '';
-    for (const slot of slots) {
-        const hasImage = !!(slot.ref.imageBase64 || slot.ref.imagePath);
-        const thumbSrc = slot.ref.imageBase64
-            ? `data:image/jpeg;base64,${slot.ref.imageBase64}`
-            : (slot.ref.imagePath || '');
-        html += `
-            <div class="iig-ref-slot" data-slot-key="${slot.key}">
-                <div class="iig-ref-slot-thumb" data-slot-key="${slot.key}" title="Загрузить изображение">
-                    ${hasImage ? `<img src="${thumbSrc}" alt="${slot.label}">` : `<i class="fa-solid fa-image" style="color:var(--SmartThemeQuoteColor);font-size:20px;"></i>`}
-                </div>
-                <div class="iig-ref-slot-info">
-                    <span class="iig-ref-slot-label">${slot.label}</span>
-                    <input type="text" class="text_pole iig-ref-name-input" data-slot-key="${slot.key}"
-                           placeholder="Имя" value="${(slot.ref.name || '').replace(/"/g, '&quot;')}">
-                </div>
-                ${hasImage ? `<div class="menu_button iig-ref-slot-delete" data-slot-key="${slot.key}" title="Удалить"><i class="fa-solid fa-trash-can"></i></div>` : ''}
+
+    // ── Helper: build the manual-photo row (upload + delete + thumb) ──
+    function manualSlotHTML(refType, ref) {
+        const src = ref.imagePath || (ref.imageBase64 ? `data:image/jpeg;base64,${ref.imageBase64}` : '');
+        const hasImg = !!(ref.imagePath || ref.imageBase64);
+        return `
+            <div class="iig-ref-slot" data-ref-type="${refType}" style="display:flex;gap:6px;align-items:center;">
+                <img class="iig-ref-thumb" src="${src}"
+                     style="width:48px;height:48px;object-fit:cover;border-radius:4px;background:#333;"
+                     onerror="this.src=''">
+                <label class="menu_button iig-ref-upload-btn" title="Загрузить фото">
+                    <i class="fa-solid fa-upload"></i>
+                    <input type="file" class="iig-ref-file-input" accept="image/*" style="display:none;">
+                </label>
+                <div class="menu_button iig-ref-delete-btn"
+                     style="color:#cc5555;${hasImg ? '' : 'visibility:hidden;'}"
+                     title="Очистить"><i class="fa-solid fa-trash"></i></div>
             </div>`;
     }
-    container.innerHTML = html;
+
+    // ── {{char}} section ──
+    const charHasImg = !!(refs.charRef.imagePath || refs.charRef.imageBase64);
+    const charDotHTML = charHasImg ? '<i class="fa-solid fa-circle" style="color:#7cb87c;font-size:8px;margin-left:4px;" title="Загружено"></i>' : '';
+
+    // ── {{user}} section ──
+    const userHasImg = !!(refs.userRef.imagePath || refs.userRef.imageBase64);
+    const userDotHTML = userHasImg ? '<i class="fa-solid fa-circle" style="color:#7cb87c;font-size:8px;margin-left:4px;" title="Загружено"></i>' : '';
+
+    const userAvatarDropdownHTML = `
+        <div id="iig_user_avatar_manual_section" class="${!settings.sendUserAvatar ? 'iig-hidden' : ''}" style="margin-bottom:6px;">
+            <h5 style="margin:0 0 4px;font-size:0.9em;"><i class="fa-solid fa-user"></i> Аватар {{user}} (из персоны ST)</h5>
+            <div class="flex-row" style="gap:4px;align-items:center;">
+                <div id="iig_user_avatar_dropdown" class="iig-avatar-dropdown">
+                    <div id="iig_user_avatar_dropdown_selected" class="iig-avatar-dropdown-selected">
+                        ${settings.userAvatarFile
+                            ? `<img class="iig-dropdown-thumb" src="/User Avatars/${encodeURIComponent(settings.userAvatarFile)}" alt="" onerror="this.style.display='none'">
+                               <span class="iig-dropdown-text">${settings.userAvatarFile}</span>`
+                            : `<div class="iig-dropdown-placeholder"><i class="fa-solid fa-user"></i></div>
+                               <span class="iig-dropdown-text">-- Авто (из персоны) --</span>`}
+                        <span class="iig-dropdown-arrow fa-solid fa-chevron-down"></span>
+                    </div>
+                    <div id="iig_user_avatar_dropdown_list" class="iig-avatar-dropdown-list"></div>
+                </div>
+                <div id="iig_user_avatar_refresh" class="menu_button iig-refresh-btn" title="Обновить список">
+                    <i class="fa-solid fa-sync"></i>
+                </div>
+            </div>
+        </div>`;
+
+    // ── NPC slots ──
+    let npcHTML = '';
+    for (let i = 0; i < 4; i++) {
+        const npc = refs.npcReferences[i] || { name: '', imageBase64: '', imagePath: '' };
+        const hasImg = !!(npc.imagePath || npc.imageBase64);
+        const thumbSrc = npc.imageBase64 ? `data:image/jpeg;base64,${npc.imageBase64}` : (npc.imagePath || '');
+        npcHTML += `
+            <div class="iig-ref-slot" data-slot-key="npc_${i}">
+                <div class="iig-ref-slot-thumb" data-slot-key="npc_${i}" title="Загрузить изображение">
+                    ${hasImg ? `<img src="${thumbSrc}" alt="NPC ${i+1}">` : `<i class="fa-solid fa-image" style="color:var(--SmartThemeQuoteColor);font-size:20px;"></i>`}
+                </div>
+                <div class="iig-ref-slot-info">
+                    <span class="iig-ref-slot-label">NPC ${i + 1}</span>
+                    <input type="text" class="text_pole iig-ref-name-input" data-slot-key="npc_${i}"
+                           placeholder="Имя" value="${(npc.name || '').replace(/"/g, '&quot;')}">
+                </div>
+                ${hasImg ? `<div class="menu_button iig-ref-slot-delete" data-slot-key="npc_${i}" title="Удалить"><i class="fa-solid fa-trash-can"></i></div>` : ''}
+            </div>`;
+    }
+
+    container.innerHTML = `
+        <!-- ── {{char}} ── -->
+        <div style="margin-bottom:6px;">
+            <label class="checkbox_label">
+                <input type="checkbox" id="iig_send_char_avatar" ${settings.sendCharAvatar ? 'checked' : ''}>
+                <span>Отправлять аватар {{char}}</span>
+            </label>
+        </div>
+        <div style="margin-bottom:10px;">
+            <div id="iig_char_photo_toggle" class="menu_button" style="width:100%;text-align:left;font-size:0.85em;padding:4px 8px;">
+                <i class="fa-solid fa-chevron-${settings.charPhotoOpen ? 'down' : 'right'}"></i>
+                <i class="fa-solid fa-robot" style="margin-left:4px;"></i> Фото {{char}} вручную
+                ${charDotHTML}
+            </div>
+            <div id="iig_char_photo_section" class="${settings.charPhotoOpen ? '' : 'iig-hidden'}"
+                 style="margin-top:4px;padding:6px;background:rgba(0,0,0,0.15);border-radius:4px;">
+                ${manualSlotHTML('char', refs.charRef)}
+                <p style="font-size:10px;color:#888;margin:4px 0 0;">Если загружено — заменяет аватар {{char}} из чекбокса выше</p>
+            </div>
+        </div>
+
+        <!-- ── {{user}} ── -->
+        <div style="margin-bottom:6px;">
+            <label class="checkbox_label">
+                <input type="checkbox" id="iig_send_user_avatar" ${settings.sendUserAvatar ? 'checked' : ''}>
+                <span>Отправлять аватар {{user}}</span>
+            </label>
+        </div>
+        ${userAvatarDropdownHTML}
+        <div style="margin-bottom:10px;">
+            <div id="iig_user_photo_toggle" class="menu_button" style="width:100%;text-align:left;font-size:0.85em;padding:4px 8px;">
+                <i class="fa-solid fa-chevron-${settings.userPhotoOpen ? 'down' : 'right'}"></i>
+                <i class="fa-solid fa-user" style="margin-left:4px;"></i> Фото {{user}} вручную
+                ${userDotHTML}
+            </div>
+            <div id="iig_user_photo_section" class="${settings.userPhotoOpen ? '' : 'iig-hidden'}"
+                 style="margin-top:4px;padding:6px;background:rgba(0,0,0,0.15);border-radius:4px;">
+                ${manualSlotHTML('user', refs.userRef)}
+                <p style="font-size:10px;color:#888;margin:4px 0 0;">Если загружено — заменяет аватар {{user}} из чекбокса выше</p>
+            </div>
+        </div>
+
+        <hr style="margin:8px 0;opacity:0.2;">
+
+        <!-- ── NPC slots ── -->
+        <p class="hint" style="margin-bottom:6px;">NPC автоматически подбираются по имени в промпте</p>
+        ${npcHTML}`;
 }
 
 /**
@@ -2856,14 +3093,128 @@ function bindRefSlotEvents() {
     if (!container) return;
     const settings = getSettings();
 
-    // Click on thumbnail → upload image
+    // ── Avatar checkboxes ──
+    document.getElementById('iig_send_char_avatar')?.addEventListener('change', (e) => {
+        settings.sendCharAvatar = e.target.checked;
+        saveSettings();
+    });
+
+    document.getElementById('iig_send_user_avatar')?.addEventListener('change', (e) => {
+        settings.sendUserAvatar = e.target.checked;
+        saveSettings();
+        const sec = document.getElementById('iig_user_avatar_manual_section');
+        if (sec) sec.classList.toggle('iig-hidden', !e.target.checked);
+    });
+
+    // ── Collapsible photo sections ──
+    function bindPhotoToggle(toggleId, sectionId, settingKey) {
+        document.getElementById(toggleId)?.addEventListener('click', () => {
+            const s = getSettings();
+            s[settingKey] = !s[settingKey];
+            saveSettings();
+            const sec = document.getElementById(sectionId);
+            if (sec) sec.classList.toggle('iig-hidden', !s[settingKey]);
+            const icon = document.querySelector(`#${toggleId} .fa-chevron-right, #${toggleId} .fa-chevron-down`);
+            if (icon) {
+                icon.classList.toggle('fa-chevron-right', !s[settingKey]);
+                icon.classList.toggle('fa-chevron-down', s[settingKey]);
+            }
+        });
+    }
+    bindPhotoToggle('iig_char_photo_toggle', 'iig_char_photo_section', 'charPhotoOpen');
+    bindPhotoToggle('iig_user_photo_toggle', 'iig_user_photo_section', 'userPhotoOpen');
+
+    // ── User avatar dropdown ──
+    document.getElementById('iig_user_avatar_dropdown_selected')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const dropdown = document.getElementById('iig_user_avatar_dropdown');
+        if (!dropdown) return;
+        const wasOpen = dropdown.classList.contains('open');
+        dropdown.classList.toggle('open');
+        if (!wasOpen) {
+            const list = document.getElementById('iig_user_avatar_dropdown_list');
+            if (list && list.children.length === 0) loadAndRenderUserAvatars();
+        }
+    });
+    document.addEventListener('click', (e) => {
+        const dropdown = document.getElementById('iig_user_avatar_dropdown');
+        if (dropdown && !dropdown.contains(e.target)) dropdown.classList.remove('open');
+    });
+    document.getElementById('iig_user_avatar_refresh')?.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const btn = e.currentTarget;
+        btn.classList.add('loading');
+        await loadAndRenderUserAvatars();
+        btn.classList.remove('loading');
+        toastr.success('Аватары обновлены', 'Генерация картинок');
+        document.getElementById('iig_user_avatar_dropdown')?.classList.add('open');
+    });
+
+    // ── Manual photo upload (char / user) ──
+    for (const slot of container.querySelectorAll('.iig-ref-slot[data-ref-type]')) {
+        const refType = slot.dataset.refType;
+
+        slot.querySelector('.iig-ref-file-input')?.addEventListener('change', async (e) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            try {
+                const rawBase64 = await new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onloadend = () => resolve(reader.result.split(',')[1]);
+                    reader.onerror = reject;
+                    reader.readAsDataURL(file);
+                });
+                const compressed = await compressBase64Image(rawBase64, 768, 0.8);
+                const savedPath = await saveRefImageToFile(compressed, refType);
+                const s = getCurrentCharacterRefs();
+                if (refType === 'char') { s.charRef.imageBase64 = ''; s.charRef.imagePath = savedPath; }
+                else if (refType === 'user') { s.userRef.imageBase64 = ''; s.userRef.imagePath = savedPath; }
+                saveSettings();
+                const thumb = slot.querySelector('.iig-ref-thumb');
+                if (thumb) thumb.src = savedPath;
+                // Show delete button (was hidden when no image)
+                const delBtn = slot.querySelector('.iig-ref-delete-btn');
+                if (delBtn) delBtn.style.visibility = 'visible';
+                // Add green dot to toggle
+                const toggleId = refType === 'char' ? 'iig_char_photo_toggle' : 'iig_user_photo_toggle';
+                const toggle = document.getElementById(toggleId);
+                if (toggle && !toggle.querySelector('.fa-circle')) {
+                    const dot = document.createElement('i');
+                    dot.className = 'fa-solid fa-circle';
+                    dot.style.cssText = 'color:#7cb87c;font-size:8px;margin-left:4px;';
+                    dot.title = 'Загружено';
+                    toggle.appendChild(dot);
+                }
+                toastr.success('Фото сохранено', 'Генерация картинок', { timeOut: 2000 });
+            } catch (err) {
+                toastr.error('Ошибка загрузки фото', 'Генерация картинок');
+            }
+            e.target.value = '';
+        });
+
+        slot.querySelector('.iig-ref-delete-btn')?.addEventListener('click', () => {
+            const s = getCurrentCharacterRefs();
+            if (refType === 'char') s.charRef = { name: '', imageBase64: '', imagePath: '' };
+            else if (refType === 'user') s.userRef = { name: '', imageBase64: '', imagePath: '' };
+            saveSettings();
+            const thumb = slot.querySelector('.iig-ref-thumb');
+            if (thumb) thumb.src = '';
+            // Hide delete button (don't remove — we always render it now)
+            const delBtn = slot.querySelector('.iig-ref-delete-btn');
+            if (delBtn) delBtn.style.visibility = 'hidden';
+            const toggleId = refType === 'char' ? 'iig_char_photo_toggle' : 'iig_user_photo_toggle';
+            document.querySelector(`#${toggleId} .fa-circle`)?.remove();
+            toastr.info('Фото удалено', 'Генерация картинок');
+        });
+    }
+
+    // ── NPC slot click (upload thumbnail) ──
     container.addEventListener('click', async (e) => {
         const thumb = e.target.closest('.iig-ref-slot-thumb');
         if (thumb) {
             const key = thumb.dataset.slotKey;
             const inp = document.createElement('input');
-            inp.type = 'file';
-            inp.accept = 'image/*';
+            inp.type = 'file'; inp.accept = 'image/*';
             inp.addEventListener('change', async () => {
                 const f = inp.files?.[0];
                 if (!f) return;
@@ -2874,43 +3225,30 @@ function bindRefSlotEvents() {
                         const compressed = await compressBase64Image(rawBase64);
                         const ref = getRefByKey(key, settings);
                         ref.imageBase64 = compressed;
-                        // Try to save as file for persistence
-                        try {
-                            ref.imagePath = await saveRefImageToFile(compressed, key);
-                        } catch (saveErr) {
-                            iigLog('WARN', `Could not save ref to file: ${saveErr.message}, keeping inline`);
-                        }
+                        try { ref.imagePath = await saveRefImageToFile(compressed, key); }
+                        catch (saveErr) { iigLog('WARN', `Could not save ref to file: ${saveErr.message}`); }
                         if (!ref.name) ref.name = f.name.replace(/\.[^.]+$/, '');
                         saveSettings();
-                        renderRefSlots();
-                        bindRefSlotEvents();
+                        renderRefSlots(); bindRefSlotEvents();
                         toastr.success('Референс загружен', 'Генерация картинок');
                     };
                     reader.readAsDataURL(f);
-                } catch (err) {
-                    toastr.error('Ошибка: ' + err.message, 'Генерация картинок');
-                }
+                } catch (err) { toastr.error('Ошибка: ' + err.message, 'Генерация картинок'); }
             });
-            inp.click();
-            return;
+            inp.click(); return;
         }
 
-        // Delete button
         const del = e.target.closest('.iig-ref-slot-delete');
         if (del) {
             const key = del.dataset.slotKey;
             const ref = getRefByKey(key, settings);
-            ref.imageBase64 = '';
-            ref.imagePath = '';
-            ref.name = '';
-            saveSettings();
-            renderRefSlots();
-            bindRefSlotEvents();
+            ref.imageBase64 = ''; ref.imagePath = ''; ref.name = '';
+            saveSettings(); renderRefSlots(); bindRefSlotEvents();
             toastr.info('Референс удалён', 'Генерация картинок');
         }
     });
 
-    // Name input
+    // Name input for NPC slots
     container.querySelectorAll('.iig-ref-name-input').forEach(input => {
         input.addEventListener('input', (e) => {
             const key = e.target.dataset.slotKey;
