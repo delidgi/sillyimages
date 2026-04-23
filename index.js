@@ -15,6 +15,16 @@
     function swLog(l, ...a) { (l === 'ERROR' ? console.error : l === 'WARN' ? console.warn : console.log)('[SW]', ...a); }
     function esc(t) { const d = document.createElement('div'); d.textContent = t || ''; return d.innerHTML; }
 
+    // Strip <think>...</think> reasoning blocks and similar fences from outfit descriptions.
+    function swSanitizeDesc(raw) {
+        let s = String(raw || '');
+        s = s.replace(/<think\b[^>]*>[\s\S]*?<\/think\s*>/gi, '');
+        s = s.replace(/<\/?think\b[^>]*>/gi, '');
+        s = s.replace(/```(?:thinking|thought|reasoning)[\s\S]*?```/gi, '');
+        s = s.replace(/\[(?:thinking|thought|reasoning)\][\s\S]*?\[\/(?:thinking|thought|reasoning)\]/gi, '');
+        return s.replace(/\s+/g, ' ').trim();
+    }
+
     const swDefaults = Object.freeze({ wardrobes: {}, activeOutfits: {}, maxDimension: 512, showFloatingBtn: false });
 
     function swGetSettings() {
@@ -61,8 +71,12 @@
         const m = document.createElement('div'); m.id = 'sw-modal';
         m.innerHTML = `
             <div class="sw-modal-header">
-                <span>Гардероб — <b>${esc(cn)}</b></span>
-                <div class="sw-modal-close" title="Закрыть"><i class="fa-solid fa-xmark"></i></div>
+                <span class="sw-modal-title">Гардероб — <b>${esc(cn)}</b></span>
+                <div class="sw-modal-header-btns">
+                    <div class="sw-header-btn sw-btn-npc" title="Менеджер NPC"><i class="fa-solid fa-users"></i></div>
+                    <div class="sw-header-btn sw-btn-quick" title="Быстрые настройки"><i class="fa-solid fa-sliders"></i></div>
+                    <div class="sw-modal-close" title="Закрыть"><i class="fa-solid fa-xmark"></i></div>
+                </div>
             </div>
             <div class="sw-tabs">
                 <div class="sw-tab ${swTab === 'bot' ? 'sw-tab-active' : ''}" data-tab="bot">Бот</div>
@@ -74,12 +88,15 @@
         ov.appendChild(m);
         document.body.appendChild(ov);
         m.querySelector('.sw-modal-close').addEventListener('click', swCloseModal);
+        m.querySelector('.sw-btn-quick').addEventListener('click', swOpenQuickSettings);
+        m.querySelector('.sw-btn-npc').addEventListener('click', swOpenNpcManager);
         for (const t of m.querySelectorAll('.sw-tab')) t.addEventListener('click', () => {
             swTab = t.dataset.tab; m.querySelectorAll('.sw-tab').forEach(x => x.classList.toggle('sw-tab-active', x.dataset.tab === swTab)); swRender();
         });
         swRender();
         document.addEventListener('keydown', swEsc);
     }
+
     function swEsc(e) { if (e.key === 'Escape') swCloseModal(); }
     function swCloseModal() { swOpen = false; document.getElementById('sw-modal-overlay')?.remove(); document.removeEventListener('keydown', swEsc); }
 
@@ -90,16 +107,18 @@
 
         if (ib) {
             const ao = aid ? swFind(cn, swTab, aid) : null;
-            ib.innerHTML = ao ? `Активно: <b>${esc(ao.name)}</b>${ao.description ? ` — <i>${esc(ao.description.length > 60 ? ao.description.slice(0, 60) + '...' : ao.description)}</i>` : ''}` : 'Ничего не надето';
+            const aoDesc = ao ? swSanitizeDesc(ao.description) : '';
+            ib.innerHTML = ao ? `Активно: <b>${esc(ao.name)}</b>${aoDesc ? ` — <i>${esc(aoDesc.length > 60 ? aoDesc.slice(0, 60) + '...' : aoDesc)}</i>` : ''}` : 'Ничего не надето';
             ib.classList.toggle('sw-active-visible', !!ao);
         }
 
         let h = '<div class="sw-outfit-grid"><div class="sw-outfit-card sw-upload-card" id="sw-upload-trigger"><div class="sw-upload-icon"><i class="fa-solid fa-plus"></i></div><span>Загрузить</span></div>';
         for (const o of outfits) {
             const a = o.id === aid;
+            const oDesc = swSanitizeDesc(o.description);
             h += `<div class="sw-outfit-card ${a ? 'sw-outfit-active' : ''}" data-id="${o.id}">
                 <div class="sw-outfit-img-wrap"><img src="data:image/png;base64,${o.base64}" alt="${esc(o.name)}" class="sw-outfit-img" loading="lazy">${a ? '<div class="sw-active-badge"><i class="fa-solid fa-check"></i></div>' : ''}</div>
-                <div class="sw-outfit-footer"><span class="sw-outfit-name" title="${esc(o.description || o.name)}">${esc(o.name)}</span>
+                <div class="sw-outfit-footer"><span class="sw-outfit-name" title="${esc(oDesc || o.name)}">${esc(o.name)}</span>
                     <div class="sw-outfit-btns">
                         <div class="sw-btn-activate" title="${a ? 'Снять' : 'Надеть'}"><i class="fa-solid ${a ? 'fa-toggle-on' : 'fa-toggle-off'}"></i></div>
                         <div class="sw-btn-edit" title="Редактировать"><i class="fa-solid fa-pen"></i></div>
@@ -180,9 +199,17 @@
         swLog('INFO', `Vision image ready: ${visionMime}, ~${Math.round(visionB64.length / 1024)}KB`);
 
         function cleanDesc(raw) {
-            return (raw || '').trim()
+            let s = String(raw || '');
+            // Strip <think>...</think> reasoning blocks (also half-open <think> with no close)
+            s = s.replace(/<think\b[^>]*>[\s\S]*?<\/think\s*>/gi, '');
+            s = s.replace(/<\/?think\b[^>]*>/gi, '');
+            // Strip common reasoning fences: ```thinking ... ``` / [thinking] ... [/thinking]
+            s = s.replace(/```(?:thinking|thought|reasoning)[\s\S]*?```/gi, '');
+            s = s.replace(/\[(?:thinking|thought|reasoning)\][\s\S]*?\[\/(?:thinking|thought|reasoning)\]/gi, '');
+            return s.trim()
                 .replace(/^["'`]+|["'`]+$/g, '')
-                .replace(/^(Here|This|The image|I see|In this).{0,20}(shows?|features?|depicts?|displays?)\s*/i, '');
+                .replace(/^(Here|This|The image|I see|In this).{0,20}(shows?|features?|depicts?|displays?)\s*/i, '')
+                .trim();
         }
 
         // Build OpenAI-compatible vision message (text FIRST, then image — required by many providers)
@@ -203,28 +230,10 @@
         if (wEndpoint && wApiKey) {
             try {
                 toastr.info('Анализ образа (extra API)...', 'Гардероб', { timeOut: 15000 });
-                let model = iigSettings.wardrobeModel || '';
+                const model = (iigSettings.wardrobeModel || '').trim();
                 if (!model) {
-                    try {
-                        const modelsUrl = `${wEndpoint}/v1/models`;
-                        // Use ST headers (includes CSRF) + merge Authorization
-                        const stHeaders = ctx.getRequestHeaders ? ctx.getRequestHeaders() : { 'Content-Type': 'application/json' };
-                        const modelsResp = await fetch(`/proxy/${modelsUrl}`, {
-                            headers: { ...stHeaders, 'Authorization': `Bearer ${wApiKey}` },
-                        });
-                        if (modelsResp?.ok) {
-                            const modelsData = await modelsResp.json();
-                            const ids = (modelsData.data || []).map(m => m.id);
-                            const vision = ids.filter(m => /vision|4o|gemini|claude|pixtral|llava|qwen.*vl|internvl/i.test(m));
-                            model = vision[0] || ids[0] || '';
-                            if (model) swLog('INFO', `Auto-selected wardrobe model: ${model}`);
-                        }
-                    } catch (e) {
-                        swLog('WARN', 'Failed to fetch wardrobe models:', e.message);
-                    }
-                }
-                if (!model) {
-                    swLog('WARN', 'No wardrobe model available, skipping extra API');
+                    swLog('WARN', 'Wardrobe model not configured — skipping extra API. Введите модель вручную в настройках.');
+                    toastr.warning('Укажите модель в настройках API гардероба', 'Гардероб', { timeOut: 5000 });
                 } else {
                     const apiUrl = `${wEndpoint}/v1/chat/completions`;
                     const body = {
@@ -232,16 +241,17 @@
                         messages: buildVisionMessages(),
                         max_tokens: 150,
                     };
-                    // ST headers include CSRF token — required for /proxy/ endpoint
-                    const stHeaders = ctx.getRequestHeaders ? ctx.getRequestHeaders() : { 'Content-Type': 'application/json' };
-                    const proxyUrl = `/proxy/${apiUrl}`;
-                    swLog('INFO', `Wardrobe API: model=${model}, url=${proxyUrl}, imageSize=~${Math.round(visionB64.length / 1024)}KB`);
-                    const response = await fetch(proxyUrl, {
+                    // Direct call (как в vishnya-main) — без /proxy/ и CSRF.
+                    swLog('INFO', `Wardrobe API: model=${model}, url=${apiUrl}, imageSize=~${Math.round(visionB64.length / 1024)}KB`);
+                    const response = await fetch(apiUrl, {
                         method: 'POST',
-                        headers: { ...stHeaders, 'Authorization': `Bearer ${wApiKey}` },
+                        headers: {
+                            'Authorization': `Bearer ${wApiKey}`,
+                            'Content-Type': 'application/json',
+                        },
                         body: JSON.stringify(body),
                     });
-                    swLog('INFO', `Wardrobe proxy response status: ${response.status}`);
+                    swLog('INFO', `Wardrobe API response status: ${response.status}`);
 
                     if (!response.ok) {
                         const errText = await response.text().catch(() => '');
@@ -314,7 +324,7 @@
         const n = prompt('Название:', o.name); if (n === null) return;
 
         // Offer to re-analyze image
-        let currentDesc = o.description || '';
+        let currentDesc = swSanitizeDesc(o.description);
         const reAnalyze = confirm('Пере-анализировать образ через ИИ?\n\nОК = да (текущее описание заменится)\nОтмена = редактировать вручную');
         if (reAnalyze) {
             const autoDesc = await swAnalyzeOutfit(o.base64);
@@ -351,8 +361,10 @@
             const userData = swGetActive().user ? swFind(cn, 'user', swGetActive().user) : null;
 
             const lines = [];
-            if (botData?.description) lines.push(`[${cn} сейчас одет(а): ${botData.description}]`);
-            if (userData?.description) lines.push(`[{{user}} сейчас одет(а): ${userData.description}]`);
+            const botDesc = swSanitizeDesc(botData?.description);
+            const userDesc = swSanitizeDesc(userData?.description);
+            if (botDesc) lines.push(`[${cn} сейчас одет(а): ${botDesc}]`);
+            if (userDesc) lines.push(`[{{user}} сейчас одет(а): ${userDesc}]`);
 
             const injectionText = lines.length > 0 ? lines.join('\n') : '';
 
@@ -369,9 +381,462 @@
         }
     }
 
+    // ═════════════════════════════════════════════════════════
+    //  QUICK SETTINGS PANEL — mini subset of extension settings
+    //  Synced live with main settings (SillyTavern.extensionSettings.inline_image_gen)
+    // ═════════════════════════════════════════════════════════
+
+    function swOpenQuickSettings() {
+        // Close any existing quick panel
+        document.getElementById('sw-quick-overlay')?.remove();
+
+        const ctx = SillyTavern.getContext();
+        const iig = ctx.extensionSettings.inline_image_gen;
+        if (!iig) { toastr.error('Настройки расширения не готовы', 'Быстрые настройки'); return; }
+
+        const ov = document.createElement('div');
+        ov.id = 'sw-quick-overlay';
+        ov.addEventListener('click', (e) => { if (e.target === ov) ov.remove(); });
+
+        const panel = document.createElement('div');
+        panel.id = 'sw-quick-panel';
+        panel.innerHTML = `
+            <div class="sw-quick-header">
+                <span><i class="fa-solid fa-sliders"></i> Быстрые настройки</span>
+                <div class="sw-quick-close" title="Закрыть"><i class="fa-solid fa-xmark"></i></div>
+            </div>
+            <div class="sw-quick-body">
+                <label class="sw-quick-check">
+                    <input type="checkbox" id="sw-q-enabled" ${iig.enabled ? 'checked' : ''}>
+                    <span>Генерация включена</span>
+                </label>
+
+                <div class="sw-quick-row">
+                    <label>Тип API</label>
+                    <select id="sw-q-api-type" class="text_pole">
+                        <option value="openai" ${iig.apiType === 'openai' ? 'selected' : ''}>OpenAI</option>
+                        <option value="void" ${iig.apiType === 'void' ? 'selected' : ''}>VoidAI / RouteMyAI (chat)</option>
+                        <option value="gemini" ${iig.apiType === 'gemini' ? 'selected' : ''}>Gemini / nano-banana</option>
+                        <option value="naistera" ${iig.apiType === 'naistera' ? 'selected' : ''}>Naistera</option>
+                        <option value="custom" ${iig.apiType === 'custom' ? 'selected' : ''}>Custom (свой URL + формат)</option>
+                    </select>
+                </div>
+
+                <div class="sw-quick-row">
+                    <label>Эндпоинт</label>
+                    <input type="text" id="sw-q-endpoint" class="text_pole" value="${esc(iig.endpoint || '')}" placeholder="https://api.example.com">
+                </div>
+
+                <div class="sw-quick-row">
+                    <label>API ключ</label>
+                    <div class="sw-quick-key-wrap">
+                        <input type="password" id="sw-q-key" class="text_pole" value="${esc(iig.apiKey || '')}">
+                        <div class="sw-quick-key-toggle" title="Показать/Скрыть"><i class="fa-solid fa-eye"></i></div>
+                    </div>
+                </div>
+
+                <div class="sw-quick-row" id="sw-q-model-row" style="${iig.apiType === 'naistera' ? 'display:none;' : ''}">
+                    <label>Модель</label>
+                    <div class="sw-quick-model-wrap">
+                        <select id="sw-q-model" class="text_pole">
+                            ${iig.model ? `<option value="${esc(iig.model)}" selected>${esc(iig.model)}</option>` : '<option value="">-- Не выбрана --</option>'}
+                        </select>
+                        <div class="sw-quick-refresh" title="Обновить модели"><i class="fa-solid fa-sync"></i></div>
+                    </div>
+                </div>
+
+                <div class="sw-quick-row" id="sw-q-aspect-row" style="${iig.apiType === 'gemini' ? '' : 'display:none;'}">
+                    <label>Соотношение</label>
+                    <select id="sw-q-aspect" class="text_pole">
+                        <option value="1:1" ${iig.aspectRatio === '1:1' ? 'selected' : ''}>1:1</option>
+                        <option value="2:3" ${iig.aspectRatio === '2:3' ? 'selected' : ''}>2:3</option>
+                        <option value="3:2" ${iig.aspectRatio === '3:2' ? 'selected' : ''}>3:2</option>
+                        <option value="9:16" ${iig.aspectRatio === '9:16' ? 'selected' : ''}>9:16</option>
+                        <option value="16:9" ${iig.aspectRatio === '16:9' ? 'selected' : ''}>16:9</option>
+                    </select>
+                </div>
+
+                <div class="sw-quick-row" id="sw-q-naistera-row" style="${iig.apiType === 'naistera' ? '' : 'display:none;'}">
+                    <label>Naistera модель</label>
+                    <select id="sw-q-naistera-model" class="text_pole">
+                        <option value="grok" ${(iig.naisteraModel || 'grok') === 'grok' ? 'selected' : ''}>grok</option>
+                        <option value="nano banana" ${iig.naisteraModel === 'nano banana' ? 'selected' : ''}>nano banana</option>
+                    </select>
+                </div>
+
+                <div class="sw-quick-check-row">
+                    <label class="sw-quick-check">
+                        <input type="checkbox" id="sw-q-send-char" ${iig.sendCharAvatar ? 'checked' : ''}>
+                        <span>Аватар {{char}}</span>
+                    </label>
+                    <label class="sw-quick-check">
+                        <input type="checkbox" id="sw-q-send-user" ${iig.sendUserAvatar ? 'checked' : ''}>
+                        <span>Аватар {{user}}</span>
+                    </label>
+                </div>
+
+                <label class="sw-quick-check">
+                    <input type="checkbox" id="sw-q-img-context" ${iig.imageContextEnabled ? 'checked' : ''}>
+                    <span>Контекст картинок</span>
+                </label>
+
+                <div class="sw-quick-row" id="sw-q-img-context-count-row" style="${iig.imageContextEnabled ? '' : 'display:none;'}">
+                    <label>Количество картинок</label>
+                    <input type="number" id="sw-q-img-context-count" class="text_pole" min="1" max="3" step="1" value="${normalizeImageContextCount(iig.imageContextCount)}">
+                </div>
+
+                <div class="sw-quick-row sw-q-user-avatars-section ${iig.sendUserAvatar ? '' : 'sw-q-hidden'}" id="sw-q-user-avatars-wrap">
+                    <label>
+                        Аватар персоны {{user}}
+                        <span class="sw-q-avatars-refresh" title="Обновить"><i class="fa-solid fa-sync"></i></span>
+                    </label>
+                    <div class="sw-q-avatars-grid" id="sw-q-avatars-grid">
+                        <div class="sw-q-avatars-loading"><i class="fa-solid fa-spinner fa-spin"></i> Загрузка...</div>
+                    </div>
+                </div>
+
+                <div class="sw-quick-hint">Настройки сохраняются автоматически и синхронизируются с панелью расширения.</div>
+
+            </div>`;
+
+        ov.appendChild(panel);
+        document.body.appendChild(ov);
+
+        panel.querySelector('.sw-quick-close').addEventListener('click', () => ov.remove());
+
+        const save = () => ctx.saveSettingsDebounced();
+
+        // Sync helper: also update main settings panel DOM if visible
+        const syncMain = (id, value, isCheck = false) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            if (isCheck) el.checked = !!value;
+            else el.value = value;
+            try { el.dispatchEvent(new Event(isCheck ? 'change' : 'input', { bubbles: true })); } catch(e) {}
+        };
+
+        panel.querySelector('#sw-q-enabled').addEventListener('change', (e) => {
+            iig.enabled = e.target.checked; save();
+            syncMain('iig_enabled', iig.enabled, true);
+        });
+
+        const apiTypeSel = panel.querySelector('#sw-q-api-type');
+        apiTypeSel.addEventListener('change', (e) => {
+            iig.apiType = e.target.value; save();
+            panel.querySelector('#sw-q-model-row').style.display = iig.apiType === 'naistera' ? 'none' : '';
+            panel.querySelector('#sw-q-aspect-row').style.display = iig.apiType === 'gemini' ? '' : 'none';
+            panel.querySelector('#sw-q-naistera-row').style.display = iig.apiType === 'naistera' ? '' : 'none';
+            syncMain('iig_api_type', iig.apiType);
+        });
+
+        panel.querySelector('#sw-q-endpoint').addEventListener('input', (e) => {
+            iig.endpoint = e.target.value; save();
+            syncMain('iig_endpoint', iig.endpoint);
+        });
+
+        panel.querySelector('#sw-q-key').addEventListener('input', (e) => {
+            iig.apiKey = e.target.value; save();
+            syncMain('iig_api_key', iig.apiKey);
+        });
+
+        panel.querySelector('.sw-quick-key-toggle').addEventListener('click', () => {
+            const inp = panel.querySelector('#sw-q-key');
+            const icon = panel.querySelector('.sw-quick-key-toggle i');
+            if (inp.type === 'password') { inp.type = 'text'; icon.classList.replace('fa-eye', 'fa-eye-slash'); }
+            else { inp.type = 'password'; icon.classList.replace('fa-eye-slash', 'fa-eye'); }
+        });
+
+        panel.querySelector('#sw-q-model').addEventListener('change', (e) => {
+            iig.model = e.target.value; save();
+            syncMain('iig_model', iig.model);
+        });
+
+        panel.querySelector('#sw-q-aspect')?.addEventListener('change', (e) => {
+            iig.aspectRatio = e.target.value; save();
+            syncMain('iig_aspect_ratio', iig.aspectRatio);
+        });
+
+        panel.querySelector('#sw-q-naistera-model')?.addEventListener('change', (e) => {
+            iig.naisteraModel = e.target.value; save();
+            syncMain('iig_naistera_model', iig.naisteraModel);
+        });
+
+        panel.querySelector('#sw-q-send-char').addEventListener('change', (e) => {
+            iig.sendCharAvatar = e.target.checked; save();
+            syncMain('iig_send_char_avatar', iig.sendCharAvatar, true);
+        });
+
+        panel.querySelector('#sw-q-img-context')?.addEventListener('change', (e) => {
+            iig.imageContextEnabled = e.target.checked; save();
+            syncMain('iig_image_context_enabled', iig.imageContextEnabled, true);
+            const r = panel.querySelector('#sw-q-img-context-count-row');
+            if (r) r.style.display = iig.imageContextEnabled ? '' : 'none';
+        });
+
+        panel.querySelector('#sw-q-img-context-count')?.addEventListener('input', (e) => {
+            const n = normalizeImageContextCount(e.target.value);
+            iig.imageContextCount = n;
+            e.target.value = String(n);
+            save();
+            syncMain('iig_image_context_count', n);
+        });
+
+        panel.querySelector('#sw-q-send-user').addEventListener('change', (e) => {
+            iig.sendUserAvatar = e.target.checked; save();
+            syncMain('iig_send_user_avatar', iig.sendUserAvatar, true);
+            const sec = panel.querySelector('#sw-q-user-avatars-wrap');
+            if (sec) sec.classList.toggle('sw-q-hidden', !iig.sendUserAvatar);
+            if (iig.sendUserAvatar) loadUserAvatarsIntoQuick();
+        });
+
+        // ── User avatar visual grid ──
+        const avatarGrid = panel.querySelector('#sw-q-avatars-grid');
+
+        async function loadUserAvatarsIntoQuick() {
+            if (!avatarGrid) return;
+            avatarGrid.innerHTML = `<div class="sw-q-avatars-loading"><i class="fa-solid fa-spinner fa-spin"></i> Загрузка...</div>`;
+            try {
+                const resp = await fetch('/api/avatars/get', {
+                    method: 'POST',
+                    headers: ctx.getRequestHeaders ? ctx.getRequestHeaders() : { 'Content-Type': 'application/json' },
+                });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const avatars = await resp.json();
+                renderAvatarGrid(avatars || []);
+            } catch (err) {
+                avatarGrid.innerHTML = `<div class="sw-q-avatars-err">Ошибка: ${esc(err.message)}</div>`;
+            }
+        }
+
+        function renderAvatarGrid(avatars) {
+            if (!avatarGrid) return;
+            const currentAva = ctx.user_avatar || '';
+            const selectedFile = iig.userAvatarFile || '';
+            let html = `
+                <div class="sw-q-avatar-item ${!selectedFile ? 'sw-q-avatar-sel' : ''}" data-file="">
+                    <div class="sw-q-avatar-auto"><i class="fa-solid fa-wand-magic-sparkles"></i></div>
+                    <span class="sw-q-avatar-name">Авто</span>
+                </div>`;
+            for (const f of avatars) {
+                const isSel = selectedFile === f;
+                const isCur = currentAva === f;
+                const displayName = (typeof getPersonaDisplayName === 'function') ? getPersonaDisplayName(f) : f.replace(/\.[^.]+$/, '');
+                html += `<div class="sw-q-avatar-item ${isSel ? 'sw-q-avatar-sel' : ''} ${isCur ? 'sw-q-avatar-cur' : ''}" data-file="${esc(f)}" title="${esc(displayName)} (${esc(f)})${isCur ? ' — активна в ST' : ''}">
+                    <img src="/User Avatars/${encodeURIComponent(f)}" alt="${esc(displayName)}" loading="lazy" onerror="this.style.display='none'">
+                    <span class="sw-q-avatar-name">${esc(displayName)}</span>
+                    ${isCur ? '<div class="sw-q-avatar-cur-badge" title="Активная персона ST"><i class="fa-solid fa-star"></i></div>' : ''}
+                    ${isSel ? '<div class="sw-q-avatar-sel-badge"><i class="fa-solid fa-check"></i></div>' : ''}
+                </div>`;
+            }
+
+            avatarGrid.innerHTML = html;
+
+            for (const item of avatarGrid.querySelectorAll('.sw-q-avatar-item')) {
+                item.addEventListener('click', () => {
+                    const file = item.dataset.file || '';
+                    iig.userAvatarFile = file;
+                    save();
+                    // Try to sync with main panel dropdown if present
+                    const mainSelected = document.getElementById('iig_user_avatar_dropdown_selected');
+                    if (mainSelected && typeof selectUserAvatar === 'function') {
+                        try { selectUserAvatar(file); } catch(x) {}
+                    }
+                    renderAvatarGrid(avatars);
+                    toastr.info(file ? `Выбран: ${file}` : 'Авто (из персоны)', 'Быстрые настройки', { timeOut: 1500 });
+                });
+            }
+        }
+
+        panel.querySelector('.sw-q-avatars-refresh')?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            loadUserAvatarsIntoQuick();
+        });
+
+        // Auto-load avatars if user toggle is already on
+        if (iig.sendUserAvatar) {
+            loadUserAvatarsIntoQuick();
+        }
+
+        // Refresh models
+
+        panel.querySelector('.sw-quick-refresh').addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            btn.classList.add('loading');
+            try {
+                if (typeof fetchModels !== 'function') throw new Error('fetchModels недоступна');
+                const models = await fetchModels();
+                const select = panel.querySelector('#sw-q-model');
+                const cur = iig.model;
+                select.innerHTML = '<option value="">-- Выберите модель --</option>';
+                for (const m of models) {
+                    const opt = document.createElement('option');
+                    opt.value = m; opt.textContent = m; opt.selected = m === cur;
+                    select.appendChild(opt);
+                }
+                toastr.success(`Найдено моделей: ${models.length}`, 'Быстрые настройки');
+            } catch (err) {
+                toastr.error('Ошибка: ' + err.message, 'Быстрые настройки');
+            } finally {
+                btn.classList.remove('loading');
+            }
+        });
+    }
+
+    // ═════════════════════════════════════════════════════════
+    //  NPC MANAGER PANEL — 4 fixed slots like main sillyimages panel
+    //  Manages inline_image_gen.npcReferences (name + photo)
+    // ═════════════════════════════════════════════════════════
+
+    function swOpenNpcManager() {
+        document.getElementById('sw-npc-overlay')?.remove();
+
+        const ctx = SillyTavern.getContext();
+        if (!ctx.extensionSettings.inline_image_gen) {
+            toastr.error('Настройки расширения не готовы', 'NPC');
+            return;
+        }
+        const iig = ctx.extensionSettings.inline_image_gen;
+        if (!Array.isArray(iig.npcReferences)) iig.npcReferences = [];
+        // Ensure 4 fixed slots like the main panel
+        while (iig.npcReferences.length < 4) iig.npcReferences.push({ name: '', imageBase64: '', imagePath: '' });
+
+        const ov = document.createElement('div');
+        ov.id = 'sw-npc-overlay';
+        ov.addEventListener('click', (e) => { if (e.target === ov) ov.remove(); });
+
+        const panel = document.createElement('div');
+        panel.id = 'sw-npc-panel';
+        panel.innerHTML = `
+            <div class="sw-npc-header">
+                <span><i class="fa-solid fa-users"></i> NPC референсы</span>
+                <div class="sw-npc-close" title="Закрыть"><i class="fa-solid fa-xmark"></i></div>
+            </div>
+            <div class="sw-npc-hint">NPC автоматически подбираются по имени в промпте. 4 слота.</div>
+            <div class="sw-npc-list sw-npc-grid" id="sw-npc-list"></div>`;
+
+        ov.appendChild(panel);
+        document.body.appendChild(ov);
+
+        panel.querySelector('.sw-npc-close').addEventListener('click', () => ov.remove());
+
+        const persist = () => {
+            ctx.saveSettingsDebounced();
+            try {
+                localStorage.setItem('iig_npc_refs_v3', JSON.stringify({
+                    charRef: iig.charRef, userRef: iig.userRef, npcReferences: iig.npcReferences
+                }));
+            } catch(x) {}
+        };
+
+        const renderList = () => {
+            const list = panel.querySelector('#sw-npc-list');
+            let html = '';
+            for (let i = 0; i < 4; i++) {
+                const n = iig.npcReferences[i] || { name: '', imageBase64: '', imagePath: '' };
+                const hasImg = !!(n.imagePath || n.imageBase64);
+                const thumb = n.imageBase64 ? `data:image/jpeg;base64,${n.imageBase64}` : (n.imagePath || '');
+                html += `<div class="sw-npc-item ${hasImg ? 'sw-npc-has-img' : ''}" data-idx="${i}">
+                    <div class="sw-npc-thumb" data-idx="${i}" title="${hasImg ? 'Заменить фото' : 'Загрузить фото'}">
+                        ${hasImg ? `<img src="${thumb}" alt="NPC ${i+1}" loading="lazy">` : '<i class="fa-solid fa-image"></i>'}
+                    </div>
+                    <div class="sw-npc-info">
+                        <span class="sw-npc-label">NPC ${i + 1}</span>
+                        <input type="text" class="text_pole sw-npc-name" data-idx="${i}" value="${esc(n.name || '')}" placeholder="Имя (для поиска в промпте)">
+                    </div>
+                    <div class="sw-npc-btns">
+                        <label class="sw-npc-btn sw-npc-upload" title="Загрузить фото">
+                            <i class="fa-solid fa-upload"></i>
+                            <input type="file" accept="image/*" class="sw-npc-file" data-idx="${i}" style="display:none;">
+                        </label>
+                        <div class="sw-npc-btn sw-npc-del ${hasImg || n.name ? '' : 'sw-npc-btn-dim'}" data-idx="${i}" title="Очистить слот"><i class="fa-solid fa-trash-can"></i></div>
+                    </div>
+                </div>`;
+            }
+            list.innerHTML = html;
+
+            for (const inp of list.querySelectorAll('.sw-npc-name')) {
+                inp.addEventListener('input', (e) => {
+                    const i = +e.target.dataset.idx;
+                    if (!iig.npcReferences[i]) iig.npcReferences[i] = { name: '', imageBase64: '', imagePath: '' };
+                    iig.npcReferences[i].name = e.target.value;
+                    persist();
+                });
+            }
+
+            for (const t of list.querySelectorAll('.sw-npc-thumb')) {
+                t.addEventListener('click', () => {
+                    const idx = +t.dataset.idx;
+                    list.querySelector(`.sw-npc-file[data-idx="${idx}"]`)?.click();
+                });
+            }
+
+            for (const fi of list.querySelectorAll('.sw-npc-file')) {
+                fi.addEventListener('change', async (e) => {
+                    const idx = +e.target.dataset.idx;
+                    const file = e.target.files?.[0];
+                    if (!file) return; e.target.value = '';
+                    try {
+                        const raw = await new Promise((res, rej) => {
+                            const r = new FileReader();
+                            r.onloadend = () => res(r.result.split(',')[1]);
+                            r.onerror = rej;
+                            r.readAsDataURL(file);
+                        });
+                        let b64 = raw;
+                        try { if (typeof compressBase64Image === 'function') b64 = await compressBase64Image(raw, 768, 0.8); } catch(x) {}
+                        if (!iig.npcReferences[idx]) iig.npcReferences[idx] = { name: '', imageBase64: '', imagePath: '' };
+                        try {
+                            if (typeof saveRefImageToFile === 'function') {
+                                const path = await saveRefImageToFile(b64, `npc_${idx}`);
+                                iig.npcReferences[idx].imagePath = path;
+                                iig.npcReferences[idx].imageBase64 = '';
+                            } else {
+                                iig.npcReferences[idx].imageBase64 = b64;
+                            }
+                        } catch (err) {
+                            iig.npcReferences[idx].imageBase64 = b64;
+                        }
+                        // Auto-fill name from filename if empty
+                        if (!iig.npcReferences[idx].name) {
+                            iig.npcReferences[idx].name = file.name.replace(/\.[^.]+$/, '');
+                        }
+                        persist();
+                        renderList();
+                        if (typeof renderRefSlots === 'function') { try { renderRefSlots(); } catch(x) {} }
+                        toastr.success(`NPC ${idx + 1}: фото загружено`, 'NPC', { timeOut: 2000 });
+                    } catch (err) {
+                        toastr.error('Ошибка: ' + err.message, 'NPC');
+                    }
+                });
+            }
+
+            for (const d of list.querySelectorAll('.sw-npc-del')) {
+                d.addEventListener('click', () => {
+                    const idx = +d.dataset.idx;
+                    const n = iig.npcReferences[idx];
+                    if (!n || (!n.name && !n.imagePath && !n.imageBase64)) return;
+                    if (!confirm(`Очистить слот NPC ${idx + 1}?`)) return;
+                    iig.npcReferences[idx] = { name: '', imageBase64: '', imagePath: '' };
+                    persist();
+                    renderList();
+                    if (typeof renderRefSlots === 'function') { try { renderRefSlots(); } catch(x) {} }
+                    toastr.info(`NPC ${idx + 1} очищен`, 'NPC', { timeOut: 1500 });
+                });
+            }
+        };
+
+        renderList();
+    }
+
+
+    // Expose for inner references (arrow function references before hoist)
+    window.swOpenQuickSettings = swOpenQuickSettings;
+    window.swOpenNpcManager = swOpenNpcManager;
+
     // ── Bar button (inline in leftSendForm, like sims-action-btn) ──
 
     function swInjectFloatingBtn() {
+
         let $btn = $('#sw-bar-btn');
         if ($btn.length === 0) {
             $btn = $('<div id="sw-bar-btn" title="Гардероб"><i class="fa-solid fa-shirt"></i></div>');
@@ -481,10 +946,15 @@ const defaultSettings = Object.freeze({
     externalBlocks: false,
     imageContextEnabled: false,
     imageContextCount: 1,
-    apiType: 'openai', // 'openai' | 'gemini' | 'naistera'
+    apiType: 'openai', // 'openai' | 'void' | 'gemini' | 'naistera' | 'custom'
+    customRequestFormat: 'openai', // 'openai' | 'void' | 'gemini' | 'naistera' — when apiType === 'custom'
+    customFullUrl: '', // optional: use the endpoint exactly as typed (no /v1/... append)
     endpoint: '',
     apiKey: '',
     model: '',
+    // Connection presets (saved configs for quick switching)
+    connectionPresets: [],
+    activePresetId: '',
     size: '1024x1024',
     quality: 'standard',
     maxRetries: 0, // No auto-retry - user clicks error image to retry manually
@@ -563,14 +1033,16 @@ function isGeminiModel(modelId) {
     return mid.includes('nano-banana');
 }
 
-const NAISTERA_MODELS = Object.freeze(['grok', 'nano banana']);
+const NAISTERA_MODELS = Object.freeze(['grok', 'grok-pro', 'nano banana', 'nano banana 2', 'novelai']);
 const DEFAULT_ENDPOINTS = Object.freeze({
     naistera: 'https://naistera.org',
 });
 const ENDPOINT_PLACEHOLDERS = Object.freeze({
     openai: 'https://api.openai.com',
+    void: 'https://api.voidai.app',
     gemini: 'https://generativelanguage.googleapis.com',
     naistera: 'https://naistera.org',
+    custom: 'https://your-api.com/v1/images/generations  (полный URL или базовый)',
 });
 
 function normalizeNaisteraModel(model) {
@@ -578,16 +1050,17 @@ function normalizeNaisteraModel(model) {
     if (!raw) return 'grok';
     if (raw === 'nano-banana') return 'nano banana';
     if (raw === 'nano-banana-pro') return 'nano banana';
-    if (raw === 'nano-banana-2') return 'nano banana';
+    if (raw === 'nano-banana-2') return 'nano banana 2';
     if (raw === 'nano banana pro') return 'nano banana';
-    if (raw === 'nano banana 2') return 'nano banana';
+    if (raw === 'novel ai' || raw === 'novel-ai' || raw === 'nai') return 'novelai';
     if (NAISTERA_MODELS.includes(raw)) return raw;
     return 'grok';
 }
 
 function shouldUseNaisteraVideoTest(model) {
     const normalized = normalizeNaisteraModel(model);
-    return normalized === 'grok' || normalized === 'nano banana';
+    // novelai and grok-pro don't support video mode
+    return normalized !== 'novelai' && normalized !== 'grok-pro';
 }
 
 function normalizeNaisteraVideoFrequency(value) {
@@ -821,6 +1294,24 @@ async function getUserAvatarBase64() {
 }
 
 /**
+ * Get display name for a persona avatar file (persona name, fallback to filename).
+ */
+function getPersonaDisplayName(avatarFile) {
+    if (!avatarFile) return '';
+    try {
+        const ctx = SillyTavern.getContext();
+        const personas = ctx?.powerUserSettings?.personas
+            || ctx?.power_user?.personas
+            || window.power_user?.personas
+            || {};
+        const name = personas[avatarFile];
+        if (name && typeof name === 'string' && name.trim()) return name.trim();
+    } catch (e) { /* ignore */ }
+    // Fallback: strip extension from filename
+    return avatarFile.replace(/\.[^.]+$/, '');
+}
+
+/**
  * Render user avatar dropdown list.
  */
 function renderUserAvatarDropdown(avatars = []) {
@@ -828,6 +1319,7 @@ function renderUserAvatarDropdown(avatars = []) {
     const list = document.getElementById('iig_user_avatar_dropdown_list');
     if (!list) return;
     list.innerHTML = '';
+
 
     const emptyItem = document.createElement('div');
     emptyItem.className = `iig-avatar-dropdown-item iig-no-avatar ${!settings.userAvatarFile ? 'selected' : ''}`;
@@ -848,17 +1340,20 @@ function renderUserAvatarDropdown(avatars = []) {
         thumb.className = 'iig-item-thumb';
         thumb.src = `/User Avatars/${encodeURIComponent(avatarFile)}`;
         thumb.alt = avatarFile;
+        thumb.title = avatarFile;
         thumb.loading = 'lazy';
         thumb.onerror = function() { this.style.display = 'none'; };
         const name = document.createElement('span');
         name.className = 'iig-item-name';
-        name.textContent = avatarFile;
+        name.textContent = getPersonaDisplayName(avatarFile);
+        name.title = avatarFile;
         item.appendChild(thumb);
         item.appendChild(name);
         item.addEventListener('click', () => selectUserAvatar(avatarFile));
         list.appendChild(item);
     }
 }
+
 
 async function loadAndRenderUserAvatars() {
     try {
@@ -875,14 +1370,16 @@ function selectUserAvatar(avatarFile) {
     saveSettings();
     const selected = document.getElementById('iig_user_avatar_dropdown_selected');
     if (selected) {
+        const displayName = avatarFile ? getPersonaDisplayName(avatarFile) : '';
         selected.innerHTML = avatarFile
             ? `<img class="iig-dropdown-thumb" src="/User Avatars/${encodeURIComponent(avatarFile)}" alt="" onerror="this.style.display='none'">
-               <span class="iig-dropdown-text">${avatarFile}</span>
+               <span class="iig-dropdown-text" title="${avatarFile}">${displayName}</span>
                <span class="iig-dropdown-arrow fa-solid fa-chevron-down"></span>`
             : `<div class="iig-dropdown-placeholder"><i class="fa-solid fa-user"></i></div>
                <span class="iig-dropdown-text">-- Авто (из персоны) --</span>
                <span class="iig-dropdown-arrow fa-solid fa-chevron-down"></span>`;
     }
+
     const list = document.getElementById('iig_user_avatar_dropdown_list');
     if (list) list.querySelectorAll('.iig-avatar-dropdown-item').forEach(item => {
         item.classList.toggle('selected', item.dataset.value === avatarFile);
@@ -1437,7 +1934,7 @@ async function saveNaisteraMediaToFile(dataUrl, mediaKind = 'video', debugMeta =
  */
 async function generateImageOpenAI(prompt, style, referenceImages = [], options = {}) {
     const settings = getSettings();
-    const url = `${settings.endpoint.replace(/\/$/, '')}/v1/images/generations`;
+    const url = options.overrideUrl || `${settings.endpoint.replace(/\/$/, '')}/v1/images/generations`;
     
     const fullPrompt = style ? `[Style: ${style}] ${prompt}` : prompt;
     
@@ -1508,7 +2005,7 @@ const VALID_IMAGE_SIZES = ['1K', '2K', '4K'];
 async function generateImageGemini(prompt, style, referenceImages = [], options = {}) {
     const settings = getSettings();
     const model = settings.model;
-    const url = `${settings.endpoint.replace(/\/$/, '')}/v1beta/models/${model}:generateContent`;
+    const url = options.overrideUrl || `${settings.endpoint.replace(/\/$/, '')}/v1beta/models/${model}:generateContent`;
     
     // Determine aspect ratio: tag option > settings, with validation
     let aspectRatio = options.aspectRatio || settings.aspectRatio || '1:1';
@@ -1638,6 +2135,290 @@ async function generateImageGemini(prompt, style, referenceImages = [], options 
 }
 
 /**
+ * Generate image via VoidAI / RouteMyAI / OpenAI-style chat endpoints that
+ * return images in the chat-completions response.
+ */
+// Downscale a base64 PNG/JPEG to fit within maxSide px and re-encode as JPEG.
+// Used as a last-resort fallback when HTTP/2 drops the connection on large bodies.
+async function downscaleB64ForVoid(b64, maxSide = 768, quality = 0.82) {
+    try {
+        const src = b64.startsWith('data:') ? b64 : `data:image/png;base64,${b64}`;
+        const img = await new Promise((resolve, reject) => {
+            const im = new Image();
+            im.onload = () => resolve(im);
+            im.onerror = reject;
+            im.src = src;
+        });
+        const w = img.naturalWidth || img.width;
+        const h = img.naturalHeight || img.height;
+        if (!w || !h) return b64;
+        const scale = Math.min(1, maxSide / Math.max(w, h));
+        const nw = Math.max(1, Math.round(w * scale));
+        const nh = Math.max(1, Math.round(h * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = nw; canvas.height = nh;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, nw, nh);
+        const dataUrl = canvas.toDataURL('image/jpeg', quality);
+        return dataUrl.split(',')[1];
+    } catch (e) {
+        return b64;
+    }
+}
+
+async function generateImageVoid(prompt, style, referenceImages = [], options = {}) {
+    const settings = getSettings();
+    const url = options.overrideUrl || `${settings.endpoint.replace(/\/$/, '')}/v1/chat/completions`;
+    const fullPrompt = style ? `[Style: ${style}] ${prompt}` : prompt;
+
+    // Build message content. If we have reference images, use the multimodal
+    // content array (OpenAI vision style) and prepend a labelled text part for
+    // each reference so the model knows what it represents (char/user/NPC/etc.).
+    const refLabels = options.refLabels || [];
+    const labelMap = {
+        'char_ref': '⬇️ CHARACTER REFERENCE — copy this character\'s appearance exactly:',
+        'user_ref': '⬇️ USER REFERENCE — copy this person\'s appearance exactly:',
+        'npc_ref': '⬇️ NPC REFERENCE — copy this character\'s appearance exactly:',
+        'char_outfit': '⬇️ CHARACTER OUTFIT REFERENCE — copy this clothing:',
+        'user_outfit': '⬇️ USER OUTFIT REFERENCE — copy this clothing:',
+        'context': '⬇️ SCENE CONTEXT (for style/mood consistency):',
+    };
+
+    // Downscale references disabled — sending originals
+    let preparedRefs = [];
+    if (referenceImages.length > 0) {
+        const maxRefs = Math.min(referenceImages.length, MAX_GENERATION_REFERENCE_IMAGES);
+        preparedRefs = referenceImages.slice(0, maxRefs);
+        const totalBytes = preparedRefs.reduce((a, b) => a + (b?.length || 0), 0);
+        iigLog('INFO', `Void refs prepared: ${preparedRefs.length} images, ~${Math.round(totalBytes / 1024)} KB base64 total`);
+    }
+
+    // Build the message-content array (text+images) for a given set of refs.
+    const buildMessageContent = (refsArr, mime = 'image/png') => {
+        if (refsArr.length === 0) return fullPrompt;
+        const parts = [];
+        for (let i = 0; i < refsArr.length; i++) {
+            const label = refLabels[i] || 'reference';
+            parts.push({ type: 'text', text: labelMap[label] || '⬇️ REFERENCE IMAGE:' });
+            parts.push({
+                type: 'image_url',
+                image_url: { url: `data:${mime};base64,${refsArr[i]}` }
+            });
+        }
+        const hasCharRefs = refLabels.some(l => l === 'char_ref' || l === 'user_ref' || l === 'npc_ref');
+        const hasOutfits = refLabels.some(l => l === 'char_outfit' || l === 'user_outfit');
+        const hasContext = refLabels.includes('context');
+        const rules = [];
+        if (hasCharRefs) {
+            rules.push('CHARACTER CONSISTENCY: You MUST precisely replicate the facial features (face structure, eye color/shape, hair color/style/length, skin tone, age) and overall appearance from the CHARACTER/USER/NPC REFERENCE images. These characters must be recognizable as the same people across all generated images.');
+        }
+        if (hasOutfits) {
+            rules.push('OUTFIT ACCURACY: The characters must wear EXACTLY the clothing shown in the OUTFIT REFERENCE images — same garments, colors, fabrics, accessories.');
+        }
+        if (hasContext) {
+            rules.push('STYLE CONSISTENCY: Match the art style, lighting, color palette and rendering of the CONTEXT reference images.');
+        }
+        const refInstruction = rules.length > 0
+            ? `[STRICT IMAGE GENERATION RULES]\n${rules.join('\n')}\n[END RULES]\n\n`
+            : '';
+        parts.push({ type: 'text', text: `${refInstruction}${fullPrompt}` });
+        return parts;
+    };
+
+    let messageContent = buildMessageContent(preparedRefs, 'image/png');
+    if (preparedRefs.length > 0) {
+        const labelSummary = refLabels.reduce((acc, l) => { acc[l] = (acc[l] || 0) + 1; return acc; }, {});
+        iigLog('INFO', `Void request: ${preparedRefs.length} refs (${JSON.stringify(labelSummary)}) + prompt (${fullPrompt.length} chars)`);
+    }
+
+    const buildBody = (content) => ({
+        model: settings.model,
+        messages: [{ role: 'user', content }],
+        size: settings.size || '1024x1024',
+        quality: options.quality || settings.quality || 'standard',
+        n: 1
+    });
+
+    let response;
+    let bodyJson = JSON.stringify(buildBody(messageContent));
+    let bodySize = bodyJson.length;
+    const baseFetchOpts = {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${settings.apiKey}`, 'Content-Type': 'application/json' },
+        credentials: 'omit',
+        cache: 'no-store',
+        mode: 'cors',
+    };
+
+    // Pre-emptive downscale: payloads above ~1.5 MB reliably trigger
+    // ERR_HTTP2_PROTOCOL_ERROR on voidai's Cloudflare frontend. Skip the
+    // doomed attempts and shrink references right away.
+    const PREEMPTIVE_DOWNSCALE_THRESHOLD = 1_500_000;
+    let downscaled = false;
+    if (preparedRefs.length > 0 && bodySize > PREEMPTIVE_DOWNSCALE_THRESHOLD) {
+        iigLog('INFO', `Void: payload ~${Math.round(bodySize / 1024)} KB exceeds ${Math.round(PREEMPTIVE_DOWNSCALE_THRESHOLD / 1024)} KB threshold, pre-downscaling refs to 768px JPEG`);
+        const small = [];
+        for (const r of preparedRefs) {
+            small.push(await downscaleB64ForVoid(r, 768, 0.82));
+        }
+        preparedRefs = small;
+        downscaled = true;
+        messageContent = buildMessageContent(preparedRefs, 'image/jpeg');
+        bodyJson = JSON.stringify(buildBody(messageContent));
+        bodySize = bodyJson.length;
+        iigLog('INFO', `Void: downscaled payload ~${Math.round(bodySize / 1024)} KB`);
+    }
+
+    // Network-level retry strategy:
+    //   attempt 0: payload as-is (already downscaled if it was huge)
+    //   attempt 1: same payload, brief delay (transient HTTP/2 hiccup)
+    //   attempt 2: downscale (if not already) — last-resort rescue
+    let lastFetchErr;
+    for (let netAttempt = 0; netAttempt < 3; netAttempt++) {
+        try {
+            response = await fetch(url, { ...baseFetchOpts, body: bodyJson });
+            lastFetchErr = null;
+            break;
+        } catch (err) {
+            lastFetchErr = err;
+            const msg = String(err?.message || err);
+            iigLog('WARN', `Void fetch attempt ${netAttempt + 1} failed: ${msg} (~${Math.round(bodySize / 1024)} KB)`);
+            if (netAttempt === 0) {
+                await new Promise(r => setTimeout(r, 600));
+                continue;
+            }
+            if (netAttempt === 1 && preparedRefs.length > 0 && !downscaled) {
+                iigLog('WARN', `Void: downscaling ${preparedRefs.length} reference(s) to 768px JPEG and retrying...`);
+                const small = [];
+                for (const r of preparedRefs) {
+                    small.push(await downscaleB64ForVoid(r, 768, 0.82));
+                }
+                preparedRefs = small;
+                downscaled = true;
+                messageContent = buildMessageContent(preparedRefs, 'image/jpeg');
+                bodyJson = JSON.stringify(buildBody(messageContent));
+                bodySize = bodyJson.length;
+                iigLog('INFO', `Void: downscaled payload ~${Math.round(bodySize / 1024)} KB`);
+                await new Promise(r => setTimeout(r, 300));
+                continue;
+            }
+        }
+    }
+    if (lastFetchErr) {
+        const msg = String(lastFetchErr?.message || lastFetchErr);
+        throw new Error(`Void: сетевая ошибка (${msg}). Размер запроса ~${Math.round(bodySize / 1024)} KB.`);
+    }
+    if (!response.ok) { const text = await response.text(); throw new Error(`API Error (${response.status}): ${text}`); }
+    const result = await response.json();
+
+    const toStr = (v) => (typeof v === 'string' ? v : null);
+    const normalize = (val) => {
+        if (!val || typeof val !== 'string') return null;
+        if (val.startsWith('http://') || val.startsWith('https://') || val.startsWith('data:')) return val;
+        // bare base64
+        if (/^[A-Za-z0-9+/=\s]+$/.test(val) && val.length > 100) return `data:image/png;base64,${val.replace(/\s+/g, '')}`;
+        return null;
+    };
+    const extractFromImgObj = (img) => {
+        if (!img) return null;
+        if (typeof img === 'string') return normalize(img);
+        const candidates = [
+            toStr(img.b64_json) && `data:image/png;base64,${img.b64_json}`,
+            toStr(img.image_url?.url),
+            toStr(typeof img.image_url === 'string' ? img.image_url : null),
+            toStr(img.url),
+            toStr(img.base64) && `data:image/png;base64,${img.base64}`,
+            toStr(img.data) && (img.data.startsWith('data:') || img.data.startsWith('http') ? img.data : `data:image/png;base64,${img.data}`),
+            toStr(img.src),
+        ].filter(Boolean);
+        for (const c of candidates) { const n = normalize(c) || c; if (n) return n; }
+        return null;
+    };
+    const extractFromText = (text) => {
+        if (!text || typeof text !== 'string') return null;
+        // markdown image: ![alt](url)
+        const md = text.match(/!\[[^\]]*\]\((https?:\/\/[^)\s]+|data:image\/[^)\s]+)\)/i);
+        if (md) return md[1];
+        // raw url / data url anywhere in text
+        const data = text.match(/data:image\/[a-zA-Z+.-]+;base64,[A-Za-z0-9+/=]+/);
+        if (data) return data[0];
+        const url = text.match(/https?:\/\/\S+\.(?:png|jpe?g|webp|gif)(?:\?\S*)?/i);
+        if (url) return url[0];
+        return null;
+    };
+
+    // 1. OpenAI-style top-level data array
+    if (result.data?.length > 0) {
+        const got = extractFromImgObj(result.data[0]);
+        if (got) return got;
+    }
+    // 2. Chat-completion choices
+    const choice = result.choices?.[0];
+    if (choice) {
+        const imgList = choice.message?.images || choice.images || result.images || [];
+        if (imgList.length > 0) {
+            const got = extractFromImgObj(imgList[0]);
+            if (got) return got;
+        }
+        // message.content can be string OR array of parts
+        const content = choice.message?.content;
+        if (Array.isArray(content)) {
+            for (const part of content) {
+                if (!part) continue;
+                if (part.type === 'image_url') {
+                    const got = extractFromImgObj(part);
+                    if (got) return got;
+                }
+                if (part.type === 'image' && part.source?.data) {
+                    return `data:${part.source.media_type || 'image/png'};base64,${part.source.data}`;
+                }
+                if (typeof part.text === 'string') {
+                    const got = extractFromText(part.text);
+                    if (got) return got;
+                }
+            }
+        } else if (typeof content === 'string') {
+            const got = extractFromText(content);
+            if (got) return got;
+        }
+    }
+    // 3. Root-level fallbacks
+    const rootCandidate = extractFromImgObj(result) || extractFromText(toStr(result.text) || toStr(result.message));
+    if (rootCandidate) return rootCandidate;
+
+    // 4. Last-resort regex over raw JSON
+    const raw = JSON.stringify(result);
+    const b64match = raw.match(/"b64_json"\s*:\s*"([^"]+)"/);
+    if (b64match) return `data:image/png;base64,${b64match[1]}`;
+    const dataUrlMatch = raw.match(/"(data:image\/[a-zA-Z+.-]+;base64,[A-Za-z0-9+/=]+)"/);
+    if (dataUrlMatch) return dataUrlMatch[1];
+    const urlmatch = raw.match(/"(https?:\/\/[^"\s]+\.(?:png|jpe?g|webp|gif)(?:\?[^"\s]*)?)"/i);
+    if (urlmatch) return urlmatch[1];
+
+    iigLog('ERROR', `VoidAI response had no image. Raw response (first 2000 chars): ${raw.slice(0, 2000)}`);
+
+    // Diagnose common "model returned empty" cases so the error is actionable
+    const ch = result.choices?.[0];
+    const finish = ch?.finish_reason || ch?.finishReason || '';
+    const content = ch?.message?.content;
+    const isEmptyContent = content === null || content === undefined
+        || (typeof content === 'string' && content.trim() === '')
+        || (Array.isArray(content) && content.length === 0);
+    const reasoningTokens = result.usage?.completion_tokens_details?.reasoning_tokens;
+    const completionTokens = result.usage?.completion_tokens;
+    if (isEmptyContent) {
+        const hint = reasoningTokens > 0 && completionTokens === 0
+            ? ` Модель потратила ${reasoningTokens} reasoning-токенов, но не вернула изображение (отказ или внутренний фильтр провайдера).`
+            : '';
+        throw new Error(
+            `Void: модель "${settings.model}" вернула пустой ответ (finish_reason="${finish}", content=null).${hint} `
+            + `Это сбой на стороне провайдера, попробуйте другую модель или повторите запрос.`
+        );
+    }
+    throw new Error('Void: не удалось найти изображение в ответе (см. консоль для сырого JSON)');
+}
+
+/**
  * Generate image via Naistera custom endpoint
  * POST {endpoint}/api/generate
  * Auth: Authorization: Bearer <token>
@@ -1725,15 +2506,24 @@ function validateSettings() {
     const errors = [];
     
     if (!settings.endpoint) {
-        if (settings.apiType !== 'naistera') {
+        if (settings.apiType !== 'naistera' && settings.apiType !== 'custom') {
             errors.push('URL эндпоинта не настроен');
         }
     }
     if (!settings.apiKey) {
         errors.push('API ключ не настроен');
     }
-    if (settings.apiType !== 'naistera' && !settings.model) {
+    if (settings.apiType !== 'naistera' && settings.apiType !== 'custom' && !settings.model) {
         errors.push('Модель не выбрана');
+    }
+    if (settings.apiType === 'custom') {
+        const fmt = settings.customRequestFormat || 'openai';
+        if (!settings.customFullUrl && !settings.endpoint) {
+            errors.push('Для Custom: укажите Эндпоинт или Полный URL');
+        }
+        if (fmt !== 'naistera' && !settings.model) {
+            errors.push('Для Custom (' + fmt + '): модель не выбрана');
+        }
     }
     if (settings.apiType === 'naistera') {
         const m = normalizeNaisteraModel(settings.naisteraModel);
@@ -1894,20 +2684,37 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
         }
     }
 
-    // OpenAI: only slot 0 matters
+    // OpenAI / Void / Custom (non-gemini, non-naistera): collect references
     if (settings.apiType !== 'gemini' && !isGeminiModel(settings.model) && settings.apiType !== 'naistera') {
+        // 1. Character reference: manual photo OR auto from ST avatar
         const charManualB64 = await getRefBase64(refs.charRef, 'charRef');
         if (charManualB64) {
-            referenceImages.push(charManualB64);
+            referenceImages.push(charManualB64); refLabels.push('char_ref');
         } else if (settings.sendCharAvatar) {
             const charAvatarB64 = await getCharacterAvatarBase64();
-            if (charAvatarB64) referenceImages.push(charAvatarB64);
+            if (charAvatarB64) { referenceImages.push(charAvatarB64); refLabels.push('char_ref'); }
         }
+        // 2. User reference: manual photo OR auto from ST persona
+        const userManualB64 = await getRefBase64(refs.userRef, 'userRef');
+        if (userManualB64) {
+            referenceImages.push(userManualB64); refLabels.push('user_ref');
+        } else if (settings.sendUserAvatar) {
+            const userAvatarB64 = await getUserAvatarBase64();
+            if (userAvatarB64) { referenceImages.push(userAvatarB64); refLabels.push('user_ref'); }
+        }
+        // 3. NPC references (auto-matched by name in prompt)
+        const matchedNpcs = matchNpcReferences(prompt, refs.npcReferences);
+        for (const npc of matchedNpcs) {
+            const npcB64 = await getRefBase64(npc, `npc_${npc.name}`);
+            if (npcB64) { referenceImages.push(npcB64); refLabels.push('npc_ref'); }
+        }
+        if (matchedNpcs.length > 0) iigLog('INFO', `NPC refs matched: ${matchedNpcs.map(n => n.name).join(', ')}`);
+        // 4. Wardrobe outfits
         if (window.sillyWardrobe?.isReady()) {
             const botB64 = window.sillyWardrobe.getActiveOutfitBase64('bot');
             const userB64 = window.sillyWardrobe.getActiveOutfitBase64('user');
-            if (botB64) referenceImages.push(botB64);
-            if (userB64) referenceImages.push(userB64);
+            if (botB64) { referenceImages.push(botB64); refLabels.push('char_outfit'); }
+            if (userB64) { referenceImages.push(userB64); refLabels.push('user_outfit'); }
         }
     }
 
@@ -1928,9 +2735,17 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
     if (window.sillyWardrobe?.isReady()) {
         const botData = window.sillyWardrobe.getActiveOutfitData('bot');
         const userData = window.sillyWardrobe.getActiveOutfitData('user');
+        const cleanWardrobeDesc = (raw) => String(raw || '')
+            .replace(/<think\b[^>]*>[\s\S]*?<\/think\s*>/gi, '')
+            .replace(/<\/?think\b[^>]*>/gi, '')
+            .replace(/```(?:thinking|thought|reasoning)[\s\S]*?```/gi, '')
+            .replace(/\[(?:thinking|thought|reasoning)\][\s\S]*?\[\/(?:thinking|thought|reasoning)\]/gi, '')
+            .replace(/\s+/g, ' ').trim();
         const parts = [];
-        if (botData?.description) parts.push(`[Character's current outfit: ${botData.description}]`);
-        if (userData?.description) parts.push(`[User's current outfit: ${userData.description}]`);
+        const botDesc = cleanWardrobeDesc(botData?.description);
+        const userDesc = cleanWardrobeDesc(userData?.description);
+        if (botDesc) parts.push(`[Character's current outfit: ${botDesc}]`);
+        if (userDesc) parts.push(`[User's current outfit: ${userDesc}]`);
         if (parts.length > 0) {
             prompt = `${parts.join(' ')}\n${prompt}`;
             iigLog('INFO', `Wardrobe descriptions injected: ${parts.join(', ')}`);
@@ -1944,13 +2759,33 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
             onStatusUpdate?.(`Генерация${attempt > 0 ? ` (повтор ${attempt}/${maxRetries})` : ''}...`);
             let generated;
             // Choose API based on type or model
-            if (settings.apiType === 'naistera') {
+            if (settings.apiType === 'custom') {
+                const fmt = settings.customRequestFormat || 'openai';
+                const overrideUrl = (settings.customFullUrl || '').trim() || null;
+                const customOpts = { ...options, overrideUrl };
+                if (fmt === 'naistera') {
+                    generated = await generateImageNaistera(prompt, style, {
+                        ...customOpts,
+                        referenceImages: referenceDataUrls,
+                        videoTestMode: enableVideoTest,
+                        videoEveryN: settings.naisteraVideoEveryN,
+                    });
+                } else if (fmt === 'void') {
+                    generated = await generateImageVoid(prompt, style, referenceImages, { ...customOpts, refLabels });
+                } else if (fmt === 'gemini') {
+                    generated = await generateImageGemini(prompt, style, referenceImages, { ...customOpts, refLabels });
+                } else {
+                    generated = await generateImageOpenAI(prompt, style, referenceImages, customOpts);
+                }
+            } else if (settings.apiType === 'naistera') {
                 generated = await generateImageNaistera(prompt, style, {
                     ...options,
                     referenceImages: referenceDataUrls,
                     videoTestMode: enableVideoTest,
                     videoEveryN: settings.naisteraVideoEveryN,
                 });
+            } else if (settings.apiType === 'void') {
+                generated = await generateImageVoid(prompt, style, referenceImages, { ...options, refLabels });
             } else if (settings.apiType === 'gemini' || isGeminiModel(settings.model)) {
                 generated = await generateImageGemini(prompt, style, referenceImages, { ...options, refLabels });
             } else {
@@ -2804,11 +3639,11 @@ async function regenerateMessageImages(messageId) {
 function addRegenerateButton(messageElement, messageId) {
     // Check if button already exists
     if (messageElement.querySelector('.iig-regenerate-btn')) return;
-    
+
     // Find the extraMesButtons container (three dots menu)
     const extraMesButtons = messageElement.querySelector('.extraMesButtons');
     if (!extraMesButtons) return;
-    
+
     const btn = document.createElement('div');
     btn.className = 'mes_button iig-regenerate-btn fa-solid fa-images interactable';
     btn.title = 'Перегенерировать картинки';
@@ -2817,9 +3652,10 @@ function addRegenerateButton(messageElement, messageId) {
         e.stopPropagation();
         await regenerateMessageImages(messageId);
     });
-    
+
     extraMesButtons.appendChild(btn);
 }
+
 
 /**
  * Add regenerate buttons to all existing AI messages in chat
@@ -2911,14 +3747,14 @@ async function fetchWardrobeVisionModels() {
         throw new Error('Эндпоинт или API ключ гардероба не настроены');
     }
     const url = `${endpoint}/v1/models`;
-    const headers = { 'Authorization': `Bearer ${apiKey}` };
-    // Try through ST CORS proxy first (avoids CORS on mobile), then direct
-    let response;
-    try {
-        response = await fetch(`/proxy/${url}`, { method: 'GET', headers });
-    } catch (_) {
-        response = await fetch(url, { method: 'GET', headers });
-    }
+    // Direct call (как в vishnya-main) — без /proxy/ и CSRF.
+    const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+        },
+    });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     const models = data.data || [];
@@ -3003,9 +3839,10 @@ function renderRefSlots() {
                     <div id="iig_user_avatar_dropdown_selected" class="iig-avatar-dropdown-selected">
                         ${settings.userAvatarFile
                             ? `<img class="iig-dropdown-thumb" src="/User Avatars/${encodeURIComponent(settings.userAvatarFile)}" alt="" onerror="this.style.display='none'">
-                               <span class="iig-dropdown-text">${settings.userAvatarFile}</span>`
+                               <span class="iig-dropdown-text" title="${settings.userAvatarFile}">${getPersonaDisplayName(settings.userAvatarFile)}</span>`
                             : `<div class="iig-dropdown-placeholder"><i class="fa-solid fa-user"></i></div>
                                <span class="iig-dropdown-text">-- Авто (из персоны) --</span>`}
+
                         <span class="iig-dropdown-arrow fa-solid fa-chevron-down"></span>
                     </div>
                     <div id="iig_user_avatar_dropdown_list" class="iig-avatar-dropdown-list"></div>
@@ -3317,17 +4154,47 @@ function createSettingsUI() {
                         <label for="iig_api_type">Тип API</label>
                         <select id="iig_api_type" class="flex1">
                             <option value="openai" ${settings.apiType === 'openai' ? 'selected' : ''}>OpenAI-совместимый (/v1/images/generations)</option>
+                            <option value="void" ${settings.apiType === 'void' ? 'selected' : ''}>VoidAI / RouteMyAI (chat-completions)</option>
                             <option value="gemini" ${settings.apiType === 'gemini' ? 'selected' : ''}>Gemini-совместимый (nano-banana)</option>
                             <option value="naistera" ${settings.apiType === 'naistera' ? 'selected' : ''}>Naistera (naistera.org)</option>
+                            <option value="custom" ${settings.apiType === 'custom' ? 'selected' : ''}>Custom (свой URL + формат)</option>
                         </select>
                     </div>
-                    
+
+                    <!-- Custom format selector — only when apiType=custom -->
+                    <div class="flex-row ${settings.apiType === 'custom' ? '' : 'iig-hidden'}" id="iig_custom_format_row">
+                        <label for="iig_custom_request_format">Формат запроса</label>
+                        <select id="iig_custom_request_format" class="flex1">
+                            <option value="openai" ${settings.customRequestFormat === 'openai' ? 'selected' : ''}>OpenAI (/v1/images/generations)</option>
+                            <option value="void" ${settings.customRequestFormat === 'void' ? 'selected' : ''}>Void / chat-completions</option>
+                            <option value="gemini" ${settings.customRequestFormat === 'gemini' ? 'selected' : ''}>Gemini (generateContent)</option>
+                            <option value="naistera" ${settings.customRequestFormat === 'naistera' ? 'selected' : ''}>Naistera (/api/generate)</option>
+                        </select>
+                    </div>
+                    <div class="flex-row ${settings.apiType === 'custom' ? '' : 'iig-hidden'}" id="iig_custom_full_url_row">
+                        <label for="iig_custom_full_url">Полный URL (опц.)</label>
+                        <input type="text" id="iig_custom_full_url" class="text_pole flex1"
+                               value="${sanitizeForHtml(settings.customFullUrl || '')}"
+                               placeholder="https://api.example.com/v1/images/generations (если задан, используется как есть)">
+                    </div>
+
                     <!-- URL эндпоинта -->
                     <div class="flex-row">
                         <label for="iig_endpoint">URL эндпоинта</label>
-                        <input type="text" id="iig_endpoint" class="text_pole flex1" 
-                               value="${settings.endpoint}" 
+                        <input type="text" id="iig_endpoint" class="text_pole flex1"
+                               value="${settings.endpoint}"
                                placeholder="https://api.example.com">
+                    </div>
+                    <div class="iig-presets-row" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px;">
+                        <span style="font-size:0.85em;opacity:0.8;">Пресеты подключения:</span>
+                        <select id="iig_preset_select" class="text_pole flex1" style="min-width:140px;">
+                            <option value="">-- Выберите пресет --</option>
+                            ${(settings.connectionPresets || []).map(p => `<option value="${sanitizeForHtml(p.id)}" ${settings.activePresetId === p.id ? 'selected' : ''}>${sanitizeForHtml(p.name)}</option>`).join('')}
+                        </select>
+                        <div id="iig_preset_load" class="menu_button" title="Загрузить выбранный пресет" style="font-size:0.85em;padding:3px 10px;"><i class="fa-solid fa-download"></i></div>
+                        <div id="iig_preset_save" class="menu_button" title="Сохранить текущие настройки как пресет" style="font-size:0.85em;padding:3px 10px;"><i class="fa-solid fa-floppy-disk"></i></div>
+                        <div id="iig_preset_update" class="menu_button" title="Обновить выбранный пресет текущими настройками" style="font-size:0.85em;padding:3px 10px;"><i class="fa-solid fa-pen-to-square"></i></div>
+                        <div id="iig_preset_delete" class="menu_button" title="Удалить выбранный пресет" style="font-size:0.85em;padding:3px 10px;color:#cc5555;"><i class="fa-solid fa-trash"></i></div>
                     </div>
                     
                     <!-- API ключ -->
@@ -3354,7 +4221,7 @@ function createSettingsUI() {
                     
                     <hr>
 
-                    <div class="iig-settings-card ${['naistera', 'gemini'].includes(settings.apiType) ? '' : 'iig-hidden'}" id="iig_image_context_section">
+                    <div class="iig-settings-card" id="iig_image_context_section">
                         <h4>Контекст картинок</h4>
                         <p class="hint">Добавляет к генерации несколько предыдущих картинок из чата как контекст сцен и стиля.</p>
                         <label class="checkbox_label">
@@ -3405,7 +4272,10 @@ function createSettingsUI() {
                             <label for="iig_naistera_model">Модель</label>
                             <select id="iig_naistera_model" class="flex1">
                                 <option value="grok" ${normalizeNaisteraModel(settings.naisteraModel) === 'grok' ? 'selected' : ''}>grok</option>
+                                <option value="grok-pro" ${normalizeNaisteraModel(settings.naisteraModel) === 'grok-pro' ? 'selected' : ''}>grok-pro</option>
                                 <option value="nano banana" ${normalizeNaisteraModel(settings.naisteraModel) === 'nano banana' ? 'selected' : ''}>nano banana</option>
+                                <option value="nano banana 2" ${normalizeNaisteraModel(settings.naisteraModel) === 'nano banana 2' ? 'selected' : ''}>nano banana 2</option>
+                                <option value="novelai" ${normalizeNaisteraModel(settings.naisteraModel) === 'novelai' ? 'selected' : ''}>novelai</option>
                             </select>
                         </div>
                         <div class="flex-row ${settings.apiType === 'naistera' ? '' : 'iig-hidden'}" id="iig_naistera_aspect_row">
@@ -3446,7 +4316,7 @@ function createSettingsUI() {
                         </div>
                     </div>
 
-                    <div class="iig-settings-card ${['naistera', 'gemini'].includes(settings.apiType) ? '' : 'iig-hidden'}" id="iig_refs_section">
+                    <div class="iig-settings-card" id="iig_refs_section">
                         <h4>Референсы персонажей</h4>
                         <p class="hint">Загрузите изображения персонажей для консистентной генерации. NPC автоматически подбираются по имени в промпте.</p>
                         <div id="iig_ref_slots"></div>
@@ -3526,14 +4396,11 @@ function createSettingsUI() {
                         </div>
                         <div class="flex-row">
                             <label for="iig_wardrobe_model">Модель</label>
-                            <select id="iig_wardrobe_model" class="flex1">
-                                <option value="">-- Авто --</option>
-                                ${settings.wardrobeModel ? `<option value="${settings.wardrobeModel}" selected>${settings.wardrobeModel}</option>` : ''}
-                            </select>
-                            <div id="iig_wardrobe_refresh_models" class="menu_button iig-refresh-btn" title="Обновить список моделей">
-                                <i class="fa-solid fa-sync"></i>
-                            </div>
+                            <input type="text" id="iig_wardrobe_model" class="text_pole flex1"
+                                   value="${sanitizeForHtml(settings.wardrobeModel || '')}"
+                                   placeholder="например: gpt-4o-mini, gemini-2.0-flash, qwen-vl-max">
                         </div>
+                        <p class="hint" style="margin-top:4px;">Введите ID vision-модели вручную (как в Telegram-боте). Список моделей не запрашивается — некоторые провайдеры (voidai и др.) не поддерживают /v1/models.</p>
                     </div>
 
                     <div class="iig-settings-card">
@@ -3570,12 +4437,13 @@ function bindSettingsEvents() {
 
         // Model is used for OpenAI and Gemini; Naistera does not need a model.
         document.getElementById('iig_model_row')?.classList.toggle('iig-hidden', isNaistera);
-        document.getElementById('iig_image_context_section')?.classList.toggle('iig-hidden', !(isNaistera || isGemini));
-        document.getElementById('iig_image_context_count_row')?.classList.toggle('iig-hidden', !((isNaistera || isGemini) && settings.imageContextEnabled));
+        document.getElementById('iig_image_context_section')?.classList.remove('iig-hidden');
+        document.getElementById('iig_image_context_count_row')?.classList.toggle('iig-hidden', !settings.imageContextEnabled);
 
-        // OpenAI-only params
-        document.getElementById('iig_size_row')?.classList.toggle('iig-hidden', !isOpenAI);
-        document.getElementById('iig_quality_row')?.classList.toggle('iig-hidden', !isOpenAI);
+        // OpenAI / VoidAI params (size+quality apply to both)
+        const isOpenAIOrVoid = isOpenAI || apiType === 'void';
+        document.getElementById('iig_size_row')?.classList.toggle('iig-hidden', !isOpenAIOrVoid);
+        document.getElementById('iig_quality_row')?.classList.toggle('iig-hidden', !isOpenAIOrVoid);
 
         // Naistera-only params
         document.getElementById('iig_naistera_model_row')?.classList.toggle('iig-hidden', !isNaistera);
@@ -3596,8 +4464,24 @@ function bindSettingsEvents() {
             avatarSection.classList.toggle('hidden', !isGemini);
         }
 
-        // Unified refs section visible for gemini and naistera
-        document.getElementById('iig_refs_section')?.classList.toggle('iig-hidden', !(isNaistera || isGemini));
+        // Unified refs section visible for all API types (avatars/NPC refs work for void/custom too)
+        document.getElementById('iig_refs_section')?.classList.remove('iig-hidden');
+
+        // Custom format rows visible only when apiType === 'custom'
+        const isCustom = apiType === 'custom';
+        document.getElementById('iig_custom_format_row')?.classList.toggle('iig-hidden', !isCustom);
+        document.getElementById('iig_custom_full_url_row')?.classList.toggle('iig-hidden', !isCustom);
+
+        // When custom is selected, also expose the size/quality/aspect rows depending on chosen format
+        if (isCustom) {
+            const fmt = settings.customRequestFormat || 'openai';
+            const fmtIsOpenAIish = fmt === 'openai' || fmt === 'void';
+            document.getElementById('iig_size_row')?.classList.toggle('iig-hidden', !fmtIsOpenAIish);
+            document.getElementById('iig_quality_row')?.classList.toggle('iig-hidden', !fmtIsOpenAIish);
+            const avSec = document.getElementById('iig_avatar_section');
+            if (avSec) avSec.classList.toggle('hidden', fmt !== 'gemini');
+            document.getElementById('iig_refs_section')?.classList.remove('iig-hidden');
+        }
     };
     
     // Enable toggle
@@ -3776,6 +4660,150 @@ function bindSettingsEvents() {
     // Export logs
     document.getElementById('iig_export_logs')?.addEventListener('click', () => {
         exportLogs();
+    });
+
+    // Custom format / full URL handlers
+    document.getElementById('iig_custom_request_format')?.addEventListener('change', (e) => {
+        settings.customRequestFormat = e.target.value;
+        saveSettings();
+        updateVisibility();
+    });
+    document.getElementById('iig_custom_full_url')?.addEventListener('input', (e) => {
+        settings.customFullUrl = e.target.value;
+        saveSettings();
+    });
+
+    // ── Connection presets (full configs) ──
+
+    function presetUid() {
+        return 'p_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    }
+
+    function rebuildPresetSelect() {
+        const sel = document.getElementById('iig_preset_select');
+        if (!sel) return;
+        const list = settings.connectionPresets || [];
+        sel.innerHTML = '<option value="">-- Выберите пресет --</option>'
+            + list.map(p => `<option value="${sanitizeForHtml(p.id)}" ${settings.activePresetId === p.id ? 'selected' : ''}>${sanitizeForHtml(p.name)}</option>`).join('');
+    }
+
+    function snapshotCurrentAsPreset(name) {
+        return {
+            id: presetUid(),
+            name: name,
+            apiType: settings.apiType,
+            endpoint: settings.endpoint,
+            apiKey: settings.apiKey,
+            model: settings.model,
+            naisteraModel: settings.naisteraModel,
+            naisteraAspectRatio: settings.naisteraAspectRatio,
+            aspectRatio: settings.aspectRatio,
+            imageSize: settings.imageSize,
+            size: settings.size,
+            quality: settings.quality,
+            customRequestFormat: settings.customRequestFormat,
+            customFullUrl: settings.customFullUrl,
+        };
+    }
+
+    function applyPresetToSettings(preset) {
+        if (!preset) return;
+        if (preset.apiType !== undefined) settings.apiType = preset.apiType;
+        if (preset.endpoint !== undefined) settings.endpoint = preset.endpoint;
+        if (preset.apiKey !== undefined) settings.apiKey = preset.apiKey;
+        if (preset.model !== undefined) settings.model = preset.model;
+        if (preset.naisteraModel !== undefined) settings.naisteraModel = preset.naisteraModel;
+        if (preset.naisteraAspectRatio !== undefined) settings.naisteraAspectRatio = preset.naisteraAspectRatio;
+        if (preset.aspectRatio !== undefined) settings.aspectRatio = preset.aspectRatio;
+        if (preset.imageSize !== undefined) settings.imageSize = preset.imageSize;
+        if (preset.size !== undefined) settings.size = preset.size;
+        if (preset.quality !== undefined) settings.quality = preset.quality;
+        if (preset.customRequestFormat !== undefined) settings.customRequestFormat = preset.customRequestFormat;
+        if (preset.customFullUrl !== undefined) settings.customFullUrl = preset.customFullUrl;
+
+        // Reflect to UI
+        const set = (id, val) => { const el = document.getElementById(id); if (el && val !== undefined) el.value = val; };
+        set('iig_api_type', settings.apiType);
+        set('iig_endpoint', settings.endpoint);
+        set('iig_api_key', settings.apiKey);
+        set('iig_custom_request_format', settings.customRequestFormat);
+        set('iig_custom_full_url', settings.customFullUrl);
+        set('iig_naistera_model', normalizeNaisteraModel(settings.naisteraModel));
+        set('iig_naistera_aspect_ratio', settings.naisteraAspectRatio);
+        set('iig_aspect_ratio', settings.aspectRatio);
+        set('iig_image_size', settings.imageSize);
+        set('iig_size', settings.size);
+        set('iig_quality', settings.quality);
+
+        // Model select: rebuild with just the preset model as option
+        const modelSel = document.getElementById('iig_model');
+        if (modelSel) {
+            if (settings.model) {
+                modelSel.innerHTML = `<option value="${sanitizeForHtml(settings.model)}" selected>${sanitizeForHtml(settings.model)}</option>`;
+            } else {
+                modelSel.innerHTML = '<option value="">-- Выберите модель --</option>';
+            }
+        }
+    }
+
+    document.getElementById('iig_preset_select')?.addEventListener('change', (e) => {
+        settings.activePresetId = e.target.value || '';
+        saveSettings();
+    });
+
+    document.getElementById('iig_preset_load')?.addEventListener('click', () => {
+        const sel = document.getElementById('iig_preset_select');
+        const id = sel?.value || '';
+        if (!id) { toastr.warning('Выберите пресет для загрузки', 'Пресеты'); return; }
+        const preset = (settings.connectionPresets || []).find(p => p.id === id);
+        if (!preset) { toastr.error('Пресет не найден', 'Пресеты'); return; }
+        applyPresetToSettings(preset);
+        settings.activePresetId = id;
+        saveSettings();
+        updateVisibility();
+        toastr.success(`Загружен пресет: ${preset.name}`, 'Пресеты', { timeOut: 2000 });
+    });
+
+    document.getElementById('iig_preset_save')?.addEventListener('click', () => {
+        const name = (prompt('Название пресета:') || '').trim();
+        if (!name) return;
+        if (!Array.isArray(settings.connectionPresets)) settings.connectionPresets = [];
+        const preset = snapshotCurrentAsPreset(name);
+        settings.connectionPresets.push(preset);
+        settings.activePresetId = preset.id;
+        saveSettings();
+        rebuildPresetSelect();
+        toastr.success(`Пресет «${name}» сохранён`, 'Пресеты', { timeOut: 2000 });
+    });
+
+    document.getElementById('iig_preset_update')?.addEventListener('click', () => {
+        const sel = document.getElementById('iig_preset_select');
+        const id = sel?.value || '';
+        if (!id) { toastr.warning('Выберите пресет для обновления', 'Пресеты'); return; }
+        const list = settings.connectionPresets || [];
+        const idx = list.findIndex(p => p.id === id);
+        if (idx < 0) { toastr.error('Пресет не найден', 'Пресеты'); return; }
+        const old = list[idx];
+        const updated = snapshotCurrentAsPreset(old.name);
+        updated.id = old.id;
+        list[idx] = updated;
+        saveSettings();
+        toastr.success(`Пресет «${old.name}» обновлён`, 'Пресеты', { timeOut: 2000 });
+    });
+
+    document.getElementById('iig_preset_delete')?.addEventListener('click', () => {
+        const sel = document.getElementById('iig_preset_select');
+        const id = sel?.value || '';
+        if (!id) { toastr.warning('Выберите пресет для удаления', 'Пресеты'); return; }
+        const list = settings.connectionPresets || [];
+        const preset = list.find(p => p.id === id);
+        if (!preset) return;
+        if (!confirm(`Удалить пресет «${preset.name}»?`)) return;
+        settings.connectionPresets = list.filter(p => p.id !== id);
+        if (settings.activePresetId === id) settings.activePresetId = '';
+        saveSettings();
+        rebuildPresetSelect();
+        toastr.info(`Пресет «${preset.name}» удалён`, 'Пресеты', { timeOut: 2000 });
     });
 
     // ── Wardrobe API handlers ──
