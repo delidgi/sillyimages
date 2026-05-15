@@ -313,7 +313,7 @@
                 const desc = prompt('Описание образа (авто-сгенерировано, можете отредактировать):', autoDesc || '') || '';
 
                 swAdd(swCharName(), swTab, { id: uid(), name: name.trim(), description: desc.trim(), base64, addedAt: Date.now() });
-                swRender(); toastr.success(`«${name.trim()}» добавлен`, 'Гардероб');
+                swRender(); swUpdatePromptInjection(); toastr.success(`«${name.trim()}» добавлен`, 'Гардероб');
             } catch (e) { toastr.error('Ошибка: ' + e.message, 'Гардероб'); }
         });
         inp.click();
@@ -343,6 +343,61 @@
      * Update the prompt injection with current active outfit descriptions.
      * Called on toggle, chat change, and app ready.
      */
+    // Injection config — exposed for debug
+    // position: 1 = IN_CHAT (vs 0 = IN_PROMPT after story string)
+    // depth: 0 = absolute bottom of chat (right before generation prompt) — maximum recency
+    // role: 0 = system, 1 = user, 2 = assistant
+    const SW_INJECT_POSITION = 1; // IN_CHAT
+    const SW_INJECT_DEPTH = 0;    // bottom — последнее, что видит модель
+    const SW_INJECT_ROLE = 0;     // system
+    const SW_INJECT_SCAN = false; // не сканировать для WI-триггеров
+
+    function swBuildInjectionText(cn) {
+        const botData = swGetActive().bot ? swFind(cn, 'bot', swGetActive().bot) : null;
+        const userData = swGetActive().user ? swFind(cn, 'user', swGetActive().user) : null;
+        if (!botData && !userData) return '';
+
+        const parts = [];
+        // Bot outfit
+        if (botData) {
+            const desc = swSanitizeDesc(botData.description);
+            const label = desc || botData.name || 'неизвестный наряд';
+            parts.push(`${cn}: ${label}`);
+        }
+        // User outfit
+        if (userData) {
+            const desc = swSanitizeDesc(userData.description);
+            const label = desc || userData.name || 'неизвестный наряд';
+            parts.push(`{{user}}: ${label}`);
+        }
+
+        if (parts.length === 0) return '';
+
+        // Жёсткий override с инструкцией ПЕРЕЗАПИСАТЬ старые описания одежды
+        return [
+            '═══════════════════════════════════════════',
+            '🚨 OUTFIT OVERRIDE — HIGHEST PRIORITY 🚨',
+            '═══════════════════════════════════════════',
+            'ВНИМАНИЕ: Это АКТУАЛЬНОЕ состояние одежды персонажей ПРЯМО СЕЙЧАС.',
+            'Эта информация ПЕРЕЗАПИСЫВАЕТ любые описания одежды из предыдущих сообщений чата, нарратива, системных блоков (включая sims, dress-up, и т.п.).',
+            'Если в прошлых сообщениях персонаж был в другой одежде — он УЖЕ переоделся за кадром. Не упоминай старую одежду. Не описывай процесс переодевания, если игрок об этом не просил.',
+            '',
+            'ТЕКУЩАЯ ОДЕЖДА:',
+            ...parts.map(p => `▸ ${p}`),
+            '',
+            'ПРАВИЛА:',
+            '1. В sims-блоке поле 👔 [одежда] = ТОЧНО эта одежда, никаких отступлений.',
+            '2. В описании внешности персонажа в нарративе — ТОЛЬКО эта одежда.',
+            '3. В промптах для генерации изображений — ТОЛЬКО эта одежда.',
+            '4. Если сцена требует смены одежды (душ, секс, переодевание) — опиши это явно в нарративе, иначе одежда остаётся как указано выше.',
+            '═══════════════════════════════════════════'
+        ].join('\n');
+    }
+
+    /**
+     * Update the prompt injection with current active outfit descriptions.
+     * Called on toggle, chat change, app ready, AND before every generation.
+     */
     function swUpdatePromptInjection() {
         try {
             const ctx = SillyTavern.getContext();
@@ -353,32 +408,34 @@
 
             const cn = swCharName();
             if (!cn) {
-                ctx.setExtensionPrompt(SW_PROMPT_KEY, '', 1, 1);
+                ctx.setExtensionPrompt(SW_PROMPT_KEY, '', SW_INJECT_POSITION, SW_INJECT_DEPTH, SW_INJECT_SCAN, SW_INJECT_ROLE);
                 return;
             }
 
-            const botData = swGetActive().bot ? swFind(cn, 'bot', swGetActive().bot) : null;
-            const userData = swGetActive().user ? swFind(cn, 'user', swGetActive().user) : null;
+            const injectionText = swBuildInjectionText(cn);
 
-            const lines = [];
-            const botDesc = swSanitizeDesc(botData?.description);
-            const userDesc = swSanitizeDesc(userData?.description);
-            if (botDesc) lines.push(`[${cn} сейчас одет(а): ${botDesc}]`);
-            if (userDesc) lines.push(`[{{user}} сейчас одет(а): ${userDesc}]`);
-
-            const injectionText = lines.length > 0 ? lines.join('\n') : '';
-
-            // position 1 = IN_CHAT, depth 1 = before last message (like Author's Note)
-            ctx.setExtensionPrompt(SW_PROMPT_KEY, injectionText, 1, 1);
+            // setExtensionPrompt(key, value, position, depth, scan, role)
+            // Older ST versions ignore extra args — safe to pass.
+            ctx.setExtensionPrompt(SW_PROMPT_KEY, injectionText, SW_INJECT_POSITION, SW_INJECT_DEPTH, SW_INJECT_SCAN, SW_INJECT_ROLE);
 
             if (injectionText) {
-                swLog('INFO', `Prompt injection updated: ${lines.length} outfit(s)`);
+                const preview = injectionText.replace(/\s+/g, ' ').slice(0, 160);
+                swLog('INFO', `Prompt injection set (pos=${SW_INJECT_POSITION}, depth=${SW_INJECT_DEPTH}, role=system): ${preview}…`);
             } else {
                 swLog('INFO', 'Prompt injection cleared (no active outfits)');
             }
         } catch (e) {
             swLog('ERROR', 'Failed to update prompt injection:', e.message);
         }
+    }
+
+    // Public debug helper — call window.sillyWardrobe.debugInjection() from console
+    function swDebugInjection() {
+        const cn = swCharName();
+        const text = cn ? swBuildInjectionText(cn) : '(no character)';
+        console.log('[SW DEBUG] Active outfits for', cn, ':', swGetActive());
+        console.log('[SW DEBUG] Injection text that will be sent:\n' + (text || '(empty)'));
+        return text;
     }
 
     // ═════════════════════════════════════════════════════════
@@ -418,6 +475,7 @@
                         <option value="void" ${iig.apiType === 'void' ? 'selected' : ''}>VoidAI / RouteMyAI (chat)</option>
                         <option value="gemini" ${iig.apiType === 'gemini' ? 'selected' : ''}>Gemini / nano-banana</option>
                         <option value="naistera" ${iig.apiType === 'naistera' ? 'selected' : ''}>Naistera</option>
+                        <option value="electronhub" ${iig.apiType === 'electronhub' ? 'selected' : ''}>Electron Hub</option>
                         <option value="custom" ${iig.apiType === 'custom' ? 'selected' : ''}>Custom (свой URL + формат)</option>
                     </select>
                 </div>
@@ -868,6 +926,8 @@
         getActiveOutfitBase64(type) { const cn = swCharName(); if (!cn) return null; const a = swGetActive(); return a[type] ? (swFind(cn, type, a[type])?.base64 || null) : null; },
         getActiveOutfitDataUrl(type) { const b = this.getActiveOutfitBase64(type); return b ? `data:image/png;base64,${b}` : null; },
         getActiveOutfitData(type) { const cn = swCharName(); if (!cn) return null; const a = swGetActive(); return a[type] ? swFind(cn, type, a[type]) : null; },
+        debugInjection: swDebugInjection,
+        forceReinject: swUpdatePromptInjection,
         openModal: () => swOpenModal(),
         isReady: () => true,
     };
@@ -882,6 +942,25 @@
     ctx.eventSource.on(ctx.event_types.CHAT_CHANGED, () => {
         setTimeout(() => { swUpdatePromptInjection(); swInjectFloatingBtn(); }, 300);
     });
+
+    // ⚡ КРИТИЧНО: перезаписываем инжект перед КАЖДОЙ генерацией.
+    // Страхуемся от race conditions, очистки контекста или забывчивости пользователя.
+    // Пробуем все известные имена событий — какое доступно, то и сработает.
+    const _genEvents = [
+        'GENERATION_STARTED',
+        'GENERATE_BEFORE_COMBINE_PROMPTS',
+        'GENERATION_AFTER_COMMANDS',
+        'MESSAGE_SENT',
+    ];
+    for (const evName of _genEvents) {
+        const ev = ctx.event_types?.[evName];
+        if (ev) {
+            ctx.eventSource.on(ev, () => {
+                try { swUpdatePromptInjection(); } catch (e) { swLog('WARN', `re-inject on ${evName} failed:`, e.message); }
+            });
+            swLog('INFO', `Subscribed to ${evName} for guaranteed re-injection`);
+        }
+    }
 
     swLog('INFO', 'SillyWardrobe initialized');
 })();
@@ -981,6 +1060,14 @@ const defaultSettings = Object.freeze({
     wardrobeEndpoint: '',
     wardrobeApiKey: '',
     wardrobeModel: '',
+    // Model list filter — false = только image-модели, true = вообще все модели с эндпоинта
+    showAllModels: false,
+    // ElectronHub-специфичные параметры
+    electronhubStyle: '',          // например 'photographic', 'anime', 'cinematic' и т.д.
+    electronhubNegativePrompt: '', // что НЕ хотим видеть на картинке
+    electronhubGuidanceScale: '',  // 1.0–20.0, чем выше тем точнее следует промпту (но менее креативно)
+    electronhubSteps: '',          // 10–100, больше = качественнее но медленнее
+    electronhubEnableReferences: false, // экспериментальная поддержка референсов (большинство моделей не работает)
 });
 
 const MAX_CONTEXT_IMAGES = 3;
@@ -1643,8 +1730,28 @@ async function fetchModels() {
         
         const data = await response.json();
         const models = data.data || [];
-        
-        // Filter for image models only
+
+        // ElectronHub: фильтруем по полю `endpoints` — это правильный фильтр от самого провайдера.
+        // Модель попадает в список если у неё среди endpoints есть /images/generations или /images/edits.
+        if (settings.apiType === 'electronhub') {
+            const filtered = models.filter((m) => {
+                const eps = Array.isArray(m?.endpoints) ? m.endpoints.map(String) : null;
+                if (eps && eps.length > 0) {
+                    return eps.some((e) =>
+                        e.includes('/images/generations') || e.includes('/images/edits'),
+                    );
+                }
+                // Если у модели нет поля endpoints — фолбэк на keyword-фильтр
+                return isImageModel(m.id);
+            }).map(m => m.id).filter(Boolean);
+            return settings.showAllModels ? models.map(m => m.id).filter(Boolean).sort() : filtered;
+        }
+
+        // Если включён showAllModels — отдаём всё (юзер сам выберет),
+        // иначе фильтруем по image-keywords.
+        if (settings.showAllModels) {
+            return models.map(m => m.id).filter(Boolean).sort();
+        }
         return models.filter(m => isImageModel(m.id)).map(m => m.id);
     } catch (error) {
         console.error('[IIG] Failed to fetch models:', error);
@@ -1932,6 +2039,157 @@ async function saveNaisteraMediaToFile(dataUrl, mediaKind = 'video', debugMeta =
 /**
  * Generate image via OpenAI-compatible endpoint
  */
+// ───────────────────────────────────────────────────────────────────────
+// ElectronHub — OpenAI-совместимый агрегатор с расширенными параметрами
+// ───────────────────────────────────────────────────────────────────────
+// Особенности vs стандартный OpenAI:
+//   - своя система размеров, разная для NAI/SD/Flux
+//   - доп. параметры: style, negative_prompt, guidance_scale, steps
+//   - response_format всегда b64_json
+//   - /v1/models возвращает поле endpoints — фильтруем правильно
+//   - длинный таймаут (некоторые модели генерят минутами)
+// Документация: https://docs.electronhub.ai/examples/image-examples
+
+const ELECTRONHUB_REQUEST_TIMEOUT_MS = 600_000; // 10 минут
+
+/**
+ * Конвертирует aspect_ratio → size для конкретной модели ElectronHub.
+ * Разные семейства моделей поддерживают разные конкретные размеры.
+ */
+function electronHubAspectToSize(aspect, modelId) {
+    if (!aspect) return null;
+    const mid = String(modelId || '').toLowerCase();
+
+    // NAI Diffusion models (nai-diffusion-*)
+    if (mid.includes('nai-diffusion')) {
+        const map = {
+            '1:1': '1024x1024', '1:2': '512x1024', '2:1': '1024x512',
+            '2:3': '832x1216', '3:2': '1216x832',
+            '9:16': '704x1280', '16:9': '1280x704',
+            '3:4': '768x1024', '4:3': '1024x768',
+        };
+        return map[aspect] || '1024x1024';
+    }
+
+    // Stable Diffusion / SDXL
+    if (mid.includes('sd-') || mid.includes('sdxl-') || mid.includes('stable-diffusion')) {
+        const map = {
+            '1:1': '1024x1024',
+            '16:9': '1536x864', '9:16': '864x1536',
+            '3:2': '1536x1024', '2:3': '1024x1536',
+            '4:3': '1536x1152', '3:4': '1152x1536',
+            '21:9': '1792x768',
+        };
+        return map[aspect] || '1024x1024';
+    }
+
+    // Flux family
+    if (mid.includes('flux')) {
+        const map = {
+            '1:1': '1024x1024',
+            '16:9': '1344x768', '9:16': '768x1344',
+            '3:2': '1216x832',  '2:3': '832x1216',
+            '4:3': '1152x896',  '3:4': '896x1152',
+        };
+        return map[aspect] || '1024x1024';
+    }
+
+    // Generic fallback
+    const map = {
+        '1:1': '1024x1024',
+        '16:9': '1536x864', '9:16': '864x1536',
+        '3:2': '1536x1024', '2:3': '1024x1536',
+        '4:3': '1536x1152', '3:4': '1152x1536',
+    };
+    return map[aspect] || '1024x1024';
+}
+
+/**
+ * Generate image via ElectronHub.
+ * Использует /v1/images/generations с расширенными параметрами.
+ * Референсы по умолчанию НЕ поддерживаются — большинство моделей не имеют /v1/images/edits.
+ * Включается флагом settings.electronhubEnableReferences.
+ */
+async function generateImageElectronHub(prompt, style, referenceImages = [], options = {}) {
+    const settings = getSettings();
+    const baseEndpoint = (settings.endpoint || DEFAULT_ENDPOINTS.electronhub).replace(/\/+$/, '');
+    const url = options.overrideUrl || `${baseEndpoint}/v1/images/generations`;
+
+    const fullPrompt = style ? `[Style: ${style}] ${prompt}` : prompt;
+
+    // Размер — приоритет: aspectRatio из тега → settings.aspectRatio → settings.size
+    const aspect = options.aspectRatio || settings.aspectRatio;
+    const sizeFromAspect = electronHubAspectToSize(aspect, settings.model);
+    const size = sizeFromAspect || settings.size || '1024x1024';
+
+    const body = {
+        model: settings.model,
+        prompt: fullPrompt,
+        n: 1,
+        size,
+        response_format: 'b64_json',
+    };
+
+    // ElectronHub-специфичные параметры — добавляем только если заданы
+    const ehStyle = String(settings.electronhubStyle || '').trim();
+    const negPrompt = String(settings.electronhubNegativePrompt || '').trim();
+    const guidance = parseFloat(settings.electronhubGuidanceScale);
+    const steps = parseInt(settings.electronhubSteps, 10);
+
+    if (ehStyle) body.style = ehStyle;
+    if (negPrompt) body.negative_prompt = negPrompt;
+    if (Number.isFinite(guidance) && guidance > 0) body.guidance_scale = guidance;
+    if (Number.isFinite(steps) && steps > 0) body.steps = steps;
+
+    // Экспериментальные референсы — отправляем как `image` (первый референс)
+    if (referenceImages.length > 0 && settings.electronhubEnableReferences) {
+        body.image = `data:image/png;base64,${referenceImages[0]}`;
+    }
+
+    iigLog('INFO', `ElectronHub: model=${settings.model} size=${size} style=${ehStyle || '(none)'} refs=${referenceImages.length}${settings.electronhubEnableReferences ? '/enabled' : '/disabled'}`);
+
+    // fetch с таймаутом 10 минут
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), ELECTRONHUB_REQUEST_TIMEOUT_MS);
+
+    let response;
+    try {
+        response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${settings.apiKey}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(body),
+            signal: controller.signal,
+        });
+    } catch (e) {
+        clearTimeout(timeoutId);
+        if (e.name === 'AbortError') {
+            throw new Error(`ElectronHub: timeout after ${ELECTRONHUB_REQUEST_TIMEOUT_MS / 1000}s`);
+        }
+        throw e;
+    }
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`ElectronHub Error (${response.status}): ${text}`);
+    }
+
+    const result = await response.json();
+    const dataList = result.data || [];
+    if (dataList.length === 0) {
+        if (result.url) return result.url;
+        throw new Error('ElectronHub: no image data in response');
+    }
+
+    const imageObj = dataList[0];
+    if (imageObj.b64_json) return `data:image/png;base64,${imageObj.b64_json}`;
+    if (imageObj.url) return imageObj.url;
+    throw new Error('ElectronHub: no b64_json or url in response');
+}
+
 async function generateImageOpenAI(prompt, style, referenceImages = [], options = {}) {
     const settings = getSettings();
     const url = options.overrideUrl || `${settings.endpoint.replace(/\/$/, '')}/v1/images/generations`;
@@ -2774,6 +3032,8 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
                     generated = await generateImageVoid(prompt, style, referenceImages, { ...customOpts, refLabels });
                 } else if (fmt === 'gemini') {
                     generated = await generateImageGemini(prompt, style, referenceImages, { ...customOpts, refLabels });
+                } else if (fmt === 'electronhub') {
+                    generated = await generateImageElectronHub(prompt, style, referenceImages, customOpts);
                 } else {
                     generated = await generateImageOpenAI(prompt, style, referenceImages, customOpts);
                 }
@@ -2784,6 +3044,8 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
                     videoTestMode: enableVideoTest,
                     videoEveryN: settings.naisteraVideoEveryN,
                 });
+            } else if (settings.apiType === 'electronhub') {
+                generated = await generateImageElectronHub(prompt, style, referenceImages, { ...options, refLabels });
             } else if (settings.apiType === 'void') {
                 generated = await generateImageVoid(prompt, style, referenceImages, { ...options, refLabels });
             } else if (settings.apiType === 'gemini' || isGeminiModel(settings.model)) {
@@ -4157,6 +4419,7 @@ function createSettingsUI() {
                             <option value="void" ${settings.apiType === 'void' ? 'selected' : ''}>VoidAI / RouteMyAI (chat-completions)</option>
                             <option value="gemini" ${settings.apiType === 'gemini' ? 'selected' : ''}>Gemini-совместимый (nano-banana)</option>
                             <option value="naistera" ${settings.apiType === 'naistera' ? 'selected' : ''}>Naistera (naistera.org)</option>
+                            <option value="electronhub" ${settings.apiType === 'electronhub' ? 'selected' : ''}>Electron Hub (200+ моделей)</option>
                             <option value="custom" ${settings.apiType === 'custom' ? 'selected' : ''}>Custom (свой URL + формат)</option>
                         </select>
                     </div>
@@ -4169,6 +4432,7 @@ function createSettingsUI() {
                             <option value="void" ${settings.customRequestFormat === 'void' ? 'selected' : ''}>Void / chat-completions</option>
                             <option value="gemini" ${settings.customRequestFormat === 'gemini' ? 'selected' : ''}>Gemini (generateContent)</option>
                             <option value="naistera" ${settings.customRequestFormat === 'naistera' ? 'selected' : ''}>Naistera (/api/generate)</option>
+                            <option value="electronhub" ${settings.customRequestFormat === 'electronhub' ? 'selected' : ''}>Electron Hub (расширенный OpenAI)</option>
                         </select>
                     </div>
                     <div class="flex-row ${settings.apiType === 'custom' ? '' : 'iig-hidden'}" id="iig_custom_full_url_row">
@@ -4217,6 +4481,13 @@ function createSettingsUI() {
                         <div id="iig_refresh_models" class="menu_button iig-refresh-btn" title="Обновить список">
                             <i class="fa-solid fa-sync"></i>
                         </div>
+                    </div>
+                    <div class="${settings.apiType === 'naistera' ? 'iig-hidden' : ''}" id="iig_show_all_models_row">
+                        <label class="checkbox_label">
+                            <input type="checkbox" id="iig_show_all_models" ${settings.showAllModels ? 'checked' : ''}>
+                            <span>Показывать все модели (без фильтра image-моделей)</span>
+                        </label>
+                        <p class="hint" style="margin-left:24px;">Включи если нужная картиночная модель не появляется в списке (например, малоизвестные модели VoidAI/Custom-эндпоинтов).</p>
                     </div>
                     
                     <hr>
@@ -4320,6 +4591,37 @@ function createSettingsUI() {
                         <h4>Референсы персонажей</h4>
                         <p class="hint">Загрузите изображения персонажей для консистентной генерации. NPC автоматически подбираются по имени в промпте.</p>
                         <div id="iig_ref_slots"></div>
+                    </div>
+
+                    <div class="iig-settings-card ${settings.apiType === 'electronhub' ? '' : 'iig-hidden'}" id="iig_electronhub_section">
+                        <h4>Electron Hub</h4>
+                        <p class="hint">Расширенные параметры специфичные для ElectronHub. Все поля опциональны — оставь пустыми, если не нужно.</p>
+
+                        <div class="flex-row">
+                            <label for="iig_electronhub_style">Стиль</label>
+                            <input type="text" id="iig_electronhub_style" class="text_pole flex1" placeholder="photographic, anime, cinematic, digital-art..." value="${settings.electronhubStyle || ''}">
+                        </div>
+
+                        <div class="flex-row" style="flex-direction:column;align-items:stretch;">
+                            <label for="iig_electronhub_negative">Negative prompt</label>
+                            <textarea id="iig_electronhub_negative" class="text_pole" rows="2" placeholder="что НЕ хотим видеть на картинке (blurry, low quality, ...)">${settings.electronhubNegativePrompt || ''}</textarea>
+                        </div>
+
+                        <div class="flex-row">
+                            <label for="iig_electronhub_guidance" title="Чем выше — тем точнее следует промпту, но менее креативно">CFG Scale</label>
+                            <input type="number" id="iig_electronhub_guidance" class="text_pole flex1" min="1" max="20" step="0.5" placeholder="по умолчанию (обычно 7.0)" value="${settings.electronhubGuidanceScale || ''}">
+                        </div>
+
+                        <div class="flex-row">
+                            <label for="iig_electronhub_steps" title="Больше шагов = качественнее, но медленнее">Steps</label>
+                            <input type="number" id="iig_electronhub_steps" class="text_pole flex1" min="10" max="100" step="1" placeholder="по умолчанию (обычно 30)" value="${settings.electronhubSteps || ''}">
+                        </div>
+
+                        <label class="checkbox_label">
+                            <input type="checkbox" id="iig_electronhub_refs" ${settings.electronhubEnableReferences ? 'checked' : ''}>
+                            <span>Экспериментально: отправлять референсы</span>
+                        </label>
+                        <p class="hint" style="margin-left:24px;">Большинство моделей ElectronHub не поддерживают /v1/images/edits. Включай только если уверена что модель умеет принимать image на /v1/images/generations.</p>
                     </div>
 
                     <div class="iig-settings-card ${settings.apiType === 'naistera' ? '' : 'iig-hidden'}" id="iig_naistera_video_section">
@@ -4434,15 +4736,17 @@ function bindSettingsEvents() {
         const isNaistera = apiType === 'naistera';
         const isGemini = apiType === 'gemini';
         const isOpenAI = apiType === 'openai';
+        const isElectronHub = apiType === 'electronhub';
 
-        // Model is used for OpenAI and Gemini; Naistera does not need a model.
+        // Model is used for OpenAI/Gemini/ElectronHub; Naistera does not need a model.
         document.getElementById('iig_model_row')?.classList.toggle('iig-hidden', isNaistera);
         document.getElementById('iig_image_context_section')?.classList.remove('iig-hidden');
         document.getElementById('iig_image_context_count_row')?.classList.toggle('iig-hidden', !settings.imageContextEnabled);
 
-        // OpenAI / VoidAI params (size+quality apply to both)
+        // OpenAI / VoidAI / ElectronHub params (size applies). Quality — только OpenAI/Void.
         const isOpenAIOrVoid = isOpenAI || apiType === 'void';
-        document.getElementById('iig_size_row')?.classList.toggle('iig-hidden', !isOpenAIOrVoid);
+        const supportsSize = isOpenAIOrVoid || isElectronHub;
+        document.getElementById('iig_size_row')?.classList.toggle('iig-hidden', !supportsSize);
         document.getElementById('iig_quality_row')?.classList.toggle('iig-hidden', !isOpenAIOrVoid);
 
         // Naistera-only params
@@ -4450,6 +4754,9 @@ function bindSettingsEvents() {
         document.getElementById('iig_naistera_aspect_row')?.classList.toggle('iig-hidden', !isNaistera);
         document.getElementById('iig_naistera_video_section')?.classList.toggle('iig-hidden', !isNaistera);
         document.getElementById('iig_naistera_video_frequency_row')?.classList.toggle('iig-hidden', !(isNaistera && settings.naisteraVideoTest));
+
+        // ElectronHub-only section
+        document.getElementById('iig_electronhub_section')?.classList.toggle('iig-hidden', !isElectronHub);
 
         document.getElementById('iig_naistera_hint')?.classList.toggle('iig-hidden', !isNaistera);
 
@@ -4506,6 +4813,18 @@ function bindSettingsEvents() {
         settings.imageContextCount = normalized;
         e.target.value = String(normalized);
         saveSettings();
+    });
+
+    // Show all models (отключает фильтр по image-keywords для VoidAI/Custom)
+    document.getElementById('iig_show_all_models')?.addEventListener('change', (e) => {
+        settings.showAllModels = e.target.checked;
+        saveSettings();
+        toastr.info(
+            e.target.checked
+                ? 'Фильтр отключён. Нажмите ⟲ чтобы перезагрузить список моделей.'
+                : 'Фильтр включён. Нажмите ⟲ чтобы перезагрузить список моделей.',
+            'Генерация картинок'
+        );
     });
     
     // API Type
@@ -4642,6 +4961,28 @@ function bindSettingsEvents() {
         const normalized = normalizeNaisteraVideoFrequency(e.target.value);
         settings.naisteraVideoEveryN = normalized;
         e.target.value = String(normalized);
+        saveSettings();
+    });
+
+    // ElectronHub-specific handlers
+    document.getElementById('iig_electronhub_style')?.addEventListener('input', (e) => {
+        settings.electronhubStyle = e.target.value;
+        saveSettings();
+    });
+    document.getElementById('iig_electronhub_negative')?.addEventListener('input', (e) => {
+        settings.electronhubNegativePrompt = e.target.value;
+        saveSettings();
+    });
+    document.getElementById('iig_electronhub_guidance')?.addEventListener('input', (e) => {
+        settings.electronhubGuidanceScale = e.target.value;
+        saveSettings();
+    });
+    document.getElementById('iig_electronhub_steps')?.addEventListener('input', (e) => {
+        settings.electronhubSteps = e.target.value;
+        saveSettings();
+    });
+    document.getElementById('iig_electronhub_refs')?.addEventListener('change', (e) => {
+        settings.electronhubEnableReferences = e.target.checked;
         saveSettings();
     });
 
