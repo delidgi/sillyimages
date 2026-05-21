@@ -174,17 +174,10 @@
     }
 
     /**
-     * Analyze outfit image via vision model.
-     * Strategy 0: Use dedicated wardrobe API (wardrobeEndpoint + wardrobeApiKey).
-     * Strategy 1: generateRaw with a CLEAN message array (no chat context).
-     * Strategy 2: generateQuietPrompt fallback.
+     * Analyze outfit image via vision model using ST's main API (generateQuietPrompt).
      */
     async function swAnalyzeOutfit(base64) {
         const ctx = SillyTavern.getContext();
-        const iigSettings = ctx.extensionSettings?.inline_image_gen || {};
-
-        const SYSTEM_MSG = 'You are a fashion catalog assistant. You ONLY describe clothing. You never roleplay, narrate, or write fiction. Respond with 1-2 sentences in English describing ONLY the garments, colors, fabrics, accessories, and shoes visible in the image. Nothing else.';
-        const USER_TEXT = 'Describe the clothing in this image.';
 
         // Compress to smaller JPEG for vision — reduces payload 5-10x
         let visionB64;
@@ -196,7 +189,6 @@
         }
         const visionMime = visionB64 === base64 ? 'image/png' : 'image/jpeg';
         const visionDataUrl = `data:${visionMime};base64,${visionB64}`;
-        swLog('INFO', `Vision image ready: ${visionMime}, ~${Math.round(visionB64.length / 1024)}KB`);
 
         function cleanDesc(raw) {
             let s = String(raw || '');
@@ -212,69 +204,7 @@
                 .trim();
         }
 
-        // Build OpenAI-compatible vision message (text FIRST, then image — required by many providers)
-        function buildVisionMessages() {
-            return [
-                { role: 'system', content: SYSTEM_MSG },
-                { role: 'user', content: [
-                    { type: 'text', text: USER_TEXT },
-                    { type: 'image_url', image_url: { url: visionDataUrl, detail: 'low' } },
-                ]},
-            ];
-        }
-
-        // Strategy 0: Dedicated wardrobe extra API (via ST CORS proxy with CSRF)
-        const wEndpoint = (iigSettings.wardrobeEndpoint || '').replace(/\/$/, '');
-        const wApiKey = iigSettings.wardrobeApiKey || '';
-        swLog('INFO', `Wardrobe settings: endpoint="${wEndpoint || '(empty)'}", key=${wApiKey ? '***' + wApiKey.slice(-4) : '(empty)'}, model="${iigSettings.wardrobeModel || '(auto)'}"`);
-        if (wEndpoint && wApiKey) {
-            try {
-                toastr.info('Анализ образа (extra API)...', 'Гардероб', { timeOut: 15000 });
-                const model = (iigSettings.wardrobeModel || '').trim();
-                if (!model) {
-                    swLog('WARN', 'Wardrobe model not configured — skipping extra API. Введите модель вручную в настройках.');
-                    toastr.warning('Укажите модель в настройках API гардероба', 'Гардероб', { timeOut: 5000 });
-                } else {
-                    const apiUrl = `${wEndpoint}/v1/chat/completions`;
-                    const body = {
-                        model,
-                        messages: buildVisionMessages(),
-                        max_tokens: 150,
-                    };
-                    // Direct call (как в vishnya-main) — без /proxy/ и CSRF.
-                    swLog('INFO', `Wardrobe API: model=${model}, url=${apiUrl}, imageSize=~${Math.round(visionB64.length / 1024)}KB`);
-                    const response = await fetch(apiUrl, {
-                        method: 'POST',
-                        headers: {
-                            'Authorization': `Bearer ${wApiKey}`,
-                            'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify(body),
-                    });
-                    swLog('INFO', `Wardrobe API response status: ${response.status}`);
-
-                    if (!response.ok) {
-                        const errText = await response.text().catch(() => '');
-                        throw new Error(`HTTP ${response.status}: ${errText.substring(0, 200)}`);
-                    }
-                    const result = await response.json();
-                    const rawText = result.choices?.[0]?.message?.content || '';
-                    swLog('INFO', `Wardrobe API raw response: "${rawText.substring(0, 200)}"`);
-                    const desc = cleanDesc(rawText);
-                    if (desc && desc.length > 10 && desc.length < 500) {
-                        swLog('INFO', 'Auto-described via extra API:', desc.substring(0, 100));
-                        return desc;
-                    }
-                    swLog('WARN', `Wardrobe API response rejected (len=${desc.length}): "${desc.substring(0, 100)}"`);
-                }
-            } catch (e) {
-                swLog('WARN', 'Wardrobe extra API failed:', e.message);
-            }
-        } else {
-            swLog('WARN', 'Wardrobe extra API not configured — using main API fallback');
-        }
-
-        // Strategy 1: generateQuietPrompt with quietImage (proper ST vision pipeline)
+        // generateQuietPrompt with quietImage (proper ST vision pipeline)
         if (typeof ctx.generateQuietPrompt === 'function') {
             try {
                 toastr.info('Анализ образа...', 'Гардероб', { timeOut: 15000 });
@@ -307,10 +237,19 @@
             try {
                 const { base64 } = await swResize(f, swGetSettings().maxDimension);
 
-                // Auto-analyze image to generate description
-                let autoDesc = await swAnalyzeOutfit(base64);
-                // Let user edit/confirm the generated description
-                const desc = prompt('Описание образа (авто-сгенерировано, можете отредактировать):', autoDesc || '') || '';
+                // Ask user how to fill the description
+                // OK = LLM auto-describe, Cancel = manual
+                const useLLM = confirm('Как заполнить описание образа?\n\nОК = отправить картинку ЛЛМ для авто-описания\nОтмена = ввести описание вручную');
+
+                let initialDesc = '';
+                if (useLLM) {
+                    const autoDesc = await swAnalyzeOutfit(base64);
+                    initialDesc = autoDesc || '';
+                }
+
+                const desc = prompt(useLLM
+                    ? 'Описание образа (авто-сгенерировано, можете отредактировать):'
+                    : 'Описание образа:', initialDesc) || '';
 
                 swAdd(swCharName(), swTab, { id: uid(), name: name.trim(), description: desc.trim(), base64, addedAt: Date.now() });
                 swRender(); swUpdatePromptInjection(); toastr.success(`«${name.trim()}» добавлен`, 'Гардероб');
@@ -989,20 +928,27 @@ const logBuffer = [];
 const MAX_LOG_ENTRIES = 200;
 
 function iigLog(level, ...args) {
+    // Buffer for export, but keep console quiet for INFO to avoid heavy load
+    // (SillyTavern fires many events per generation; logging objects via JSON.stringify is expensive)
+    const isInfo = level !== 'ERROR' && level !== 'WARN';
+    if (isInfo && !window.IIG_DEBUG) {
+        // Skip even buffering for INFO unless debug is enabled — saves CPU
+        return;
+    }
     const timestamp = new Date().toISOString();
     const message = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
     const entry = `[${timestamp}] [${level}] ${message}`;
-    
+
     logBuffer.push(entry);
     if (logBuffer.length > MAX_LOG_ENTRIES) {
         logBuffer.shift();
     }
-    
+
     if (level === 'ERROR') {
         console.error('[IIG]', ...args);
     } else if (level === 'WARN') {
         console.warn('[IIG]', ...args);
-    } else {
+    } else if (window.IIG_DEBUG) {
         console.log('[IIG]', ...args);
     }
 }
@@ -1056,10 +1002,6 @@ const defaultSettings = Object.freeze({
     userAvatarFile: '',
     charPhotoOpen: false,
     userPhotoOpen: false,
-    // Wardrobe extra API (for outfit vision analysis)
-    wardrobeEndpoint: '',
-    wardrobeApiKey: '',
-    wardrobeModel: '',
     // Model list filter — false = только image-модели, true = вообще все модели с эндпоинта
     showAllModels: false,
     // ElectronHub-специфичные параметры
@@ -3999,65 +3941,6 @@ function isVisionModel(modelId) {
 }
 
 /**
- * Fetch vision models from wardrobe API endpoint for auto-select.
- */
-async function fetchWardrobeVisionModels() {
-    const settings = getSettings();
-    const endpoint = (settings.wardrobeEndpoint || '').replace(/\/$/, '');
-    const apiKey = settings.wardrobeApiKey || '';
-    if (!endpoint || !apiKey) {
-        throw new Error('Эндпоинт или API ключ гардероба не настроены');
-    }
-    const url = `${endpoint}/v1/models`;
-    // Direct call (как в vishnya-main) — без /proxy/ и CSRF.
-    const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-        },
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
-    const models = data.data || [];
-    // Return all models — user can pick; auto-select prefers vision models
-    return models.map(m => m.id).sort((a, b) => {
-        const aVis = isVisionModel(a) ? 0 : 1;
-        const bVis = isVisionModel(b) ? 0 : 1;
-        return aVis - bVis || a.localeCompare(b);
-    });
-}
-
-/**
- * Auto-select the best vision model from wardrobe endpoint.
- */
-async function autoSelectWardrobeModel() {
-    const settings = getSettings();
-    if (settings.wardrobeModel) return settings.wardrobeModel;
-    const endpoint = (settings.wardrobeEndpoint || '').replace(/\/$/, '');
-    const apiKey = settings.wardrobeApiKey || '';
-    if (!endpoint || !apiKey) return null;
-    try {
-        const url = `${endpoint}/v1/models`;
-        const response = await fetch(url, {
-            method: 'GET',
-            headers: { 'Authorization': `Bearer ${apiKey}` },
-        });
-        if (!response.ok) return null;
-        const data = await response.json();
-        const models = (data.data || []).map(m => m.id);
-        // Prefer vision models
-        const vision = models.filter(m => isVisionModel(m));
-        if (vision.length > 0) return vision[0];
-        // Fallback: any model
-        return models[0] || null;
-    } catch (e) {
-        iigLog('WARN', 'autoSelectWardrobeModel failed:', e.message);
-        return null;
-    }
-}
-
-/**
  * Render reference image slots in the UI.
  */
 function renderRefSlots() {
@@ -4682,29 +4565,6 @@ function createSettingsUI() {
                         </div>
                     </div>
 
-                    <div class="iig-settings-card" id="iig_wardrobe_api_section">
-                        <h4>API гардероба (анализ образов)</h4>
-                        <p class="hint">Отдельный API для анализа одежды через vision модель. Если не заполнено — используется встроенный API SillyTavern.</p>
-                        <div class="flex-row">
-                            <label for="iig_wardrobe_endpoint">Эндпоинт</label>
-                            <input type="text" id="iig_wardrobe_endpoint" class="text_pole flex1"
-                                   value="${settings.wardrobeEndpoint || ''}"
-                                   placeholder="https://api.openai.com">
-                        </div>
-                        <div class="flex-row">
-                            <label for="iig_wardrobe_api_key">API ключ</label>
-                            <input type="password" id="iig_wardrobe_api_key" class="text_pole flex1"
-                                   value="${settings.wardrobeApiKey || ''}">
-                        </div>
-                        <div class="flex-row">
-                            <label for="iig_wardrobe_model">Модель</label>
-                            <input type="text" id="iig_wardrobe_model" class="text_pole flex1"
-                                   value="${sanitizeForHtml(settings.wardrobeModel || '')}"
-                                   placeholder="например: gpt-4o-mini, gemini-2.0-flash, qwen-vl-max">
-                        </div>
-                        <p class="hint" style="margin-top:4px;">Введите ID vision-модели вручную (как в Telegram-боте). Список моделей не запрашивается — некоторые провайдеры (voidai и др.) не поддерживают /v1/models.</p>
-                    </div>
-
                     <div class="iig-settings-card">
                         <h4>Отладка</h4>
                         <div class="flex-row">
@@ -5145,42 +5005,6 @@ function bindSettingsEvents() {
         saveSettings();
         rebuildPresetSelect();
         toastr.info(`Пресет «${preset.name}» удалён`, 'Пресеты', { timeOut: 2000 });
-    });
-
-    // ── Wardrobe API handlers ──
-    document.getElementById('iig_wardrobe_endpoint')?.addEventListener('input', (e) => {
-        settings.wardrobeEndpoint = e.target.value.trim();
-        saveSettings();
-    });
-    document.getElementById('iig_wardrobe_api_key')?.addEventListener('input', (e) => {
-        settings.wardrobeApiKey = e.target.value;
-        saveSettings();
-    });
-    document.getElementById('iig_wardrobe_model')?.addEventListener('change', (e) => {
-        settings.wardrobeModel = e.target.value;
-        saveSettings();
-    });
-    document.getElementById('iig_wardrobe_refresh_models')?.addEventListener('click', async (e) => {
-        const btn = e.currentTarget;
-        btn.classList.add('loading');
-        try {
-            const models = await fetchWardrobeVisionModels();
-            const select = document.getElementById('iig_wardrobe_model');
-            const current = settings.wardrobeModel;
-            select.innerHTML = '<option value="">-- Авто --</option>';
-            for (const m of models) {
-                const opt = document.createElement('option');
-                opt.value = m;
-                opt.textContent = m;
-                opt.selected = m === current;
-                select.appendChild(opt);
-            }
-            toastr.success(`Найдено моделей: ${models.length}`, 'Гардероб');
-        } catch (err) {
-            toastr.error('Ошибка загрузки моделей: ' + err.message, 'Гардероб');
-        } finally {
-            btn.classList.remove('loading');
-        }
     });
 
     // ── Unified ref slots ──
@@ -5639,12 +5463,7 @@ function enhanceRenderedImages(mesTextEl, messageId) {
  */
 (function init() {
     const context = SillyTavern.getContext();
-    
-    // Debug: log available event types
-    console.log('[IIG] Available event_types:', context.event_types);
-    console.log('[IIG] CHARACTER_MESSAGE_RENDERED:', context.event_types.CHARACTER_MESSAGE_RENDERED);
-    console.log('[IIG] MESSAGE_SWIPED:', context.event_types.MESSAGE_SWIPED);
-    
+
     // Load settings and restore refs
     getSettings();
     restoreRefsFromLocalStorage();
@@ -5658,27 +5477,19 @@ function enhanceRenderedImages(mesTextEl, messageId) {
         createSettingsUI();
         // Add buttons to any messages already in chat
         addButtonsToExistingMessages();
-        console.log('[IIG] Inline Image Generation extension loaded');
     });
     
     // When chat is loaded/changed, add buttons to all existing messages
     context.eventSource.on(context.event_types.CHAT_CHANGED, () => {
-        iigLog('INFO', 'CHAT_CHANGED event - adding buttons to existing messages');
         // Small delay to ensure DOM is ready
         setTimeout(() => {
             addButtonsToExistingMessages();
         }, 100);
     });
-    
-    // Wrapper to add debug logging
-    const handleMessage = async (messageId) => {
-        console.log('[IIG] Event triggered for message:', messageId);
-        await onMessageReceived(messageId);
-    };
-    
+
     // Listen for new messages AFTER they're rendered in DOM
     // CHARACTER_MESSAGE_RENDERED fires after addOneMessage() completes
-    context.eventSource.makeLast(context.event_types.CHARACTER_MESSAGE_RENDERED, handleMessage);
+    context.eventSource.makeLast(context.event_types.CHARACTER_MESSAGE_RENDERED, onMessageReceived);
     
     // Re-add button after swipe (DOM is rebuilt, old button lost)
     context.eventSource.on(context.event_types.MESSAGE_SWIPED, (messageId) => {
@@ -5694,27 +5505,27 @@ function enhanceRenderedImages(mesTextEl, messageId) {
         }, 100);
     });
 
-    // Safety net: MutationObserver re-adds buttons if DOM is rebuilt for any reason
+    // Safety net: MutationObserver re-adds buttons if DOM is rebuilt for any reason.
+    // NOTE: subtree:false — `.mes` elements are always direct children of `#chat`.
+    // Watching the subtree triggers on every streaming token (huge perf cost).
     const chatEl = document.getElementById('chat');
     if (chatEl) {
         const observer = new MutationObserver((mutations) => {
             for (const m of mutations) {
                 for (const node of m.addedNodes) {
                     if (node.nodeType !== 1) continue;
-                    const mesEls = node.classList?.contains('mes') ? [node] : node.querySelectorAll?.('.mes') || [];
-                    for (const el of mesEls) {
-                        const mesId = el.getAttribute('mesid');
-                        if (mesId === null) continue;
-                        const id = parseInt(mesId, 10);
-                        const msg = context.chat[id];
-                        if (msg && !msg.is_user && !el.querySelector('.iig-regenerate-btn')) {
-                            addRegenerateButton(el, id);
-                        }
+                    if (!node.classList?.contains('mes')) continue;
+                    const mesId = node.getAttribute('mesid');
+                    if (mesId === null) continue;
+                    const id = parseInt(mesId, 10);
+                    const msg = context.chat[id];
+                    if (msg && !msg.is_user && !node.querySelector('.iig-regenerate-btn')) {
+                        addRegenerateButton(node, id);
                     }
                 }
             }
         });
-        observer.observe(chatEl, { childList: true, subtree: true });
+        observer.observe(chatEl, { childList: true, subtree: false });
     }
     
     console.log('[IIG] Inline Image Generation extension initialized');
