@@ -12,7 +12,7 @@
     const SW = 'silly_wardrobe';
 
     function uid() { return Date.now().toString(36) + Math.random().toString(36).substring(2, 8); }
-    function swLog(l, ...a) { (l === 'ERROR' ? console.error : l === 'WARN' ? console.warn : console.log)('[SW]', ...a); }
+    function swLog(l, ...a) { if (l === 'ERROR') return console.error('[SW]', ...a); if (l === 'WARN') return console.warn('[SW]', ...a); if (window.IIG_DEBUG) console.log('[SW]', ...a); }
     function esc(t) { const d = document.createElement('div'); d.textContent = t || ''; return d.innerHTML; }
 
     // Strip <think>...</think> reasoning blocks and similar fences from outfit descriptions.
@@ -2131,6 +2131,12 @@ async function generateImageElectronHub(prompt, style, referenceImages = [], opt
         if (e.name === 'AbortError') {
             throw new Error(`ElectronHub: timeout after ${ELECTRONHUB_REQUEST_TIMEOUT_MS / 1000}s`);
         }
+        // CORS/network on /edits — fall back to /generations without refs
+        if (useEdits && e?.name === 'TypeError') {
+            iigLog('WARN', `ElectronHub /edits unreachable (${e.message}). Falling back to /generations without references.`);
+            try { toastr?.warning?.('Прокси не поддерживает /v1/images/edits — рефы пропущены.', 'ElectronHub', { timeOut: 6000 }); } catch (_) {}
+            return await generateImageElectronHub(prompt, style, [], options);
+        }
         throw e;
     }
     clearTimeout(timeoutId);
@@ -2226,10 +2232,48 @@ async function generateImageOpenAI(prompt, style, referenceImages = [], options 
         };
     }
 
-    const response = await fetch(url, init);
+    // Helper: chat-completions fallback that PRESERVES references
+    const chatFallback = async (reason) => {
+        iigLog('WARN', `OpenAI ${reason} — falling back to /v1/chat/completions (OpenRouter-style) with references.`);
+        const fpStyled = style ? `[Style: ${style}] ${prompt}` : prompt;
+        return await generateImageViaChatCompletions({
+            settings,
+            model: settings.model,
+            fullPrompt: fpStyled,
+            referenceImages,
+            refLabels: options.refLabels || [],
+            aspectRatio: options.aspectRatio || settings.aspectRatio,
+            imageSize: settings.imageSize,
+        });
+    };
+
+    let response;
+    try {
+        response = await fetch(url, init);
+    } catch (e) {
+        // CORS/network error on /edits — most proxies (rout.my, openrouter, ...) don't expose /v1/images/edits.
+        // Try /v1/chat/completions instead — same proxy almost always supports it WITH references.
+        if (wantsEdits && e?.name === 'TypeError') {
+            try { return await chatFallback(`/edits unreachable (${e.message})`); } catch (e2) {
+                iigLog('WARN', `Chat-completions fallback failed: ${e2.message}. Last resort: /generations without refs.`);
+                try { toastr?.warning?.('Прокси не поддерживает ни /v1/images/edits, ни /v1/chat/completions с картинками — рефы пропущены.', 'OpenAI', { timeOut: 7000 }); } catch (_) {}
+                return await generateImageOpenAI(prompt, style, [], options);
+            }
+        }
+        throw e;
+    }
 
     if (!response.ok) {
         const text = await response.text();
+        // Some proxies return 400 "Model name is required in path" / INVALID_ARGUMENT for /edits and /generations
+        // when they actually route through chat completions. Try that path with refs.
+        if (referenceImages.length > 0 &&
+            (response.status === 400 || response.status === 404 || response.status === 405) &&
+            /Model name is required|INVALID_ARGUMENT|not.found|method not allowed/i.test(text)) {
+            try { return await chatFallback(`${response.status}: ${text.slice(0, 80)}`); } catch (e2) {
+                throw new Error(`API Error (${response.status}): ${text}`);
+            }
+        }
         throw new Error(`API Error (${response.status}): ${text}`);
     }
 
@@ -2315,7 +2359,10 @@ const VALID_IMAGE_SIZES = ['1K', '2K', '4K'];
  */
 async function generateImageGemini(prompt, style, referenceImages = [], options = {}) {
     const settings = getSettings();
-    const model = settings.model;
+    // Strip OpenRouter-style provider prefixes ("google/", "anthropic/" etc.) — Google's native
+    // /v1beta/models/{name}:generateContent expects a bare model id, otherwise returns 404.
+    const rawModel = String(settings.model || '');
+    const model = rawModel.includes('/') ? rawModel.split('/').pop() : rawModel;
     const url = options.overrideUrl || `${settings.endpoint.replace(/\/$/, '')}/v1beta/models/${model}:generateContent`;
     
     // Determine aspect ratio: tag option > settings, with validation
@@ -2419,6 +2466,18 @@ async function generateImageGemini(prompt, style, referenceImages = [], options 
     
     if (!response.ok) {
         const text = await response.text();
+        if (response.status === 404) {
+            iigLog('WARN', `Gemini /v1beta returned 404 — falling back to OpenAI-compat /v1/chat/completions (OpenRouter-style).`);
+            return await generateImageViaChatCompletions({
+                settings,
+                model: rawModel,           // keep "google/..." prefix — OpenRouter-style proxies expect it
+                fullPrompt,
+                referenceImages,
+                refLabels,
+                aspectRatio,
+                imageSize,
+            });
+        }
         throw new Error(`API Error (${response.status}): ${text}`);
     }
     
@@ -2446,9 +2505,71 @@ async function generateImageGemini(prompt, style, referenceImages = [], options 
 }
 
 /**
- * Generate image via VoidAI / RouteMyAI / OpenAI-style chat endpoints that
- * return images in the chat-completions response.
+ * Fallback for proxies that expose image-generation through OpenAI-compat /v1/chat/completions
+ * (OpenRouter style). Used when /v1beta/...generateContent or /v1/images/edits returns 404/CORS/etc.
  */
+async function generateImageViaChatCompletions({ settings, model, fullPrompt, referenceImages = [], refLabels = [], aspectRatio, imageSize }) {
+    const url = `${settings.endpoint.replace(/\/$/, '')}/v1/chat/completions`;
+
+    const labelMap = {
+        'char_ref': '⬇️ CHARACTER REFERENCE — copy this character\'s appearance exactly:',
+        'user_ref': '⬇️ USER REFERENCE — copy this person\'s appearance exactly:',
+        'npc_ref': '⬇️ NPC REFERENCE — copy this character\'s appearance exactly:',
+        'char_outfit': '⬇️ CHARACTER OUTFIT REFERENCE — copy this clothing:',
+        'user_outfit': '⬇️ USER OUTFIT REFERENCE — copy this clothing:',
+        'context': '⬇️ SCENE CONTEXT (for style/mood consistency):',
+    };
+
+    // OpenRouter-style: text first, then images. Each ref preceded by a label.
+    const content = [{ type: 'text', text: fullPrompt }];
+    for (let i = 0; i < Math.min(referenceImages.length, MAX_GENERATION_REFERENCE_IMAGES); i++) {
+        const lbl = labelMap[refLabels[i]] || '⬇️ REFERENCE IMAGE:';
+        content.push({ type: 'text', text: lbl });
+        content.push({
+            type: 'image_url',
+            image_url: { url: `data:image/png;base64,${referenceImages[i]}` },
+        });
+    }
+
+    const body = {
+        model,
+        messages: [{ role: 'user', content }],
+        modalities: ['image', 'text'],
+    };
+    const imageConfig = {};
+    if (aspectRatio) imageConfig.aspect_ratio = aspectRatio;
+    if (imageSize) imageConfig.image_size = imageSize;
+    if (Object.keys(imageConfig).length > 0) body.image_config = imageConfig;
+
+    iigLog('INFO', `Gemini-via-chat fallback: model=${model} refs=${referenceImages.length} aspect=${aspectRatio} size=${imageSize}`);
+
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${settings.apiKey}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`Gemini-via-chat ${response.status}: ${String(text).slice(0, 400)}`);
+    }
+
+    const result = await response.json();
+    const message = result?.choices?.[0]?.message;
+    const images = Array.isArray(message?.images) ? message.images : [];
+    const imageUrl = images[0]?.image_url?.url;
+    if (typeof imageUrl === 'string' && imageUrl.length > 0) {
+        return imageUrl; // already a data URL
+    }
+    // Some proxies return base64 directly in content
+    if (typeof message?.content === 'string' && message.content.startsWith('data:image/')) {
+        return message.content;
+    }
+    throw new Error('Gemini-via-chat: no image in response (choices[0].message.images empty)');
+}
 // Downscale a base64 PNG/JPEG to fit within maxSide px and re-encode as JPEG.
 // Used as a last-resort fallback when HTTP/2 drops the connection on large bodies.
 async function downscaleB64ForVoid(b64, maxSide = 768, quality = 0.82) {
@@ -3088,7 +3209,7 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
                 } else if (fmt === 'electronhub') {
                     generated = await generateImageElectronHub(prompt, style, referenceImages, customOpts);
                 } else {
-                    generated = await generateImageOpenAI(prompt, style, referenceImages, customOpts);
+                    generated = await generateImageOpenAI(prompt, style, referenceImages, { ...customOpts, refLabels });
                 }
             } else if (settings.apiType === 'naistera') {
                 generated = await generateImageNaistera(prompt, style, {
@@ -3104,7 +3225,7 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
             } else if (settings.apiType === 'gemini' || isGeminiModel(settings.model)) {
                 generated = await generateImageGemini(prompt, style, referenceImages, { ...options, refLabels });
             } else {
-                generated = await generateImageOpenAI(prompt, style, referenceImages, options);
+                generated = await generateImageOpenAI(prompt, style, referenceImages, { ...options, refLabels });
             }
 
             if (generated && typeof generated === 'object' && generated.kind === 'video') {
@@ -3134,15 +3255,18 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
             return generated;
         } catch (error) {
             lastError = error;
-            console.error(`[IIG] Generation attempt ${attempt + 1} failed:`, error);
+            console.error(`[IIG] Generation attempt ${attempt + 1} failed:`, error?.message || error);
             
-            // Check if retryable
-            const isRetryable = error.message?.includes('429') ||
-                               error.message?.includes('503') ||
-                               error.message?.includes('502') ||
-                               error.message?.includes('504') ||
-                               error.message?.includes('timeout') ||
-                               error.message?.includes('network');
+            // Check if retryable. 503 "No providers available" is permanent for the model — don't retry.
+            const msg = error.message || '';
+            const noProviders = /no providers available/i.test(msg);
+            const isRetryable = !noProviders && (
+                msg.includes('429') ||
+                msg.includes('502') ||
+                msg.includes('504') ||
+                msg.includes('timeout') ||
+                msg.includes('network')
+            );
             
             if (!isRetryable || attempt === maxRetries) {
                 break;
