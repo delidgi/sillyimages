@@ -2055,7 +2055,6 @@ function electronHubAspectToSize(aspect, modelId) {
 async function generateImageElectronHub(prompt, style, referenceImages = [], options = {}) {
     const settings = getSettings();
     const baseEndpoint = (settings.endpoint || DEFAULT_ENDPOINTS.electronhub).replace(/\/+$/, '');
-    const url = options.overrideUrl || `${baseEndpoint}/v1/images/generations`;
 
     const fullPrompt = style ? `[Style: ${style}] ${prompt}` : prompt;
 
@@ -2064,47 +2063,69 @@ async function generateImageElectronHub(prompt, style, referenceImages = [], opt
     const sizeFromAspect = electronHubAspectToSize(aspect, settings.model);
     const size = sizeFromAspect || settings.size || '1024x1024';
 
-    const body = {
-        model: settings.model,
-        prompt: fullPrompt,
-        n: 1,
-        size,
-        response_format: 'b64_json',
-    };
-
-    // ElectronHub-специфичные параметры — добавляем только если заданы
     const ehStyle = String(settings.electronhubStyle || '').trim();
     const negPrompt = String(settings.electronhubNegativePrompt || '').trim();
     const guidance = parseFloat(settings.electronhubGuidanceScale);
     const steps = parseInt(settings.electronhubSteps, 10);
 
-    if (ehStyle) body.style = ehStyle;
-    if (negPrompt) body.negative_prompt = negPrompt;
-    if (Number.isFinite(guidance) && guidance > 0) body.guidance_scale = guidance;
-    if (Number.isFinite(steps) && steps > 0) body.steps = steps;
+    const useEdits = referenceImages.length > 0 && settings.electronhubEnableReferences;
+    const url = options.overrideUrl
+        || (useEdits ? `${baseEndpoint}/v1/images/edits` : `${baseEndpoint}/v1/images/generations`);
 
-    // Экспериментальные референсы — отправляем как `image` (первый референс)
-    if (referenceImages.length > 0 && settings.electronhubEnableReferences) {
-        body.image = `data:image/png;base64,${referenceImages[0]}`;
-    }
+    iigLog('INFO', `ElectronHub: model=${settings.model} mode=${useEdits ? 'edits' : 'generations'} size=${size} style=${ehStyle || '(none)'} refs=${referenceImages.length}${settings.electronhubEnableReferences ? '/enabled' : '/disabled'}`);
 
-    iigLog('INFO', `ElectronHub: model=${settings.model} size=${size} style=${ehStyle || '(none)'} refs=${referenceImages.length}${settings.electronhubEnableReferences ? '/enabled' : '/disabled'}`);
+    let init;
 
-    // fetch с таймаутом 10 минут
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), ELECTRONHUB_REQUEST_TIMEOUT_MS);
+    if (useEdits) {
+        // ElectronHub /edits ожидает multipart, single `image` (mosт моделей не имеют image[])
+        const form = new FormData();
+        form.append('model', settings.model);
+        form.append('prompt', fullPrompt);
+        form.append('n', '1');
+        form.append('size', size);
+        form.append('response_format', 'b64_json');
+        if (ehStyle) form.append('style', ehStyle);
+        if (negPrompt) form.append('negative_prompt', negPrompt);
+        if (Number.isFinite(guidance) && guidance > 0) form.append('guidance_scale', String(guidance));
+        if (Number.isFinite(steps) && steps > 0) form.append('steps', String(steps));
+        form.append('image', iigBase64ToBlob(referenceImages[0], 'image/png'), 'reference-0.png');
 
-    let response;
-    try {
-        response = await fetch(url, {
+        init = {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${settings.apiKey}` },
+            body: form,
+        };
+    } else {
+        const body = {
+            model: settings.model,
+            prompt: fullPrompt,
+            n: 1,
+            size,
+            response_format: 'b64_json',
+        };
+        if (ehStyle) body.style = ehStyle;
+        if (negPrompt) body.negative_prompt = negPrompt;
+        if (Number.isFinite(guidance) && guidance > 0) body.guidance_scale = guidance;
+        if (Number.isFinite(steps) && steps > 0) body.steps = steps;
+
+        init = {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${settings.apiKey}`,
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify(body),
-            signal: controller.signal,
-        });
+        };
+    }
+
+    // fetch с таймаутом 10 минут
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), ELECTRONHUB_REQUEST_TIMEOUT_MS);
+    init.signal = controller.signal;
+
+    let response;
+    try {
+        response = await fetch(url, init);
     } catch (e) {
         clearTimeout(timeoutId);
         if (e.name === 'AbortError') {
@@ -2134,64 +2155,154 @@ async function generateImageElectronHub(prompt, style, referenceImages = [], opt
 
 async function generateImageOpenAI(prompt, style, referenceImages = [], options = {}) {
     const settings = getSettings();
-    const url = options.overrideUrl || `${settings.endpoint.replace(/\/$/, '')}/v1/images/generations`;
-    
+    const baseEndpoint = (settings.endpoint || '').replace(/\/$/, '');
+
     const fullPrompt = style ? `[Style: ${style}] ${prompt}` : prompt;
-    
-    // Map aspect ratio to size if provided in tag
+
+    const modelKind = classifyOpenAIModel(settings.model);
+    const isGptImg = isGptImageFamily(modelKind);
+    const isFluxKontext = modelKind === 'flux-kontext';
+    const isDallE2 = modelKind === 'dall-e-2';
+
+    // Map aspect ratio → size for the model family
     let size = settings.size;
     if (options.aspectRatio) {
-        if (options.aspectRatio === '16:9') size = '1792x1024';
-        else if (options.aspectRatio === '9:16') size = '1024x1792';
-        else if (options.aspectRatio === '1:1') size = '1024x1024';
+        size = openAIAspectToSize(options.aspectRatio, modelKind) || size;
     }
-    
-    const body = {
-        model: settings.model,
-        prompt: fullPrompt,
-        n: 1,
-        size: size,
-        quality: options.quality || settings.quality,
-        response_format: 'b64_json'
-    };
-    
-    // Add reference image if supported (for models like GPT-Image-1, FLUX)
-    if (referenceImages.length > 0) {
-        body.image = `data:image/png;base64,${referenceImages[0]}`;
+
+    const quality = normalizeOpenAIQuality(options.quality || settings.quality, modelKind);
+
+    // Routing: if we have references AND model supports /edits → multipart
+    const supportsEdits = isGptImg || isFluxKontext || isDallE2;
+    const wantsEdits = referenceImages.length > 0 && supportsEdits;
+
+    iigLog('INFO', `OpenAI generate: model=${settings.model} kind=${modelKind} refs=${referenceImages.length} mode=${wantsEdits ? 'edits' : 'generations'} size=${size || '(auto)'} quality=${quality || '(auto)'}`);
+
+    let url;
+    let init;
+
+    if (wantsEdits) {
+        url = options.overrideUrl || `${baseEndpoint}/v1/images/edits`;
+        const form = new FormData();
+        form.append('model', settings.model);
+        form.append('prompt', fullPrompt);
+        form.append('n', '1');
+        if (size) form.append('size', size);
+        if (quality) form.append('quality', quality);
+
+        // gpt-image-* supports multi-image via image[]; flux-kontext / dall-e-2 → single image
+        if (isGptImg && referenceImages.length > 1) {
+            referenceImages.forEach((b64, idx) => {
+                form.append('image[]', iigBase64ToBlob(b64, 'image/png'), `reference-${idx}.png`);
+            });
+        } else {
+            form.append('image', iigBase64ToBlob(referenceImages[0], 'image/png'), 'reference-0.png');
+        }
+
+        init = {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${settings.apiKey}` },
+            body: form,
+        };
+    } else {
+        url = options.overrideUrl || `${baseEndpoint}/v1/images/generations`;
+        const body = {
+            model: settings.model,
+            prompt: fullPrompt,
+            n: 1,
+        };
+        if (size) body.size = size;
+        if (quality) body.quality = quality;
+        // gpt-image-* always returns b64 — sending response_format=b64_json triggers 400 on strict proxies.
+        if (!isGptImg) body.response_format = 'b64_json';
+
+        init = {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${settings.apiKey}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(body),
+        };
     }
-    
-    const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-            'Authorization': `Bearer ${settings.apiKey}`,
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(body)
-    });
-    
+
+    const response = await fetch(url, init);
+
     if (!response.ok) {
         const text = await response.text();
         throw new Error(`API Error (${response.status}): ${text}`);
     }
-    
+
     const result = await response.json();
-    
-    // Parse response - standard OpenAI format
     const dataList = result.data || [];
     if (dataList.length === 0) {
         if (result.url) return result.url;
         throw new Error('No image data in response');
     }
-    
     const imageObj = dataList[0];
-    const imageData = imageObj.b64_json || imageObj.url;
-    
-    // Return as data URL if b64_json
-    if (imageObj.b64_json) {
-        return `data:image/png;base64,${imageObj.b64_json}`;
+    if (imageObj.b64_json) return `data:image/png;base64,${imageObj.b64_json}`;
+    if (imageObj.url) return imageObj.url;
+    throw new Error('Response data[0] has no b64_json or url');
+}
+
+// ── OpenAI helpers ──
+function classifyOpenAIModel(modelId) {
+    const id = String(modelId || '').toLowerCase().trim();
+    if (id.includes('gpt-image-2')) return 'gpt-image-2';
+    if (id.includes('gpt-image-1.5') || id.includes('gpt-image-1-5')) return 'gpt-image-1.5';
+    if (id.includes('gpt-image-1-mini')) return 'gpt-image-1-mini';
+    if (id.includes('gpt-image-1')) return 'gpt-image-1';
+    if (id.includes('gpt-image')) return 'gpt-image';
+    if (id.includes('flux-1-kontext') || id.includes('flux.1-kontext')) return 'flux-kontext';
+    if (id.includes('dall-e-3')) return 'dall-e-3';
+    if (id.includes('dall-e-2')) return 'dall-e-2';
+    return 'unknown';
+}
+
+function isGptImageFamily(kind) {
+    return kind === 'gpt-image-2' || kind === 'gpt-image-1.5' || kind === 'gpt-image-1-mini'
+        || kind === 'gpt-image-1' || kind === 'gpt-image';
+}
+
+function openAIAspectToSize(aspect, modelKind) {
+    if (!aspect) return null;
+    if (modelKind === 'gpt-image-2') {
+        return ({ '1:1':'1024x1024','16:9':'2048x1152','9:16':'1152x2048','3:2':'1536x1024','2:3':'1024x1536','4:3':'1536x1152','3:4':'1152x1536' })[aspect] || null;
     }
-    
-    return imageData;
+    if (isGptImageFamily(modelKind)) {
+        return ({ '1:1':'1024x1024','16:9':'1536x1024','9:16':'1024x1536','3:2':'1536x1024','2:3':'1024x1536','4:3':'1536x1024','3:4':'1024x1536' })[aspect] || null;
+    }
+    if (modelKind === 'dall-e-3') {
+        return ({ '1:1':'1024x1024','16:9':'1792x1024','9:16':'1024x1792' })[aspect] || null;
+    }
+    if (modelKind === 'dall-e-2') return '1024x1024';
+    return null;
+}
+
+function normalizeOpenAIQuality(userQuality, modelKind) {
+    const q = String(userQuality || '').toLowerCase().trim();
+    if (isGptImageFamily(modelKind)) {
+        if (['low','medium','high','auto'].includes(q)) return q;
+        if (q === 'hd') return 'high';
+        if (q === 'standard') return 'medium';
+        return 'auto';
+    }
+    if (modelKind === 'dall-e-3') return ['standard','hd'].includes(q) ? q : 'standard';
+    if (modelKind === 'dall-e-2') return 'standard';
+    return q || null;
+}
+
+// Convert raw base64 (no data: prefix) → Blob for FormData uploads.
+function iigBase64ToBlob(base64, mimeType = 'image/png') {
+    let s = String(base64 || '');
+    // Tolerate data URLs accidentally passed in
+    const comma = s.indexOf(',');
+    if (s.startsWith('data:') && comma > 0) s = s.slice(comma + 1);
+    const byteChars = atob(s);
+    const len = byteChars.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) bytes[i] = byteChars.charCodeAt(i);
+    return new Blob([bytes], { type: mimeType });
 }
 
 // Valid aspect ratios for Gemini/nano-banana
