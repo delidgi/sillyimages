@@ -695,47 +695,6 @@ img[data-iig-instruction] {
 }
 
 /* ═══════════════════════════════════════════
-   Плавающая кнопка-гардероб поверх чата (showFloatingBtn)
-   Видна и на ПК, и на телефоне.
-   ═══════════════════════════════════════════ */
-#sw-float-btn {
-    position: fixed;
-    right: 14px;
-    bottom: 92px;
-    z-index: 5000;
-    width: 44px;
-    height: 44px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 18px;
-    color: var(--SmartThemeBodyColor, #e2e2e2);
-    background: var(--SmartThemeBlurTintColor, rgba(20, 20, 30, 0.92));
-    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.18));
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
-    cursor: pointer;
-    user-select: none;
-    -webkit-backdrop-filter: blur(6px);
-    backdrop-filter: blur(6px);
-    transition: transform 0.12s ease, border-color 0.15s ease, color 0.15s ease;
-    pointer-events: all !important;
-}
-#sw-float-btn:hover {
-    transform: translateY(-2px);
-    border-color: var(--SmartThemeQuoteColor, rgba(255, 255, 255, 0.45));
-    color: var(--SmartThemeBodyColor, #fff);
-}
-#sw-float-btn:active { transform: scale(0.94); }
-#sw-float-btn.sw-float-active {
-    border-color: var(--SmartThemeBodyColor, #e2e2e2);
-}
-#sw-float-btn .sw-bar-count {
-    top: -5px;
-    right: -5px;
-    font-size: 10px;
-}
-
-/* ═══════════════════════════════════════════
    Mobile fixes
    ═══════════════════════════════════════════ */
 @media (max-width: 600px) {
@@ -752,14 +711,6 @@ img[data-iig-instruction] {
     .sw-outfit-grid {
         grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
         gap: 8px;
-    }
-    /* Плавающая кнопка: на телефоне чуть ниже и компактнее, чтобы не перекрывать поле ввода */
-    #sw-float-btn {
-        right: 10px;
-        bottom: 76px;
-        width: 42px;
-        height: 42px;
-        font-size: 17px;
     }
 }
 
@@ -947,7 +898,7 @@ img[data-iig-instruction] {
 .sw-header-btn:active {
     transform: scale(0.92);
 }
-.sw-btn-quick:hover { color: var(--SmartThemeBodyColor, #e2e2e2); }
+.sw-btn-quick:hover { color: #a78bfa; }
 .sw-btn-npc:hover   { color: #6ee7b7; }
 
 /* ═══════════════════════════════════════════
@@ -1222,7 +1173,7 @@ img[data-iig-instruction] {
     border: 1px dashed rgba(255, 255, 255, 0.08);
     transition: border-color 0.15s;
 }
-.sw-npc-thumb:hover { border-color: var(--SmartThemeQuoteColor, rgba(255, 255, 255, 0.45)); }
+.sw-npc-thumb:hover { border-color: rgba(167, 139, 250, 0.5); }
 .sw-npc-thumb img {
     width: 100%;
     height: 100%;
@@ -1246,7 +1197,7 @@ img[data-iig-instruction] {
 }
 .sw-npc-name:focus {
     outline: none;
-    border-color: var(--SmartThemeQuoteColor, rgba(255, 255, 255, 0.4));
+    border-color: rgba(167, 139, 250, 0.4);
     background: rgba(0, 0, 0, 0.2);
 }
 
@@ -1274,7 +1225,7 @@ img[data-iig-instruction] {
     color: var(--SmartThemeBodyColor, #e2e2e2);
 }
 .sw-npc-del:hover { color: #f87171 !important; }
-.sw-npc-upload:hover { color: var(--SmartThemeBodyColor, #e2e2e2); }
+.sw-npc-upload:hover { color: #a78bfa; }
 .sw-npc-btn-dim { opacity: 0.35; }
 
 /* NPC item info column */
@@ -1359,36 +1310,37 @@ img[data-iig-instruction] {
 
 .sw-q-avatar-item {
     position: relative;
+    aspect-ratio: 1 / 1;
+    border-radius: 8px;
     overflow: hidden;
     border: 2px solid transparent;
     background: rgba(255, 255, 255, 0.03);
     cursor: pointer;
     transition: transform 0.12s, border-color 0.15s, box-shadow 0.15s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 .sw-q-avatar-item:hover {
     transform: translateY(-1px);
-    border-color: var(--SmartThemeQuoteColor, rgba(255, 255, 255, 0.3));
+    border-color: rgba(167, 139, 250, 0.35);
 }
-/* Высоту карточки задаёт сам квадрат картинки (height:auto + aspect-ratio),
-   а НЕ aspect-ratio на карточке — иначе в grid строки считаются короче и аватары налезают друг на друга. */
 .sw-q-avatar-item img {
-    display: block;
     width: 100%;
-    height: auto;
-    aspect-ratio: 1 / 1;
+    height: 100%;
     object-fit: cover;
+    display: block;
 }
 .sw-q-avatar-item .sw-q-avatar-auto {
     width: 100%;
-    height: auto;
-    aspect-ratio: 1 / 1;
+    height: 100%;
     display: flex;
     align-items: center;
     justify-content: center;
     color: var(--SmartThemeQuoteColor, #999);
     font-size: 22px;
     opacity: 0.55;
-    background: rgba(255, 255, 255, 0.04);
+    background: rgba(167, 139, 250, 0.06);
 }
 .sw-q-avatar-item .sw-q-avatar-name {
     position: absolute;
@@ -1404,10 +1356,10 @@ img[data-iig-instruction] {
     pointer-events: none;
 }
 
-/* Selected state — белое кольцо (в стиле гардероба) */
+/* Selected state — strong purple ring */
 .sw-q-avatar-item.sw-q-avatar-sel {
-    border-color: var(--SmartThemeBodyColor, #e2e2e2);
-    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.45), 0 4px 16px rgba(0, 0, 0, 0.35);
+    border-color: #a78bfa;
+    box-shadow: 0 0 0 1px rgba(167, 139, 250, 0.5), 0 4px 16px rgba(167, 139, 250, 0.25);
     transform: translateY(-1px);
 }
 .sw-q-avatar-sel-badge {
@@ -1417,8 +1369,8 @@ img[data-iig-instruction] {
     width: 18px;
     height: 18px;
     border-radius: 50%;
-    background: var(--SmartThemeBodyColor, #e2e2e2);
-    color: var(--SmartThemeBlurTintColor, #111);
+    background: #a78bfa;
+    color: #fff;
     font-size: 9px;
     display: flex;
     align-items: center;
@@ -1466,275 +1418,6 @@ img[data-iig-instruction] {
         width: 32px;
         height: 32px;
         font-size: 14px;
-    }
-}
-
-/* ════════════════════════════════════════════════════════════
-   Общий гардероб юзера (тумблер) + Виды одежды (фильтр/типы)
-   ════════════════════════════════════════════════════════════ */
-
-/* ── Кнопки режима: Перс / Общий (компактный сегмент-контрол под табом) ── */
-.sw-mode-row {
-    display: flex; align-items: center; gap: 6px;
-    padding: 2px 0 10px;
-    margin-bottom: 2px;
-    border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.08));
-}
-.sw-mode-btn {
-    display: inline-flex; align-items: center; gap: 5px;
-    padding: 5px 12px; font-size: 12px;
-    color: var(--SmartThemeQuoteColor, #999);
-    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.16));
-    cursor: pointer; user-select: none; white-space: nowrap;
-    transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
-}
-.sw-mode-btn:hover { color: var(--SmartThemeBodyColor, #e2e2e2); border-color: var(--SmartThemeQuoteColor, rgba(255, 255, 255, 0.3)); }
-.sw-mode-btn.sw-mode-active {
-    color: var(--SmartThemeBlurTintColor, #111);
-    background: var(--SmartThemeBodyColor, #e2e2e2);
-    border-color: var(--SmartThemeBodyColor, #e2e2e2);
-}
-.sw-mode-btn i { font-size: 10px; opacity: 0.9; }
-
-/* ── Фильтр по типам (чипы) ── */
-.sw-filter-row {
-    display: flex; flex-wrap: wrap; gap: 5px;
-    padding: 4px 0 12px;
-}
-.sw-filter-chip {
-    display: inline-flex; align-items: center; gap: 5px;
-    padding: 4px 9px; font-size: 11.5px;
-    color: var(--SmartThemeQuoteColor, #999);
-    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.14));
-    background: transparent; cursor: pointer; user-select: none;
-    white-space: nowrap; transition: color 0.15s ease, border-color 0.15s ease;
-}
-.sw-filter-chip:hover { color: var(--SmartThemeBodyColor, #e2e2e2); border-color: var(--SmartThemeQuoteColor, rgba(255, 255, 255, 0.3)); }
-.sw-filter-chip.sw-filter-active {
-    color: var(--SmartThemeBlurTintColor, #111);
-    background: var(--SmartThemeBodyColor, #e2e2e2);
-    border-color: var(--SmartThemeBodyColor, #e2e2e2);
-}
-.sw-filter-chip i { font-size: 10px; opacity: 0.9; }
-.sw-chip-count { font-size: 10px; opacity: 0.7; }
-.sw-filter-chip.sw-filter-active .sw-chip-count { opacity: 0.55; }
-
-/* ── Бейдж типа поверх картинки ── */
-.sw-type-badge {
-    position: absolute; top: 4px; left: 4px;
-    width: 20px; height: 20px;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 10px; color: var(--SmartThemeBodyColor, #e2e2e2);
-    background: rgba(0, 0, 0, 0.5);
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    pointer-events: none;
-}
-
-/* ── Селект типа на карточке (тонкая строка под футером) ── */
-.sw-type-select {
-    width: 100%;
-    box-sizing: border-box;
-    padding: 3px 6px;
-    font-size: 10.5px;
-    color: var(--SmartThemeQuoteColor, #aaa);
-    background: rgba(0, 0, 0, 0.18);
-    border: none;
-    border-top: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.08));
-    cursor: pointer;
-    appearance: none; -webkit-appearance: none;
-    text-align: center; text-align-last: center;
-}
-.sw-type-select:hover { color: var(--SmartThemeBodyColor, #fff); background: rgba(0, 0, 0, 0.28); }
-.sw-type-select:focus { outline: none; }
-.sw-type-select option { color: initial; background: #222; }
-
-/* ── Кнопка «Импорт старых нарядов» ── */
-.sw-import-btn {
-    margin-left: auto;
-    display: inline-flex; align-items: center; gap: 5px;
-    padding: 4px 9px; font-size: 11px;
-    color: var(--SmartThemeBodyColor, #e2e2e2);
-    background: rgba(108, 140, 255, 0.14);
-    border: 1px solid var(--SmartThemeQuoteColor, rgba(108, 140, 255, 0.5));
-    cursor: pointer; white-space: nowrap;
-    transition: background 0.15s ease;
-}
-.sw-import-btn:hover:not(:disabled) { background: rgba(108, 140, 255, 0.28); }
-.sw-import-btn:disabled { opacity: 0.6; cursor: default; }
-.sw-import-btn i { font-size: 10px; }
-
-/* ── Пагинатор ── */
-.sw-pager {
-    display: flex; align-items: center; justify-content: center; gap: 14px;
-    padding: 12px 0 2px; margin-top: 4px;
-}
-.sw-pager-btn {
-    width: 30px; height: 30px;
-    display: flex; align-items: center; justify-content: center;
-    color: var(--SmartThemeBodyColor, #e2e2e2);
-    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.16));
-    cursor: pointer; user-select: none; font-size: 12px;
-    transition: border-color 0.15s ease, color 0.15s ease;
-}
-.sw-pager-btn:hover { border-color: var(--SmartThemeQuoteColor, rgba(255, 255, 255, 0.4)); }
-.sw-pager-btn.sw-pager-dim { opacity: 0.3; pointer-events: none; }
-.sw-pager-info { font-size: 12px; color: var(--SmartThemeQuoteColor, #999); min-width: 92px; text-align: center; }
-.sw-pager-info small { opacity: 0.65; }
-
-/* ════════════════════════════════════════════════════════════
-   Плоский (квадратный) дизайн панелей «Быстрые настройки» и «NPC»
-   — в едином стиле с самим гардеробом (#sw-modal — без скруглений).
-   Перекрывает все внутренние скругления (поля, кнопки, превью, мобилку).
-   ════════════════════════════════════════════════════════════ */
-#sw-quick-panel, #sw-npc-panel,
-#sw-quick-panel *, #sw-npc-panel * {
-    border-radius: 0 !important;
-}
-/* Кнопки в шапке гардероба (открывают эти панели) — тоже без скруглений */
-.sw-header-btn { border-radius: 0 !important; }
-
-/* ════════════════════════════════════════════════════════════
-   Форма добавления/редактирования образа (вместо системных prompt)
-   ════════════════════════════════════════════════════════════ */
-#sw-form-overlay {
-    position: fixed; inset: 0; z-index: 100020;
-    background: rgba(0, 0, 0, 0.55);
-    display: flex; align-items: center; justify-content: center;
-    padding: 20px; pointer-events: all !important;
-}
-#sw-form {
-    width: min(440px, 94vw);
-    max-height: min(88vh, calc(100dvh - 30px));
-    display: flex; flex-direction: column;
-    background: var(--SmartThemeBlurTintColor, rgba(20, 20, 30, 0.97));
-    color: var(--SmartThemeBodyColor, #e2e2e2);
-    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.15));
-    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
-    overflow: hidden;
-}
-.sw-form-header {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 10px 14px; font-size: 14px;
-    border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.1));
-}
-.sw-form-close {
-    width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
-    cursor: pointer; color: var(--SmartThemeQuoteColor, #999); border: 1px solid transparent;
-}
-.sw-form-close:hover { color: var(--SmartThemeBodyColor, #fff); border-color: var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2)); }
-.sw-form-body { padding: 14px; overflow-y: auto; display: flex; flex-direction: column; gap: 7px; flex: 1 1 auto; min-height: 0; }
-.sw-form-preview {
-    display: flex; align-items: center; justify-content: center;
-    background: rgba(0, 0, 0, 0.25); border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.08));
-    padding: 6px; margin-bottom: 4px;
-}
-.sw-form-preview img { max-width: 100%; max-height: 240px; object-fit: contain; display: block; }
-.sw-form-label {
-    font-size: 12px; color: var(--SmartThemeQuoteColor, #999);
-    display: flex; align-items: center; justify-content: space-between; margin-top: 2px;
-}
-.sw-form-ai {
-    cursor: pointer; font-size: 11px; color: var(--SmartThemeBodyColor, #e2e2e2);
-    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2)); padding: 2px 8px;
-    display: inline-flex; align-items: center; gap: 4px; user-select: none;
-}
-.sw-form-ai:hover { border-color: var(--SmartThemeQuoteColor, rgba(255, 255, 255, 0.45)); }
-.sw-form-ai-loading { opacity: 0.55; pointer-events: none; }
-.sw-form-ai-loading i { animation: sw-spin 0.8s linear infinite; }
-@keyframes sw-spin { to { transform: rotate(360deg); } }
-.sw-form-input, .sw-form-textarea { width: 100%; box-sizing: border-box; border-radius: 0 !important; }
-.sw-form-textarea { resize: vertical; min-height: 68px; font-family: inherit; }
-.sw-form-actions { display: flex; gap: 8px; margin-top: 10px; }
-.sw-form-btn {
-    flex: 1; text-align: center; padding: 9px; cursor: pointer; user-select: none;
-    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2));
-    color: var(--SmartThemeBodyColor, #e2e2e2); transition: background 0.15s, border-color 0.15s;
-}
-.sw-form-cancel:hover { border-color: var(--SmartThemeQuoteColor, rgba(255, 255, 255, 0.4)); }
-.sw-form-save {
-    background: var(--SmartThemeBodyColor, #e2e2e2); color: var(--SmartThemeBlurTintColor, #111);
-    border-color: var(--SmartThemeBodyColor, #e2e2e2); font-weight: 600;
-}
-.sw-form-save:hover { opacity: 0.9; }
-.sw-form-btn-busy { opacity: 0.6; pointer-events: none; }
-
-/* ════════════════════════════════════════════════════════════
-   Чистка неиспользуемых файлов (превью того, что удаляем)
-   ════════════════════════════════════════════════════════════ */
-#sw-cleanup-overlay {
-    position: fixed; inset: 0; z-index: 100015;
-    background: rgba(0, 0, 0, 0.55);
-    display: flex; align-items: center; justify-content: center;
-    padding: 20px; pointer-events: all !important;
-}
-#sw-cleanup-panel {
-    width: min(560px, 94vw);
-    max-height: min(86vh, calc(100dvh - 40px));
-    display: flex; flex-direction: column;
-    background: var(--SmartThemeBlurTintColor, rgba(20, 20, 30, 0.97));
-    color: var(--SmartThemeBodyColor, #e2e2e2);
-    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.15));
-    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
-    overflow: hidden;
-}
-.sw-cleanup-header {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 10px 14px; font-size: 14px;
-    border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.1));
-}
-.sw-cleanup-close {
-    width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
-    cursor: pointer; color: var(--SmartThemeQuoteColor, #999); border: 1px solid transparent;
-}
-.sw-cleanup-close:hover { color: var(--SmartThemeBodyColor, #fff); border-color: var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2)); }
-.sw-cleanup-body { padding: 14px; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
-.sw-cleanup-loading, .sw-cleanup-empty, .sw-cleanup-err { text-align: center; padding: 26px 10px; font-size: 13px; color: var(--SmartThemeQuoteColor, #999); }
-.sw-cleanup-empty i { color: #6ee7b7; margin-right: 6px; }
-.sw-cleanup-err { color: #f87171; }
-.sw-cleanup-info { font-size: 12.5px; color: var(--SmartThemeBodyColor, #e2e2e2); margin-bottom: 8px; }
-.sw-cleanup-info b { color: var(--SmartThemeBodyColor, #fff); }
-.sw-cleanup-hint { font-size: 11.5px; color: var(--SmartThemeQuoteColor, #999); margin-bottom: 8px; line-height: 1.4; }
-.sw-cleanup-tools { display: flex; gap: 14px; margin-bottom: 8px; }
-.sw-cleanup-link { font-size: 11.5px; color: var(--SmartThemeQuoteColor, #aaa); cursor: pointer; text-decoration: underline; }
-.sw-cleanup-link:hover { color: var(--SmartThemeBodyColor, #fff); }
-.sw-cleanup-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; }
-.sw-cleanup-item {
-    position: relative; overflow: hidden; cursor: pointer;
-    border: 2px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.12));
-    background: rgba(0, 0, 0, 0.25); opacity: 0.5; transition: opacity 0.12s, border-color 0.12s;
-}
-.sw-cleanup-item img { display: block; width: 100%; height: auto; aspect-ratio: 1 / 1; object-fit: cover; }
-.sw-cleanup-item .sw-cl-check {
-    position: absolute; top: 4px; right: 4px; width: 18px; height: 18px;
-    display: none; align-items: center; justify-content: center; font-size: 9px;
-    background: var(--SmartThemeBodyColor, #e2e2e2); color: var(--SmartThemeBlurTintColor, #111);
-}
-.sw-cleanup-item.sw-cl-sel { opacity: 1; border-color: var(--SmartThemeBodyColor, #e2e2e2); }
-.sw-cleanup-item.sw-cl-sel .sw-cl-check { display: flex; }
-.sw-cleanup-actions { margin-top: 14px; display: flex; justify-content: flex-end; }
-.sw-cleanup-btn {
-    padding: 8px 16px; cursor: pointer; user-select: none; font-size: 12.5px; font-weight: 600;
-    background: #b91c1c; color: #fff; border: 1px solid #b91c1c;
-}
-.sw-cleanup-btn:hover { background: #dc2626; }
-
-/* ════════════════════════════════════════════════════════════
-   Mobile: форма образа и чистка — как и остальные модалки,
-   прижимаем к верху и ограничиваем высотой видимой области.
-   Иначе при align-items:center высокая форма уезжает верхним
-   краем (шапкой) за экран — «окошко поднимается слишком высоко».
-   ════════════════════════════════════════════════════════════ */
-@media (max-width: 600px) {
-    #sw-form-overlay,
-    #sw-cleanup-overlay {
-        align-items: flex-start;
-        padding: 10px;
-        padding-top: 50px;
-    }
-    #sw-form,
-    #sw-cleanup-panel {
-        width: calc(100vw - 20px);
-        max-height: calc(100dvh - 70px);
     }
 }
 
