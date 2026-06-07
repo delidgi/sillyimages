@@ -25,15 +25,195 @@
         return s.replace(/\s+/g, ' ').trim();
     }
 
-    const swDefaults = Object.freeze({ wardrobes: {}, activeOutfits: {}, maxDimension: 512, showFloatingBtn: false });
+    const swDefaults = Object.freeze({
+        wardrobes: {}, activeOutfits: {},
+        // Общий (глобальный) гардероб юзера — единый для всех персонажей.
+        // Картинки хранятся ФАЙЛАМИ (imagePath), а НЕ base64 — чтобы не раздувать settings.json.
+        // Общий гардероб (общая коллекция на всех персонажей; надетое — per-chat).
+        // *Active — глобальный фолбэк (когда нет открытого чата); *ActiveByChat — что надето в каждом чате: { [chatId]: outfitId }.
+        sharedUserWardrobe: [], sharedUserActive: null, sharedUserActiveByChat: {}, useSharedUserWardrobe: false,
+        sharedBotWardrobe:  [], sharedBotActive:  null, sharedBotActiveByChat:  {}, useSharedBotWardrobe:  false,
+        maxDimension: 512, showFloatingBtn: false,
+    });
 
     function swGetSettings() {
         const ctx = SillyTavern.getContext();
         if (!ctx.extensionSettings[SW]) ctx.extensionSettings[SW] = structuredClone(swDefaults);
         const s = ctx.extensionSettings[SW];
-        for (const k of Object.keys(swDefaults)) if (!Object.hasOwn(s, k)) s[k] = swDefaults[k];
+        // structuredClone, чтобы не присвоить общую ссылку на замороженный дефолтный массив/объект.
+        for (const k of Object.keys(swDefaults)) if (!Object.hasOwn(s, k)) s[k] = structuredClone(swDefaults[k]);
+        // Защита от повреждённых настроек.
+        if (!Array.isArray(s.sharedUserWardrobe)) s.sharedUserWardrobe = [];
+        if (!Array.isArray(s.sharedBotWardrobe)) s.sharedBotWardrobe = [];
+        if (!s.sharedUserActiveByChat || typeof s.sharedUserActiveByChat !== 'object') s.sharedUserActiveByChat = {};
+        if (!s.sharedBotActiveByChat || typeof s.sharedBotActiveByChat !== 'object') s.sharedBotActiveByChat = {};
+        // ── Типы одежды: засев из дефолтов при первом запуске + разовая миграция ──
+        if (!Array.isArray(s.outfitTypes) || !s.outfitTypes.length) {
+            s.outfitTypes = structuredClone(SW_DEFAULT_TYPES);
+            // Старый id 'underwear' был ошибочно подписан «Работа» — переносим на нормальный 'work'.
+            swMigrateTypeId(s, 'underwear', 'work');
+        }
+        // Чистка повреждённых записей + гарантия запасного тега 'other'.
+        // swGetSettings зовётся часто — пересобираем массив только если реально есть мусор.
+        if (s.outfitTypes.some(t => !t || typeof t.id !== 'string' || !t.id)) {
+            s.outfitTypes = s.outfitTypes.filter(t => t && typeof t.id === 'string' && t.id);
+        }
+        if (!s.outfitTypes.some(t => t.id === SW_FALLBACK_TYPE)) s.outfitTypes.push({ id: SW_FALLBACK_TYPE, label: 'Другое', icon: 'fa-tag' });
         return s;
     }
+
+    // ── Типы одежды (категории) ──
+    // Дефолтный набор — «семя» при первом запуске. Дальше список редактируется
+    // пользователем и хранится в settings.outfitTypes (см. swGetSettings / swTypes).
+    const SW_DEFAULT_TYPES = [
+        { id: 'casual', label: 'Повседневное',   icon: 'fa-shirt' },
+        { id: 'formal', label: 'Формальное',     icon: 'fa-gem' },
+        { id: 'sport',  label: 'Спортивное',     icon: 'fa-person-running' },
+        { id: 'sleep',  label: 'Спальное',       icon: 'fa-bed' },
+        { id: 'beach',  label: 'Пляж/купальник', icon: 'fa-umbrella-beach' },
+        { id: 'work',   label: 'Работа',         icon: 'fa-briefcase' },
+        { id: 'outer',  label: 'Верхняя',        icon: 'fa-mitten' },
+        { id: 'other',  label: 'Другое',         icon: 'fa-tag' },
+    ];
+    // Запасной тег: всегда существует и не удаляется — сюда уходят наряды удалённых тегов.
+    const SW_FALLBACK_TYPE = 'other';
+    // Набор иконок для выбора при создании/редактировании тега.
+    const SW_TYPE_ICONS = [
+        'fa-shirt', 'fa-gem', 'fa-person-running', 'fa-bed', 'fa-umbrella-beach',
+        'fa-briefcase', 'fa-mitten', 'fa-tag', 'fa-crown', 'fa-hat-cowboy',
+        'fa-vest', 'fa-socks', 'fa-shoe-prints', 'fa-glasses', 'fa-ring',
+        'fa-user-tie', 'fa-user-ninja', 'fa-mask', 'fa-snowflake', 'fa-sun',
+        'fa-heart', 'fa-star', 'fa-wand-magic-sparkles', 'fa-dragon',
+    ];
+
+    // Эффективный список типов из настроек (с гарантией запасного тега 'other').
+    function swTypes() { return swGetSettings().outfitTypes; }
+    function swTypeIds() { return swTypes().map(t => t.id); }
+    function swTypeOf(o) { return (o && swTypeIds().includes(o.type)) ? o.type : SW_FALLBACK_TYPE; }
+    function swTypeMeta(id) { const ts = swTypes(); return ts.find(t => t.id === id) || ts.find(t => t.id === SW_FALLBACK_TYPE) || ts[ts.length - 1]; }
+
+    // Обойти все наряды во всех гардеробах (персональные + общие).
+    function swForEachOutfit(s, cb) {
+        const arrays = [s.sharedBotWardrobe, s.sharedUserWardrobe];
+        for (const w of Object.values(s.wardrobes || {})) if (w) arrays.push(w.bot, w.user);
+        for (const arr of arrays) if (Array.isArray(arr)) for (const o of arr) if (o) cb(o);
+    }
+    // Переписать тип у всех нарядов: oldId → newId.
+    function swMigrateTypeId(s, oldId, newId) { swForEachOutfit(s, (o) => { if (o.type === oldId) o.type = newId; }); }
+
+    // Рендер менеджера тегов одежды (в «Быстрых настройках»). Перерисовывает себя при структурных изменениях.
+    function swRenderTagManager(listEl) {
+        if (!listEl) return;
+        const types = swTypes();
+        listEl.innerHTML = types.map(t => {
+            const locked = t.id === SW_FALLBACK_TYPE;
+            const icons = SW_TYPE_ICONS.map(ic => `<button type="button" class="sw-tag-ico-opt ${ic === t.icon ? 'sw-tag-ico-sel' : ''}" data-ico="${ic}" title="${ic}"><i class="fa-solid ${ic}"></i></button>`).join('');
+            return `<div class="sw-tag-block">
+                <div class="sw-tag-row" data-id="${esc(t.id)}">
+                    <button type="button" class="sw-tag-icon" title="Сменить иконку"><i class="fa-solid ${esc(t.icon || 'fa-tag')}"></i></button>
+                    <input type="text" class="sw-tag-name text_pole" value="${esc(t.label || '')}" maxlength="24" placeholder="Название тега">
+                    ${locked
+                        ? '<span class="sw-tag-lock" title="Запасной тег — удалить нельзя"><i class="fa-solid fa-lock"></i></span>'
+                        : '<button type="button" class="sw-tag-del" title="Удалить тег"><i class="fa-solid fa-trash-can"></i></button>'}
+                </div>
+                <div class="sw-tag-icons" hidden>${icons}</div>
+            </div>`;
+        }).join('');
+
+        const refreshMain = () => { if (swOpen) swRender(); };
+
+        for (const block of listEl.querySelectorAll('.sw-tag-block')) {
+            const row = block.querySelector('.sw-tag-row');
+            const id = row.dataset.id;
+            const iconsBox = block.querySelector('.sw-tag-icons');
+            const tag = () => swTypes().find(x => x.id === id);
+
+            // Открыть/закрыть палитру иконок (по одной за раз).
+            row.querySelector('.sw-tag-icon').addEventListener('click', () => {
+                const willShow = iconsBox.hidden;
+                for (const b of listEl.querySelectorAll('.sw-tag-icons')) b.hidden = true;
+                iconsBox.hidden = !willShow;
+            });
+            for (const opt of iconsBox.querySelectorAll('.sw-tag-ico-opt')) {
+                opt.addEventListener('click', () => {
+                    const t = tag(); if (!t) return;
+                    t.icon = opt.dataset.ico; swSave();
+                    swRenderTagManager(listEl); refreshMain();
+                });
+            }
+
+            // Переименование: на input сохраняем без перерисовки (не теряем фокус), на blur — нормализуем.
+            const nameInp = row.querySelector('.sw-tag-name');
+            nameInp.addEventListener('input', () => { const t = tag(); if (t) { t.label = nameInp.value; swSave(); } });
+            nameInp.addEventListener('change', () => {
+                const t = tag(); if (!t) return;
+                t.label = nameInp.value.trim() || t.label || 'Тег';
+                nameInp.value = t.label; swSave(); refreshMain();
+            });
+
+            // Удаление: наряды тега молча уходят в «Другое» (запасной тег).
+            row.querySelector('.sw-tag-del')?.addEventListener('click', () => {
+                const s = swGetSettings();
+                let moved = 0;
+                swForEachOutfit(s, (o) => { if (o.type === id) { o.type = SW_FALLBACK_TYPE; moved++; } });
+                s.outfitTypes = s.outfitTypes.filter(x => x.id !== id);
+                if (swFilter === id) swFilter = 'all';
+                swSave();
+                swRenderTagManager(listEl); refreshMain();
+                toastr.info(`Тег удалён${moved ? ` · ${moved} ${swPlural(moved, 'наряд', 'наряда', 'нарядов')} → «Другое»` : ''}`, 'Гардероб', { timeOut: 2500 });
+            });
+        }
+    }
+
+    // Русское склонение для счётчиков (1 наряд / 2 наряда / 5 нарядов).
+    function swPlural(n, one, few, many) {
+        const m10 = n % 10, m100 = n % 100;
+        if (m10 === 1 && m100 !== 11) return one;
+        if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return few;
+        return many;
+    }
+
+    // Источник картинки для <img>: файл (общий гардероб) или inline base64 (per-char).
+    function swImgSrc(o) {
+        if (!o) return '';
+        if (o.imagePath) return o.imagePath;
+        if (o.base64) return 'data:image/png;base64,' + o.base64;
+        return '';
+    }
+
+    // Текущий фильтр по типу (UI-состояние модалки).
+    let swFilter = 'all';
+    // Сортировка карточек: 'added' (сначала новые) | 'worn' (недавно надетые) | 'name' (по имени).
+    let swSort = 'added';
+    // Пагинация: сколько НАРЯДОВ на странице. 11 + карточка «Загрузить» = 12 ячеек —
+    // ровно делится на 2/3/4/6 столбцов, поэтому сетка не оставляет дыр в последнем ряду.
+    const SW_PAGE_SIZE = 11;
+    let swPage = 0;
+
+    // Сортировка списка нарядов (возвращает новый отсортированный массив, исходный не мутируем).
+    // activeId — надетый образ всегда выносим самым первым, независимо от выбранной сортировки.
+    function swSortOutfits(arr, activeId) {
+        const a = arr.slice();
+        if (swSort === 'name') {
+            a.sort((x, y) => (x.name || '').localeCompare(y.name || '', undefined, { sensitivity: 'base', numeric: true }));
+        } else if (swSort === 'worn') {
+            // Недавно надетые сверху; никогда не надетые падают вниз и упорядочиваются по дате добавления.
+            a.sort((x, y) => (y.lastWorn || 0) - (x.lastWorn || 0) || (y.addedAt || 0) - (x.addedAt || 0));
+        } else {
+            // 'added' (по умолчанию): сначала новые.
+            a.sort((x, y) => (y.addedAt || 0) - (x.addedAt || 0));
+        }
+        // Закрепляем надетый образ на первом месте.
+        if (activeId) {
+            const i = a.findIndex(o => o.id === activeId);
+            if (i > 0) a.unshift(a.splice(i, 1)[0]);
+        }
+        return a;
+    }
+
+    // Кэш base64 активного образа общего гардероба ПО СТОРОНЕ ('bot'|'user') — ленивая загрузка из файла.
+    // В памяти держим только активный образ каждой стороны, не весь гардероб — ключ к производительности.
+    const swSharedCache = { bot: { b64: null, id: null }, user: { b64: null, id: null } };
     function swSave() { SillyTavern.getContext().saveSettingsDebounced(); }
 
     function swCharName() {
@@ -47,6 +227,177 @@
     function swFind(cn, type, id) { return swGetWardrobe(cn)[type].find(o => o.id === id) || null; }
     function swAdd(cn, type, o) { swGetWardrobe(cn)[type].push(o); swSave(); }
     function swRemove(cn, type, id) { const w = swGetWardrobe(cn); w[type] = w[type].filter(o => o.id !== id); swSave(); if (swGetActive()[type] === id) { swSetActive(type, null); swUpdatePromptInjection(); } }
+
+    // ── Конфиг общего гардероба ПО СТОРОНЕ ('bot' | 'user') ──
+    // Коллекция общая для всех персонажей; что именно надето — своё в каждом чате (per-chat).
+    function swSharedCfg(side) {
+        const s = swGetSettings();
+        const k = side === 'bot'
+            ? { list: 'sharedBotWardrobe',  active: 'sharedBotActive',  byChat: 'sharedBotActiveByChat',  use: 'useSharedBotWardrobe' }
+            : { list: 'sharedUserWardrobe', active: 'sharedUserActive', byChat: 'sharedUserActiveByChat', use: 'useSharedUserWardrobe' };
+        return {
+            use: () => !!s[k.use],
+            setUse: (v) => { s[k.use] = !!v; },
+            list: () => s[k.list],
+            setList: (arr) => { s[k.list] = arr; },
+            global: () => s[k.active] || null,
+            setGlobal: (id) => { s[k.active] = id; },
+            byChat: () => s[k.byChat],
+            fileLabel: () => (side === 'bot' ? 'sw_bot_' : 'sw_user_'),
+        };
+    }
+
+    function swCurrentChatId() {
+        try {
+            const ctx = SillyTavern.getContext();
+            return (typeof ctx.getCurrentChatId === 'function' ? ctx.getCurrentChatId() : null) || null;
+        } catch (e) { return null; }
+    }
+    function swGetSharedActiveId(side) {
+        const cfg = swSharedCfg(side);
+        const cid = swCurrentChatId();
+        if (cid) { const m = cfg.byChat(); return Object.hasOwn(m, cid) ? m[cid] : null; }
+        return cfg.global(); // нет открытого чата → глобальный фолбэк
+    }
+    function swSetSharedActiveId(side, id) {
+        const cfg = swSharedCfg(side);
+        const cid = swCurrentChatId();
+        if (cid) { const m = cfg.byChat(); if (id == null) delete m[cid]; else m[cid] = id; }
+        else cfg.setGlobal(id);
+        swSave();
+    }
+
+    // ── Активный образ стороны с учётом режима (Общий / Персональный) ──
+    function swGetActiveSideOutfit(side) {
+        const cfg = swSharedCfg(side);
+        if (cfg.use()) {
+            const id = swGetSharedActiveId(side);
+            return id ? (cfg.list().find(o => o.id === id) || null) : null;
+        }
+        const cn = swCharName(); if (!cn) return null;
+        const a = swGetActive(); return a[side] ? swFind(cn, side, a[side]) : null;
+    }
+    function swGetActiveBotOutfit()  { return swGetActiveSideOutfit('bot'); }
+    function swGetActiveUserOutfit() { return swGetActiveSideOutfit('user'); }
+
+    // Единая абстракция «вид гардероба» для текущего таба: общий (файловый) ИЛИ per-character.
+    function swCurrentView() {
+        const cfg = swSharedCfg(swTab);
+        if (cfg.use()) {
+            return {
+                shared: true, side: swTab,
+                list: () => cfg.list(),
+                activeId: () => swGetSharedActiveId(swTab),          // что надето в ЭТОМ чате
+                setActive: (id) => { swSetSharedActiveId(swTab, id); return true; },
+                find: (id) => cfg.list().find(o => o.id === id) || null,
+                add: (o) => { cfg.list().push(o); swSave(); },
+                remove: (id) => {
+                    cfg.setList(cfg.list().filter(o => o.id !== id));
+                    if (cfg.global() === id) cfg.setGlobal(null);
+                    // снять удалённый образ во всех чатах, где он был надет
+                    const m = cfg.byChat(); for (const key of Object.keys(m)) if (m[key] === id) delete m[key];
+                    swSave();
+                },
+            };
+        }
+        const cn = swCharName();
+        return {
+            shared: false, side: swTab,
+            list: () => swGetWardrobe(cn)[swTab],
+            activeId: () => swGetActive()[swTab],
+            setActive: (id) => swSetActive(swTab, id),
+            find: (id) => swFind(cn, swTab, id),
+            add: (o) => swAdd(cn, swTab, o),
+            remove: (id) => swRemove(cn, swTab, id),
+        };
+    }
+
+    // Ленивая предзагрузка base64 активного образа общего гардероба (по стороне).
+    // В памяти — только активный образ каждой стороны. Никогда не бросает исключений.
+    async function swPreloadSharedActive(side) {
+        try {
+            const cfg = swSharedCfg(side);
+            const c = swSharedCache[side];
+            const id = cfg.use() ? swGetSharedActiveId(side) : null; // активный образ ЭТОГО чата
+            if (!id) { c.b64 = null; c.id = null; return; }
+            if (c.id === id && c.b64) return; // уже в кэше
+            const o = cfg.list().find(x => x.id === id);
+            if (!o) { c.b64 = null; c.id = null; return; }
+            let b64 = o.base64 || null; // fallback, если файл не сохранился
+            if (!b64 && o.imagePath && typeof loadRefImageAsBase64 === 'function') b64 = await loadRefImageAsBase64(o.imagePath);
+            c.b64 = b64; c.id = b64 ? id : null;
+        } catch (e) {
+            swLog('WARN', `preload shared active (${side}) failed:`, e.message);
+            const c = swSharedCache[side]; c.b64 = null; c.id = null;
+        }
+    }
+    function swPreloadAllShared() { swPreloadSharedActive('bot'); swPreloadSharedActive('user'); }
+
+    // ── Миграция: перенос старых per-character нарядов в ОБЩИЙ гардероб (по стороне) ──
+    // Создаёт КОПИИ (как файлы), оригиналы НЕ трогает. Идемпотентно (по srcId).
+    function swSharedHasSrc(side, srcId) {
+        return swSharedCfg(side).list().some(x => x.srcId === srcId);
+    }
+    function swCollectPendingOutfits(side) {
+        const s = swGetSettings();
+        const out = [];
+        for (const w of Object.values(s.wardrobes || {})) {
+            if (!w || !Array.isArray(w[side])) continue;
+            for (const o of w[side]) if ((o.base64 || o.imagePath) && !swSharedHasSrc(side, o.id)) out.push(o);
+        }
+        return out;
+    }
+    function swCountPendingMigration(side) { return swCollectPendingOutfits(side).length; }
+
+    // Авто-надеть в общем гардеробе копию того, что было одето у ТЕКУЩЕГО персонажа (по стороне).
+    // force=true — даже если в общем уже что-то активно (используется при миграции: переносим текущее состояние).
+    function swAutoWearSharedFromCurrent(side, { force = false } = {}) {
+        const s = swGetSettings();
+        const cn = swCharName(); if (!cn) return null;
+        const wornId = s.activeOutfits?.[cn]?.[side];
+        if (!wornId) return null;                              // ничего не было одето
+        if (!force && swGetSharedActiveId(side)) return null;  // не клоберим уже выбранный в этом чате
+        const copy = swSharedCfg(side).list().find(x => x.srcId === wornId);
+        if (!copy) return null;                                // копии в общем нет
+        swSetSharedActiveId(side, copy.id);                    // надеваем в ТЕКУЩЕМ чате
+        swPreloadSharedActive(side);
+        return copy.name || 'образ';
+    }
+
+    async function swMigrateToShared(side) {
+        const s = swGetSettings();
+        const cfg = swSharedCfg(side);
+        const pending = swCollectPendingOutfits(side);
+        if (!pending.length) { toastr.info('Все старые наряды уже в общем гардеробе', 'Гардероб'); return 0; }
+        toastr.info(`Импорт ${pending.length} нарядов… разовая операция`, 'Гардероб', { timeOut: 4000 });
+        let done = 0, failed = 0;
+        // Последовательно (не параллельно) — чтобы не нагружать сервер залпом загрузок.
+        for (const o of pending) {
+            try {
+                const item = { id: uid(), srcId: o.id, name: o.name || 'Без имени', description: o.description || '', type: swTypeOf(o), addedAt: o.addedAt || Date.now() };
+                let stored = false;
+                if (o.imagePath && !o.base64) {
+                    item.imagePath = o.imagePath; stored = true; // уже файл — просто ссылаемся
+                } else if (o.base64 && typeof compressBase64Image === 'function' && typeof saveRefImageToFile === 'function') {
+                    try {
+                        const jpeg = await compressBase64Image(o.base64, s.maxDimension, 0.82);
+                        item.imagePath = await saveRefImageToFile(jpeg, cfg.fileLabel() + (o.name || 'item'));
+                        stored = true;
+                    } catch (err) { swLog('WARN', 'migrate file store failed, fallback base64:', err.message); }
+                }
+                if (!stored) item.base64 = o.base64 || '';
+                cfg.list().push(item);
+                done++;
+                if (done % 5 === 0) swSave(); // периодически сохраняем прогресс
+            } catch (e) { failed++; swLog('WARN', 'migrate item failed:', e.message); }
+        }
+        swSave();
+        // Если у текущего персонажа что-то было одето — автоматически надеваем перенесённую копию.
+        const worn = swAutoWearSharedFromCurrent(side, { force: true });
+        swPreloadSharedActive(side);
+        toastr.success(`Импортировано: ${done}${failed ? `, не удалось: ${failed}` : ''}.${worn ? ` Надет: «${worn}».` : ''} Оригиналы на месте.`, 'Гардероб', { timeOut: 5000 });
+        return done;
+    }
 
     function swResize(file, maxDim) {
         return new Promise((res, rej) => {
@@ -74,6 +425,7 @@
                 <span class="sw-modal-title">Гардероб — <b>${esc(cn)}</b></span>
                 <div class="sw-modal-header-btns">
                     <div class="sw-header-btn sw-btn-npc" title="Менеджер NPC"><i class="fa-solid fa-users"></i></div>
+                    <div class="sw-header-btn sw-btn-maint" title="Обслуживание: дубликаты и чистка файлов"><i class="fa-solid fa-broom"></i></div>
                     <div class="sw-header-btn sw-btn-quick" title="Быстрые настройки"><i class="fa-solid fa-sliders"></i></div>
                     <div class="sw-modal-close" title="Закрыть"><i class="fa-solid fa-xmark"></i></div>
                 </div>
@@ -90,9 +442,12 @@
         m.querySelector('.sw-modal-close').addEventListener('click', swCloseModal);
         m.querySelector('.sw-btn-quick').addEventListener('click', swOpenQuickSettings);
         m.querySelector('.sw-btn-npc').addEventListener('click', swOpenNpcManager);
+        m.querySelector('.sw-btn-maint').addEventListener('click', () => swOpenMaintenance('dedup'));
         for (const t of m.querySelectorAll('.sw-tab')) t.addEventListener('click', () => {
-            swTab = t.dataset.tab; m.querySelectorAll('.sw-tab').forEach(x => x.classList.toggle('sw-tab-active', x.dataset.tab === swTab)); swRender();
+            swTab = t.dataset.tab; swFilter = 'all'; swPage = 0;
+            m.querySelectorAll('.sw-tab').forEach(x => x.classList.toggle('sw-tab-active', x.dataset.tab === swTab)); swRender();
         });
+        swFilter = 'all'; swPage = 0;
         swRender();
         document.addEventListener('keydown', swEsc);
     }
@@ -103,44 +458,149 @@
     function swRender() {
         const c = document.getElementById('sw-tab-content'), ib = document.getElementById('sw-active-info');
         if (!c) return;
-        const cn = swCharName(), outfits = swGetWardrobe(cn)[swTab] || [], aid = swGetActive()[swTab];
+        const v = swCurrentView();
+        const outfits = v.list() || [], aid = v.activeId();
 
         if (ib) {
-            const ao = aid ? swFind(cn, swTab, aid) : null;
+            const ao = aid ? v.find(aid) : null;
             const aoDesc = ao ? swSanitizeDesc(ao.description) : '';
             ib.innerHTML = ao ? `Активно: <b>${esc(ao.name)}</b>${aoDesc ? ` — <i>${esc(aoDesc.length > 60 ? aoDesc.slice(0, 60) + '...' : aoDesc)}</i>` : ''}` : 'Ничего не надето';
             ib.classList.toggle('sw-active-visible', !!ao);
         }
 
-        let h = '<div class="sw-outfit-grid"><div class="sw-outfit-card sw-upload-card" id="sw-upload-trigger"><div class="sw-upload-icon"><i class="fa-solid fa-plus"></i></div><span>Загрузить</span></div>';
-        for (const o of outfits) {
+        let h = '';
+
+        // ── Кнопки режима: Перс / Общий (для обоих табов — Бот и Юзер) ──
+        {
+            const useShared = v.shared;
+            const sortOpt = (val, label) => `<option value="${val}" ${swSort === val ? 'selected' : ''}>${label}</option>`;
+            h += `<div class="sw-mode-row">
+                <div class="sw-mode-btn ${!useShared ? 'sw-mode-active' : ''}" data-mode="perc"><i class="fa-solid fa-user"></i> Перс</div>
+                <div class="sw-mode-btn ${useShared ? 'sw-mode-active' : ''}" data-mode="shared"><i class="fa-solid fa-earth-americas"></i> Общий</div>
+                <div class="sw-sort-wrap" title="Сортировка">
+                    <i class="fa-solid fa-arrow-down-wide-short"></i>
+                    <select class="sw-sort-select">${sortOpt('added', 'Недавно добавленные')}${sortOpt('worn', 'Недавно надетые')}${sortOpt('name', 'По имени')}</select>
+                </div>
+            </div>`;
+        }
+
+        // ── Фильтр по типам (виды одежды) ──
+        const counts = {};
+        for (const o of outfits) { const t = swTypeOf(o); counts[t] = (counts[t] || 0) + 1; }
+        // Если активный фильтр опустел — сбрасываем на «Все».
+        if (swFilter !== 'all' && !counts[swFilter]) swFilter = 'all';
+        h += `<div class="sw-filter-row"><div class="sw-filter-chip ${swFilter === 'all' ? 'sw-filter-active' : ''}" data-type="all">Все <span class="sw-chip-count">${outfits.length}</span></div>`;
+        for (const t of swTypes()) {
+            if (!counts[t.id]) continue;
+            h += `<div class="sw-filter-chip ${swFilter === t.id ? 'sw-filter-active' : ''}" data-type="${t.id}"><i class="fa-solid ${t.icon}"></i> ${esc(t.label)} <span class="sw-chip-count">${counts[t.id]}</span></div>`;
+        }
+        h += '</div>';
+
+        const filtered = swFilter === 'all' ? outfits : outfits.filter(o => swTypeOf(o) === swFilter);
+        const shown = swSortOutfits(filtered, aid);
+
+        // ── Пагинация: рендерим только текущую страницу (меньше DOM-узлов и одновременно грузящихся картинок) ──
+        const totalPages = Math.max(1, Math.ceil(shown.length / SW_PAGE_SIZE));
+        if (swPage > totalPages - 1) swPage = totalPages - 1;
+        if (swPage < 0) swPage = 0;
+        const pageItems = shown.slice(swPage * SW_PAGE_SIZE, (swPage + 1) * SW_PAGE_SIZE);
+
+        h += '<div class="sw-outfit-grid"><div class="sw-outfit-card sw-upload-card" id="sw-upload-trigger"><div class="sw-upload-icon"><i class="fa-solid fa-plus"></i></div><span>Загрузить</span></div>';
+        for (const o of pageItems) {
             const a = o.id === aid;
             const oDesc = swSanitizeDesc(o.description);
+            const tm = swTypeMeta(swTypeOf(o));
+            const opts = swTypes().map(t => `<option value="${t.id}" ${swTypeOf(o) === t.id ? 'selected' : ''}>${esc(t.label)}</option>`).join('');
             h += `<div class="sw-outfit-card ${a ? 'sw-outfit-active' : ''}" data-id="${o.id}">
-                <div class="sw-outfit-img-wrap"><img src="data:image/png;base64,${o.base64}" alt="${esc(o.name)}" class="sw-outfit-img" loading="lazy">${a ? '<div class="sw-active-badge"><i class="fa-solid fa-check"></i></div>' : ''}</div>
+                <div class="sw-outfit-img-wrap"><img src="${esc(swImgSrc(o))}" alt="${esc(o.name)}" class="sw-outfit-img" loading="lazy">${a ? '<div class="sw-active-badge"><i class="fa-solid fa-check"></i></div>' : ''}<div class="sw-type-badge" title="${esc(tm.label)}"><i class="fa-solid ${tm.icon}"></i></div></div>
                 <div class="sw-outfit-footer"><span class="sw-outfit-name" title="${esc(oDesc || o.name)}">${esc(o.name)}</span>
                     <div class="sw-outfit-btns">
                         <div class="sw-btn-activate" title="${a ? 'Снять' : 'Надеть'}"><i class="fa-solid ${a ? 'fa-toggle-on' : 'fa-toggle-off'}"></i></div>
                         <div class="sw-btn-edit" title="Редактировать"><i class="fa-solid fa-pen"></i></div>
                         <div class="sw-btn-delete" title="Удалить"><i class="fa-solid fa-trash-can"></i></div>
-                    </div></div></div>`;
+                    </div></div>
+                <select class="sw-type-select" title="Тип одежды">${opts}</select></div>`;
         }
-        h += '</div>'; c.innerHTML = h;
+        h += '</div>';
+
+        // ── Пагинатор ──
+        if (totalPages > 1) {
+            h += `<div class="sw-pager">
+                <div class="sw-pager-btn ${swPage === 0 ? 'sw-pager-dim' : ''}" data-pg="prev" title="Назад"><i class="fa-solid fa-chevron-left"></i></div>
+                <span class="sw-pager-info">Стр. ${swPage + 1} / ${totalPages} <small>(${shown.length})</small></span>
+                <div class="sw-pager-btn ${swPage >= totalPages - 1 ? 'sw-pager-dim' : ''}" data-pg="next" title="Вперёд"><i class="fa-solid fa-chevron-right"></i></div>
+            </div>`;
+        }
+
+        c.innerHTML = h;
+
+        // Пагинатор
+        for (const b of c.querySelectorAll('.sw-pager-btn')) {
+            b.addEventListener('click', () => {
+                if (b.dataset.pg === 'prev' && swPage > 0) { swPage--; swRender(); }
+                else if (b.dataset.pg === 'next' && swPage < totalPages - 1) { swPage++; swRender(); }
+            });
+        }
+
+        // Кнопки режима: Перс / Общий
+        for (const b of c.querySelectorAll('.sw-mode-btn')) {
+            b.addEventListener('click', async () => {
+                const wantShared = b.dataset.mode === 'shared';
+                const cfg = swSharedCfg(swTab);
+                if (cfg.use() === wantShared) return; // уже в этом режиме
+                cfg.setUse(wantShared); swSave();
+                swFilter = 'all'; swPage = 0;
+                swPreloadSharedActive(swTab);
+                swRender(); swUpdatePromptInjection(); swInjectFloatingBtn();
+                const sideName = swTab === 'bot' ? 'Бот' : 'Юзер';
+                toastr.info(`${sideName}: ${wantShared ? 'общий гардероб (для всех персонажей)' : 'персональный гардероб'}`, 'Гардероб', { timeOut: 2000 });
+                // При переходе в общий — просто надеваем уже имеющуюся копию (без импорта старых нарядов).
+                if (wantShared) {
+                    swAutoWearSharedFromCurrent(swTab, { force: false });
+                    swPage = 0; swRender(); swUpdatePromptInjection(); swInjectFloatingBtn();
+                }
+            });
+        }
+
+        // Фильтр-чипы
+        for (const chip of c.querySelectorAll('.sw-filter-chip')) {
+            chip.addEventListener('click', () => { swFilter = chip.dataset.type; swPage = 0; swRender(); });
+        }
+
+        // Сортировка
+        c.querySelector('.sw-sort-select')?.addEventListener('change', (e) => {
+            swSort = e.target.value; swPage = 0; swRender();
+        });
 
         document.getElementById('sw-upload-trigger')?.addEventListener('click', swUpload);
         for (const card of c.querySelectorAll('.sw-outfit-card[data-id]')) {
             const id = card.dataset.id;
             card.querySelector('.sw-outfit-img')?.addEventListener('click', (e) => { e.preventDefault(); e.stopImmediatePropagation(); swToggle(id); });
             card.querySelector('.sw-btn-activate')?.addEventListener('click', (e) => { e.preventDefault(); e.stopImmediatePropagation(); swToggle(id); });
-            card.querySelector('.sw-btn-edit')?.addEventListener('click', (e) => { e.preventDefault(); e.stopImmediatePropagation(); swEdit(cn, swTab, id); });
-            card.querySelector('.sw-btn-delete')?.addEventListener('click', (e) => { e.preventDefault(); e.stopImmediatePropagation(); if (confirm('Удалить?')) { swRemove(cn, swTab, id); swRender(); toastr.info('Удалён', 'Гардероб'); } });
+            card.querySelector('.sw-btn-edit')?.addEventListener('click', (e) => { e.preventDefault(); e.stopImmediatePropagation(); swEdit(id); });
+            card.querySelector('.sw-btn-delete')?.addEventListener('click', (e) => {
+                e.preventDefault(); e.stopImmediatePropagation();
+                if (!confirm('Удалить?')) return;
+                v.remove(id);
+                if (v.shared) swPreloadSharedActive(v.side);
+                swUpdatePromptInjection(); swInjectFloatingBtn(); swRender();
+                toastr.info('Удалён', 'Гардероб');
+            });
+            card.querySelector('.sw-type-select')?.addEventListener('change', (e) => {
+                e.stopImmediatePropagation();
+                const o = v.find(id);
+                if (o) { o.type = e.target.value; swSave(); swRender(); }
+            });
         }
     }
 
     function swToggle(id) {
-        const a = swGetActive(), cn = swCharName(), o = swFind(cn, swTab, id), nm = o?.name || id;
-        const off = a[swTab] === id;
-        if (swSetActive(swTab, off ? null : id) === false) return;
+        const v = swCurrentView();
+        const o = v.find(id), nm = o?.name || id;
+        const off = v.activeId() === id;
+        if (v.setActive(off ? null : id) === false) return;
+        if (!off && o) { o.lastWorn = Date.now(); swSave(); } // отметка времени для сортировки «недавно надетые»
+        if (v.shared) swPreloadSharedActive(v.side);
         swRender();
         swUpdatePromptInjection();
         swInjectFloatingBtn();
@@ -233,45 +693,113 @@
         const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*';
         inp.addEventListener('change', async () => {
             const f = inp.files?.[0]; if (!f) return;
-            const name = prompt('Название:', f.name.replace(/\.[^.]+$/, '')); if (!name?.trim()) return;
+            const v = swCurrentView(); // читаем актуальный вид на момент добавления
             try {
                 const { base64 } = await swResize(f, swGetSettings().maxDimension);
-
-                // Ask user how to fill the description
-                // OK = LLM auto-describe, Cancel = manual
-                const useLLM = confirm('Как заполнить описание образа?\n\nОК = отправить картинку ЛЛМ для авто-описания\nОтмена = ввести описание вручную');
-
-                let initialDesc = '';
-                if (useLLM) {
-                    const autoDesc = await swAnalyzeOutfit(base64);
-                    initialDesc = autoDesc || '';
-                }
-
-                const desc = prompt(useLLM
-                    ? 'Описание образа (авто-сгенерировано, можете отредактировать):'
-                    : 'Описание образа:', initialDesc) || '';
-
-                swAdd(swCharName(), swTab, { id: uid(), name: name.trim(), description: desc.trim(), base64, addedAt: Date.now() });
-                swRender(); swUpdatePromptInjection(); toastr.success(`«${name.trim()}» добавлен`, 'Гардероб');
+                swOpenOutfitForm({ mode: 'add', view: v, base64, defaultName: f.name.replace(/\.[^.]+$/, '') });
             } catch (e) { toastr.error('Ошибка: ' + e.message, 'Гардероб'); }
         });
         inp.click();
     }
 
-    async function swEdit(cn, type, id) {
-        const o = swFind(cn, type, id); if (!o) return;
-        const n = prompt('Название:', o.name); if (n === null) return;
+    function swEdit(id) {
+        const v = swCurrentView();
+        const o = v.find(id); if (!o) return;
+        swOpenOutfitForm({ mode: 'edit', view: v, item: o });
+    }
 
-        // Offer to re-analyze image
-        let currentDesc = swSanitizeDesc(o.description);
-        const reAnalyze = confirm('Пере-анализировать образ через ИИ?\n\nОК = да (текущее описание заменится)\nОтмена = редактировать вручную');
-        if (reAnalyze) {
-            const autoDesc = await swAnalyzeOutfit(o.base64);
-            if (autoDesc) currentDesc = autoDesc;
-        }
+    // ── Единая форма добавления/редактирования образа (вместо цепочки prompt/confirm) ──
+    function swOpenOutfitForm({ mode, view, base64 = null, item = null, defaultName = '' }) {
+        document.getElementById('sw-form-overlay')?.remove();
+        const isEdit = mode === 'edit';
+        const curType = isEdit ? swTypeOf(item) : (swTypeIds().includes(swFilter) ? swFilter : 'other');
+        const previewSrc = isEdit ? swImgSrc(item) : ('data:image/png;base64,' + base64);
+        const curName = isEdit ? (item.name || '') : (defaultName || '');
+        const curDesc = isEdit ? swSanitizeDesc(item.description) : '';
 
-        const d = prompt('Описание:', currentDesc); if (d === null) return;
-        o.name = n.trim() || o.name; o.description = d.trim(); swSave(); swRender(); swUpdatePromptInjection(); toastr.info('Обновлён', 'Гардероб');
+        const ov = document.createElement('div'); ov.id = 'sw-form-overlay';
+        ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
+        const panel = document.createElement('div'); panel.id = 'sw-form';
+        panel.innerHTML = `
+            <div class="sw-form-header"><span>${isEdit ? 'Редактировать образ' : 'Новый образ'}</span><div class="sw-form-close" title="Закрыть"><i class="fa-solid fa-xmark"></i></div></div>
+            <div class="sw-form-body">
+                <div class="sw-form-preview"><img src="${esc(previewSrc)}" alt="preview"></div>
+                <label class="sw-form-label">Название</label>
+                <input type="text" class="text_pole sw-form-input" id="sw-form-name" value="${esc(curName)}" placeholder="Название образа">
+                <label class="sw-form-label">Тип одежды</label>
+                <select class="text_pole sw-form-input" id="sw-form-type">${swTypes().map(t => `<option value="${t.id}" ${curType === t.id ? 'selected' : ''}>${esc(t.label)}</option>`).join('')}</select>
+                <label class="sw-form-label">Описание <span class="sw-form-ai" id="sw-form-ai" title="Сгенерировать описание по картинке (ИИ)"><i class="fa-solid fa-wand-magic-sparkles"></i> ИИ</span></label>
+                <textarea class="text_pole sw-form-textarea" id="sw-form-desc" rows="4" placeholder="Что на образе: одежда, цвета, ткани, аксессуары…">${esc(curDesc)}</textarea>
+                <div class="sw-form-actions">
+                    <div class="sw-form-btn sw-form-cancel">Отмена</div>
+                    <div class="sw-form-btn sw-form-save">${isEdit ? 'Сохранить' : 'Добавить'}</div>
+                </div>
+            </div>`;
+        ov.appendChild(panel); document.body.appendChild(ov);
+
+        function formEsc(e) { if (e.key === 'Escape') { e.stopImmediatePropagation(); close(); } }
+        function close() { document.removeEventListener('keydown', formEsc, true); ov.remove(); }
+        document.addEventListener('keydown', formEsc, true); // capture: закрыть форму раньше, чем сработает Esc модалки
+        panel.querySelector('.sw-form-close').addEventListener('click', close);
+        panel.querySelector('.sw-form-cancel').addEventListener('click', close);
+
+        // ИИ-описание по картинке
+        panel.querySelector('#sw-form-ai').addEventListener('click', async () => {
+            const aiBtn = panel.querySelector('#sw-form-ai');
+            if (aiBtn.classList.contains('sw-form-ai-loading')) return;
+            aiBtn.classList.add('sw-form-ai-loading');
+            try {
+                let b64 = base64;
+                if (!b64 && item) b64 = item.base64 || ((item.imagePath && typeof loadRefImageAsBase64 === 'function') ? await loadRefImageAsBase64(item.imagePath) : null);
+                if (!b64) { toastr.warning('Нет картинки для анализа', 'Гардероб'); return; }
+                const desc = await swAnalyzeOutfit(b64);
+                if (desc) panel.querySelector('#sw-form-desc').value = desc;
+                else toastr.warning('Не удалось получить описание', 'Гардероб');
+            } catch (e) { toastr.error('Ошибка ИИ: ' + e.message, 'Гардероб'); }
+            finally { aiBtn.classList.remove('sw-form-ai-loading'); }
+        });
+
+        // Сохранение
+        panel.querySelector('.sw-form-save').addEventListener('click', async () => {
+            const name = panel.querySelector('#sw-form-name').value.trim();
+            if (!name) { toastr.warning('Введите название', 'Гардероб'); return; }
+            const type = panel.querySelector('#sw-form-type').value;
+            const desc = panel.querySelector('#sw-form-desc').value.trim();
+            const saveBtn = panel.querySelector('.sw-form-save');
+            saveBtn.classList.add('sw-form-btn-busy'); saveBtn.textContent = 'Сохранение…';
+            try {
+                if (isEdit) {
+                    item.name = name; item.type = type; item.description = desc; swSave();
+                    if (view.shared) swPreloadSharedActive(view.side);
+                } else {
+                    const newItem = { id: uid(), name, type, description: desc, addedAt: Date.now() };
+                    if (view.shared) {
+                        // ⚡ ОБЩИЙ гардероб: картинку храним ФАЙЛОМ, в settings — только путь (не раздуваем settings.json).
+                        let stored = false;
+                        try {
+                            if (typeof compressBase64Image === 'function' && typeof saveRefImageToFile === 'function') {
+                                const jpeg = await compressBase64Image(base64, swGetSettings().maxDimension, 0.82);
+                                const prefix = view.side === 'bot' ? 'sw_bot_' : 'sw_user_';
+                                newItem.imagePath = await saveRefImageToFile(jpeg, prefix + name);
+                                stored = true;
+                            }
+                        } catch (err) { swLog('WARN', 'shared file store failed, fallback to base64:', err.message); }
+                        if (!stored) newItem.base64 = base64;
+                    } else {
+                        newItem.base64 = base64;
+                    }
+                    view.add(newItem);
+                    if (view.shared) swPreloadSharedActive(view.side);
+                    swSort = 'added'; swPage = 0; // показать новый образ сверху (сортировка «сначала новые»)
+                }
+                close();
+                swRender(); swUpdatePromptInjection(); swInjectFloatingBtn();
+                toastr.success(isEdit ? 'Обновлён' : `«${name}» добавлен`, 'Гардероб', { timeOut: 2000 });
+            } catch (e) {
+                toastr.error('Ошибка: ' + e.message, 'Гардероб');
+                saveBtn.classList.remove('sw-form-btn-busy'); saveBtn.textContent = isEdit ? 'Сохранить' : 'Добавить';
+            }
+        });
     }
 
     // ── Prompt injection: outfit descriptions into main RP chat ──
@@ -292,8 +820,8 @@
     const SW_INJECT_SCAN = false; // не сканировать для WI-триггеров
 
     function swBuildInjectionText(cn) {
-        const botData = swGetActive().bot ? swFind(cn, 'bot', swGetActive().bot) : null;
-        const userData = swGetActive().user ? swFind(cn, 'user', swGetActive().user) : null;
+        const botData = swGetActiveBotOutfit();
+        const userData = swGetActiveUserOutfit();
         if (!botData && !userData) return '';
 
         const parts = [];
@@ -475,6 +1003,13 @@
                     </div>
                 </div>
 
+                <div class="sw-quick-tags">
+                    <label class="sw-quick-tags-title"><i class="fa-solid fa-tags"></i> Теги одежды</label>
+                    <div class="sw-tags-list" id="sw-tags-list"></div>
+                    <div class="sw-tags-add" id="sw-tags-add"><i class="fa-solid fa-plus"></i> Добавить тег</div>
+                    <div class="sw-quick-hint">«Другое» удалить нельзя — это запасной тег. При удалении тега все его наряды переносятся в «Другое».</div>
+                </div>
+
                 <div class="sw-quick-hint">Настройки сохраняются автоматически и синхронизируются с панелью расширения.</div>
 
             </div>`;
@@ -483,6 +1018,22 @@
         document.body.appendChild(ov);
 
         panel.querySelector('.sw-quick-close').addEventListener('click', () => ov.remove());
+
+        // ── Менеджер тегов одежды ──
+        const tagsList = panel.querySelector('#sw-tags-list');
+        swRenderTagManager(tagsList);
+        panel.querySelector('#sw-tags-add')?.addEventListener('click', () => {
+            const s = swGetSettings();
+            // 'other' держим последним — новый тег вставляем перед ним.
+            const tag = { id: uid(), label: 'Новый тег', icon: 'fa-tag' };
+            const fb = s.outfitTypes.findIndex(t => t.id === SW_FALLBACK_TYPE);
+            if (fb >= 0) s.outfitTypes.splice(fb, 0, tag); else s.outfitTypes.push(tag);
+            swSave();
+            swRenderTagManager(tagsList);
+            if (swOpen) swRender();
+            // Сразу выделить имя нового тега для ввода.
+            tagsList.querySelector(`.sw-tag-row[data-id="${tag.id}"] .sw-tag-name`)?.focus();
+        });
 
         const save = () => ctx.saveSettingsDebounced();
 
@@ -808,14 +1359,269 @@
         renderList();
     }
 
+    // ═════════════════════════════════════════════════════════
+    //  CLEANUP — чистка осиротевших файлов в папке iig_refs
+    //  Файлы создаёт saveRefImageToFile (общий гардероб + NPC + референсы char/user).
+    //  Удаляем ТОЛЬКО то, на что не ссылается НИКТО — с превью перед удалением.
+    // ═════════════════════════════════════════════════════════
+
+    // Собрать имена всех файлов, на которые ещё есть ссылки (по всем источникам).
+    function swCollectReferencedFiles() {
+        const ctx = SillyTavern.getContext();
+        const referenced = new Set();
+        let dir = '/user/images/iig_refs/';
+        const addRef = (p) => {
+            if (!p || typeof p !== 'string') return;
+            const i = p.lastIndexOf('/');
+            const base = i >= 0 ? p.slice(i + 1) : p;
+            if (base) referenced.add(base);
+            if (i > 0 && p.includes('iig_refs')) dir = p.slice(0, i + 1); // взять реальный префикс из существующего пути
+        };
+        const sw = ctx.extensionSettings?.silly_wardrobe;
+        if (sw) {
+            for (const o of (sw.sharedUserWardrobe || [])) addRef(o.imagePath);
+            for (const o of (sw.sharedBotWardrobe || [])) addRef(o.imagePath);
+            for (const w of Object.values(sw.wardrobes || {})) { // на всякий случай (per-char обычно base64)
+                if (!w) continue;
+                for (const side of ['bot', 'user']) for (const o of (w[side] || [])) addRef(o.imagePath);
+            }
+        }
+        const iig = ctx.extensionSettings?.inline_image_gen;
+        if (iig) {
+            addRef(iig.charRef?.imagePath);
+            addRef(iig.userRef?.imagePath);
+            for (const n of (iig.npcReferences || [])) addRef(n?.imagePath);
+        }
+        return { referenced, dir };
+    }
+
+    async function swScanOrphans() {
+        const ctx = SillyTavern.getContext();
+        const { referenced, dir } = swCollectReferencedFiles();
+        const resp = await fetch('/api/images/list', {
+            method: 'POST',
+            headers: ctx.getRequestHeaders ? ctx.getRequestHeaders() : { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ folder: 'iig_refs', sortField: 'date', sortOrder: 'desc' }),
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const files = await resp.json();
+        const list = Array.isArray(files) ? files.filter(f => typeof f === 'string') : [];
+        const orphans = list.filter(f => !referenced.has(f));
+        return { orphans, totalFiles: list.length, referencedCount: referenced.size, dir };
+    }
+
+    async function swDeleteFiles(dir, filenames) {
+        const ctx = SillyTavern.getContext();
+        let ok = 0, fail = 0;
+        for (const f of filenames) {
+            try {
+                const r = await fetch('/api/images/delete', {
+                    method: 'POST',
+                    headers: ctx.getRequestHeaders ? ctx.getRequestHeaders() : { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: dir + f }),
+                });
+                if (r.ok) ok++; else fail++;
+            } catch (e) { fail++; swLog('WARN', 'delete file failed:', f, e.message); }
+        }
+        return { ok, fail };
+    }
+
+    // ── Единое окно «Обслуживание»: вкладки «Дубликаты» и «Чистка файлов» ──
+    function swOpenMaintenance(tab) {
+        document.getElementById('sw-maint-overlay')?.remove();
+        const ov = document.createElement('div'); ov.id = 'sw-maint-overlay';
+        const panel = document.createElement('div'); panel.id = 'sw-maint-panel';
+        panel.innerHTML = `
+            <div class="sw-cleanup-header"><span><i class="fa-solid fa-broom"></i> Обслуживание гардероба</span><div class="sw-cleanup-close" title="Закрыть"><i class="fa-solid fa-xmark"></i></div></div>
+            <div class="sw-maint-tabs">
+                <div class="sw-maint-tab" data-mt="dedup"><i class="fa-solid fa-clone"></i> Дубликаты</div>
+                <div class="sw-maint-tab" data-mt="cleanup"><i class="fa-solid fa-broom"></i> Чистка файлов</div>
+            </div>
+            <div class="sw-cleanup-body" id="sw-maint-body"></div>`;
+        ov.appendChild(panel); document.body.appendChild(ov);
+        const body = panel.querySelector('#sw-maint-body');
+
+        function close() { document.removeEventListener('keydown', maintEsc, true); ov.remove(); }
+        function maintEsc(e) { if (e.key === 'Escape') { e.stopImmediatePropagation(); close(); } }
+        document.addEventListener('keydown', maintEsc, true); // capture: закрыть это окно раньше гардероба
+        ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
+        panel.querySelector('.sw-cleanup-close').addEventListener('click', close);
+
+        let curTab = null;
+        function show(which) {
+            if (which === curTab) return;        // повторный клик по активной вкладке — без перерисовки/пересканирования
+            curTab = which;
+            for (const t of panel.querySelectorAll('.sw-maint-tab')) t.classList.toggle('sw-maint-tab-active', t.dataset.mt === which);
+            if (which === 'cleanup') swRenderCleanup(body); else swRenderDedup(body);
+        }
+        for (const t of panel.querySelectorAll('.sw-maint-tab')) t.addEventListener('click', () => show(t.dataset.mt));
+        show(tab === 'cleanup' ? 'cleanup' : 'dedup');
+    }
+
+    function swRenderCleanup(body) {
+        const selected = new Set();
+        let state = null;
+
+        async function scan() {
+            body.innerHTML = `<div class="sw-cleanup-loading"><i class="fa-solid fa-spinner fa-spin"></i> Сканирование…</div>`;
+            try {
+                state = await swScanOrphans();
+                selected.clear();
+                for (const f of state.orphans) selected.add(f); // по умолчанию выбраны все осиротевшие
+                render();
+            } catch (e) {
+                body.innerHTML = `<div class="sw-cleanup-err">Ошибка: ${esc(e.message)}</div>`;
+            }
+        }
+
+        function render() {
+            const { orphans, totalFiles, referencedCount, dir } = state;
+            let h = `<div class="sw-cleanup-info">Используется: <b>${referencedCount}</b> · Лишних: <b>${orphans.length}</b> · Всего в папке: ${totalFiles}</div>`;
+            if (orphans.length === 0) {
+                h += `<div class="sw-cleanup-empty"><i class="fa-solid fa-circle-check"></i> Лишних файлов нет — всё используется.</div>`;
+                body.innerHTML = h; return;
+            }
+            h += `<div class="sw-cleanup-hint">На эти файлы не ссылается ни один наряд, NPC или референс. Клик по картинке — выбрать/снять. Удалятся только выбранные.</div>`;
+            h += `<div class="sw-cleanup-tools"><span class="sw-cleanup-link" id="sw-cl-all">Выбрать все</span><span class="sw-cleanup-link" id="sw-cl-none">Снять все</span></div>`;
+            h += '<div class="sw-cleanup-grid">';
+            for (const f of orphans) {
+                h += `<div class="sw-cleanup-item ${selected.has(f) ? 'sw-cl-sel' : ''}" data-f="${esc(f)}"><img src="${esc(dir + f)}" loading="lazy" onerror="this.style.opacity=0.15"><div class="sw-cl-check"><i class="fa-solid fa-check"></i></div></div>`;
+            }
+            h += '</div>';
+            h += `<div class="sw-cleanup-actions"><div class="sw-cleanup-btn sw-cleanup-del">Удалить выбранные (<span id="sw-cl-count">${selected.size}</span>)</div></div>`;
+            body.innerHTML = h;
+
+            body.querySelector('#sw-cl-all').addEventListener('click', () => { for (const f of orphans) selected.add(f); render(); });
+            body.querySelector('#sw-cl-none').addEventListener('click', () => { selected.clear(); render(); });
+            for (const it of body.querySelectorAll('.sw-cleanup-item')) {
+                it.addEventListener('click', () => {
+                    const f = it.dataset.f;
+                    if (selected.has(f)) selected.delete(f); else selected.add(f);
+                    it.classList.toggle('sw-cl-sel');
+                    const cnt = body.querySelector('#sw-cl-count'); if (cnt) cnt.textContent = selected.size;
+                });
+            }
+            body.querySelector('.sw-cleanup-del').addEventListener('click', async () => {
+                if (selected.size === 0) { toastr.info('Ничего не выбрано', 'Чистка'); return; }
+                if (!confirm(`Удалить ${selected.size} файлов с сервера? Это необратимо.`)) return;
+                const delBtn = body.querySelector('.sw-cleanup-del');
+                delBtn.style.pointerEvents = 'none'; delBtn.textContent = 'Удаление…';
+                const res = await swDeleteFiles(state.dir, [...selected]);
+                toastr.success(`Удалено: ${res.ok}${res.fail ? `, ошибок: ${res.fail}` : ''}`, 'Чистка', { timeOut: 4000 });
+                scan(); // пересканировать
+            });
+        }
+
+        scan();
+    }
+
+    // ── Удаление дубликатов в текущем гардеробе (последствие старого импорта) ──
+    // Группируем по файлу картинки (одинаковый imagePath = точный дубль) либо по имени+типу
+    // для base64-образов. В каждой группе оставляем один (активный или самый ранний),
+    // остальные предлагаем удалить — с превью и подтверждением. Сами файлы не трогаем:
+    // осиротевшие картинки потом уберёт «Чистка».
+    function swRenderDedup(body) {
+        const view = swCurrentView();
+        const sideName = swTab === 'bot' ? 'Бот' : 'Юзер';
+        const modeName = view.shared ? 'общий' : 'персональный';
+
+        // Ключ дубля. Импорт создаёт копии с РАЗНЫМИ файлами (imagePath), но одинаковыми
+        // именем и srcId — поэтому сверяемся в первую очередь по имени+типу, затем по srcId
+        // (копии одного источника), затем по файлу. Безымянные («Без имени») по имени НЕ
+        // группируем, чтобы не слить разные образы в одну кучу.
+        const dupKey = (o) => {
+            const nm = (o.name || '').trim().toLowerCase();
+            if (nm && nm !== 'без имени') return 'n:' + nm + '|' + swTypeOf(o);
+            if (o.srcId) return 's:' + o.srcId;
+            if (o.imagePath) return 'p:' + o.imagePath;
+            return 'u:' + o.id; // уникум — не дубль
+        };
+
+        const selected = new Set();
+        let dupItems = [];
+
+        function compute() {
+            const list = view.list() || [];
+            const groups = new Map();
+            for (const o of list) {
+                const k = dupKey(o);
+                if (k[0] === 'u') continue;                 // уникум — не группируем
+                let arr = groups.get(k); if (!arr) groups.set(k, arr = []); arr.push(o);
+            }
+            const activeId = view.activeId();
+            dupItems = []; selected.clear();
+            let groupCount = 0;
+            for (const g of groups.values()) {
+                if (g.length < 2) continue;
+                groupCount++;
+                // оставляем активный (чтобы не снять надетое), иначе самый ранний
+                const keep = g.find(o => o.id === activeId) || g.reduce((a, b) => ((a.addedAt || 0) <= (b.addedAt || 0) ? a : b));
+                for (const o of g) if (o.id !== keep.id) { dupItems.push(o); selected.add(o.id); }
+            }
+            return groupCount;
+        }
+
+        function paint() {
+            for (const it of body.querySelectorAll('.sw-cleanup-item')) it.classList.toggle('sw-cl-sel', selected.has(it.dataset.id));
+            const cnt = body.querySelector('#sw-dd-count'); if (cnt) cnt.textContent = selected.size;
+        }
+
+        function render() {
+            const groupCount = compute();
+            const total = (view.list() || []).length;
+            let h = `<div class="sw-cleanup-info">Гардероб: <b>${esc(sideName)}</b> (${esc(modeName)}) · дубликатов: <b>${dupItems.length}</b> в ${groupCount} группах · всего: ${total}</div>`;
+            if (dupItems.length === 0) {
+                h += `<div class="sw-cleanup-empty"><i class="fa-solid fa-circle-check"></i> Дубликатов не найдено.</div>`;
+                body.innerHTML = h; return;
+            }
+            h += `<div class="sw-cleanup-hint">По одному образу из каждой группы остаётся (активный или самый ранний), остальные показаны ниже и помечены на удаление. Клик по картинке — снять/выбрать. Удаляются только записи гардероба; файлы потом уберёт «Чистка».</div>`;
+            h += `<div class="sw-cleanup-tools"><span class="sw-cleanup-link" id="sw-dd-all">Выбрать все</span><span class="sw-cleanup-link" id="sw-dd-none">Снять все</span></div>`;
+            h += '<div class="sw-cleanup-grid">';
+            for (const o of dupItems) {
+                h += `<div class="sw-cleanup-item ${selected.has(o.id) ? 'sw-cl-sel' : ''}" data-id="${esc(o.id)}" title="${esc(o.name || '')}"><img src="${esc(swImgSrc(o))}" loading="lazy" onerror="this.style.opacity=0.15"><div class="sw-cl-check"><i class="fa-solid fa-check"></i></div></div>`;
+            }
+            h += '</div>';
+            h += `<div class="sw-cleanup-actions"><div class="sw-cleanup-btn sw-dd-del">Удалить дубли (<span id="sw-dd-count">${selected.size}</span>)</div></div>`;
+            body.innerHTML = h;
+
+            body.querySelector('#sw-dd-all').addEventListener('click', () => { for (const o of dupItems) selected.add(o.id); paint(); });
+            body.querySelector('#sw-dd-none').addEventListener('click', () => { selected.clear(); paint(); });
+            for (const it of body.querySelectorAll('.sw-cleanup-item')) {
+                it.addEventListener('click', () => {
+                    const id = it.dataset.id;
+                    if (selected.has(id)) selected.delete(id); else selected.add(id);
+                    paint();
+                });
+            }
+            body.querySelector('.sw-dd-del').addEventListener('click', () => {
+                if (selected.size === 0) { toastr.info('Ничего не выбрано', 'Дубликаты'); return; }
+                if (!confirm(`Удалить ${selected.size} дубликатов из гардероба «${sideName} (${modeName})»?\n\nОстанется по одному каждого. Записи в гардеробе удалятся безвозвратно (файлы-картинки не трогаем).`)) return;
+                const ids = [...selected];
+                for (const id of ids) view.remove(id);
+                swSave();
+                toastr.success(`Удалено дубликатов: ${ids.length}`, 'Дубликаты', { timeOut: 4000 });
+                swPage = 0; swRender(); swUpdatePromptInjection(); swInjectFloatingBtn();
+                render(); // пересчитать оставшиеся
+            });
+        }
+
+        render();
+    }
 
     // Expose for inner references (arrow function references before hoist)
     window.swOpenQuickSettings = swOpenQuickSettings;
     window.swOpenNpcManager = swOpenNpcManager;
+    window.swOpenMaintenance = swOpenMaintenance;
 
     // ── Bar button (inline in leftSendForm, like sims-action-btn) ──
 
     function swInjectFloatingBtn() {
+        // Взаимоисключение: либо плавающая кнопка поверх чата, либо кнопка в строке ввода — не обе сразу.
+        if (swGetSettings().showFloatingBtn) {
+            $('#sw-bar-btn').remove(); // убираем кнопку из сендбара
+            swInjectFloatBtn();        // показываем/обновляем плавающую
+            return;
+        }
 
         let $btn = $('#sw-bar-btn');
         if ($btn.length === 0) {
@@ -829,27 +1635,65 @@
             if ($left.length) $left.append($btn);
             else $('body').append($btn);
         }
-        const active = swGetActive();
-        const hasActive = !!(active.bot || active.user);
+        const hasBot = !!swGetActiveBotOutfit();
+        const hasUser = !!swGetActiveUserOutfit();
+        const hasActive = hasBot || hasUser;
         $btn.toggleClass('sw-bar-active', hasActive);
         if (hasActive) {
-            let count = 0;
-            if (active.bot) count++;
-            if (active.user) count++;
+            const count = (hasBot ? 1 : 0) + (hasUser ? 1 : 0);
             $btn.html(`<i class="fa-solid fa-shirt"></i><span class="sw-bar-count">${count}</span>`);
         } else {
             $btn.html('<i class="fa-solid fa-shirt"></i>');
         }
         $btn.show();
+        swInjectFloatBtn(); // showFloatingBtn=false → эта функция уберёт #sw-float-btn
+    }
+
+    // Плавающая кнопка-гардероб поверх чата. Показывается, только если включена настройка showFloatingBtn.
+    // Видна и на ПК, и на телефоне (position: fixed + высокий z-index + собственный фон).
+    function swInjectFloatBtn() {
+        const show = !!swGetSettings().showFloatingBtn;
+        let $fb = $('#sw-float-btn');
+        if (!show) { if ($fb.length) $fb.remove(); return; }
+        if ($fb.length === 0) {
+            $fb = $('<div id="sw-float-btn" title="Гардероб"><i class="fa-solid fa-shirt"></i></div>');
+            $fb.on('click touchend', function (e) { e.preventDefault(); e.stopPropagation(); swOpenModal(); });
+            $('body').append($fb);
+        }
+        const hasBot = !!swGetActiveBotOutfit();
+        const hasUser = !!swGetActiveUserOutfit();
+        const count = (hasBot ? 1 : 0) + (hasUser ? 1 : 0);
+        $fb.toggleClass('sw-float-active', count > 0);
+        $fb.html(`<i class="fa-solid fa-shirt"></i>${count > 0 ? `<span class="sw-bar-count">${count}</span>` : ''}`);
+        $fb.show();
     }
 
     // ── Public API ──
     window.sillyWardrobe = {
-        getActiveOutfitBase64(type) { const cn = swCharName(); if (!cn) return null; const a = swGetActive(); return a[type] ? (swFind(cn, type, a[type])?.base64 || null) : null; },
+        getActiveOutfitBase64(type) {
+            const side = type === 'bot' ? 'bot' : 'user';
+            // Общий гардероб: картинка в файле → отдаём предзагруженный кэш (синхронно).
+            if (swSharedCfg(side).use()) return swSharedCache[side].b64;
+            return swGetActiveSideOutfit(side)?.base64 || null;
+        },
+        // Async-вариант: гарантированно подгрузит base64 из файла, если кэш холодный.
+        async getActiveOutfitBase64Async(type) {
+            const side = type === 'bot' ? 'bot' : 'user';
+            if (swSharedCfg(side).use()) {
+                await swPreloadSharedActive(side);
+                return swSharedCache[side].b64;
+            }
+            return swGetActiveSideOutfit(side)?.base64 || null;
+        },
         getActiveOutfitDataUrl(type) { const b = this.getActiveOutfitBase64(type); return b ? `data:image/png;base64,${b}` : null; },
-        getActiveOutfitData(type) { const cn = swCharName(); if (!cn) return null; const a = swGetActive(); return a[type] ? swFind(cn, type, a[type]) : null; },
+        getActiveOutfitData(type) { return swGetActiveSideOutfit(type === 'bot' ? 'bot' : 'user'); },
         debugInjection: swDebugInjection,
         forceReinject: swUpdatePromptInjection,
+        preloadShared: swPreloadAllShared,
+        refreshFloatBtn: () => swInjectFloatingBtn(),
+        migrateUserOutfits: () => swMigrateToShared('user'),
+        migrateBotOutfits: () => swMigrateToShared('bot'),
+        countPendingMigration: (side) => swCountPendingMigration(side === 'bot' ? 'bot' : 'user'),
         openModal: () => swOpenModal(),
         isReady: () => true,
     };
@@ -858,11 +1702,11 @@
     const ctx = SillyTavern.getContext();
 
     ctx.eventSource.on(ctx.event_types.APP_READY, () => {
-        setTimeout(() => { swUpdatePromptInjection(); swInjectFloatingBtn(); }, 500);
+        setTimeout(() => { swPreloadAllShared(); swUpdatePromptInjection(); swInjectFloatingBtn(); }, 500);
     });
 
     ctx.eventSource.on(ctx.event_types.CHAT_CHANGED, () => {
-        setTimeout(() => { swUpdatePromptInjection(); swInjectFloatingBtn(); }, 300);
+        setTimeout(() => { swPreloadAllShared(); swUpdatePromptInjection(); swInjectFloatingBtn(); }, 300);
     });
 
     // ⚡ КРИТИЧНО: перезаписываем инжект перед КАЖДОЙ генерацией.
@@ -3051,8 +3895,8 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
         if (matchedNpcs.length > 0) iigLog('INFO', `NPC refs matched: ${matchedNpcs.map(n => n.name).join(', ')}`);
         // 4. Wardrobe outfits
         if (window.sillyWardrobe?.isReady()) {
-            const botB64 = window.sillyWardrobe.getActiveOutfitBase64('bot');
-            const userB64 = window.sillyWardrobe.getActiveOutfitBase64('user');
+            const botB64 = window.sillyWardrobe.getActiveOutfitBase64Async ? await window.sillyWardrobe.getActiveOutfitBase64Async('bot') : window.sillyWardrobe.getActiveOutfitBase64('bot');
+            const userB64 = window.sillyWardrobe.getActiveOutfitBase64Async ? await window.sillyWardrobe.getActiveOutfitBase64Async('user') : window.sillyWardrobe.getActiveOutfitBase64('user');
             if (botB64) { referenceImages.push(botB64); refLabels.push('char_outfit'); }
             if (userB64) { referenceImages.push(userB64); refLabels.push('user_outfit'); }
             if (botB64 || userB64) iigLog('INFO', `Wardrobe refs added: bot=${!!botB64}, user=${!!userB64}`);
@@ -3092,8 +3936,8 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
             referenceDataUrls.push(...contextRefs);
         }
         if (window.sillyWardrobe?.isReady()) {
-            const botB64 = window.sillyWardrobe.getActiveOutfitBase64('bot');
-            const userB64 = window.sillyWardrobe.getActiveOutfitBase64('user');
+            const botB64 = window.sillyWardrobe.getActiveOutfitBase64Async ? await window.sillyWardrobe.getActiveOutfitBase64Async('bot') : window.sillyWardrobe.getActiveOutfitBase64('bot');
+            const userB64 = window.sillyWardrobe.getActiveOutfitBase64Async ? await window.sillyWardrobe.getActiveOutfitBase64Async('user') : window.sillyWardrobe.getActiveOutfitBase64('user');
             if (botB64) referenceDataUrls.push(`data:image/png;base64,${botB64}`);
             if (userB64) referenceDataUrls.push(`data:image/png;base64,${userB64}`);
         }
@@ -3126,8 +3970,8 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
         if (matchedNpcs.length > 0) iigLog('INFO', `NPC refs matched: ${matchedNpcs.map(n => n.name).join(', ')}`);
         // 4. Wardrobe outfits
         if (window.sillyWardrobe?.isReady()) {
-            const botB64 = window.sillyWardrobe.getActiveOutfitBase64('bot');
-            const userB64 = window.sillyWardrobe.getActiveOutfitBase64('user');
+            const botB64 = window.sillyWardrobe.getActiveOutfitBase64Async ? await window.sillyWardrobe.getActiveOutfitBase64Async('bot') : window.sillyWardrobe.getActiveOutfitBase64('bot');
+            const userB64 = window.sillyWardrobe.getActiveOutfitBase64Async ? await window.sillyWardrobe.getActiveOutfitBase64Async('user') : window.sillyWardrobe.getActiveOutfitBase64('user');
             if (botB64) { referenceImages.push(botB64); refLabels.push('char_outfit'); }
             if (userB64) { referenceImages.push(userB64); refLabels.push('user_outfit'); }
         }
@@ -4425,7 +5269,10 @@ function bindRefSlotEvents() {
                         const compressed = await compressBase64Image(rawBase64);
                         const ref = getRefByKey(key, settings);
                         ref.imageBase64 = compressed;
-                        try { ref.imagePath = await saveRefImageToFile(compressed, key); }
+                        try {
+                            ref.imagePath = await saveRefImageToFile(compressed, key);
+                            ref.imageBase64 = ''; // файл сохранён → base64 в settings.json не нужен
+                        }
                         catch (saveErr) { iigLog('WARN', `Could not save ref to file: ${saveErr.message}`); }
                         if (!ref.name) ref.name = f.name.replace(/\.[^.]+$/, '');
                         saveSettings();
@@ -5244,7 +6091,8 @@ function bindSettingsEvents() {
         swFloatCheck.addEventListener('change', () => {
             const s = SillyTavern.getContext().extensionSettings.silly_wardrobe;
             if (s) { s.showFloatingBtn = swFloatCheck.checked; SillyTavern.getContext().saveSettingsDebounced(); }
-            $('#sw-float-btn').toggle(swFloatCheck.checked);
+            // Реально создаём/удаляем плавающую кнопку (раньше тут дёргался несуществующий #sw-float-btn).
+            window.sillyWardrobe?.refreshFloatBtn?.();
         });
     }
     document.getElementById('sw_max_dim')?.addEventListener('change', (e) => {
