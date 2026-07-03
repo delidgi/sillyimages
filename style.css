@@ -83,6 +83,38 @@
     gap: 8px;
 }
 
+/* Сворачиваемая карточка настроек: заголовок-переключатель + тело. */
+.iig-card-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.iig-card-toggle:hover {
+    color: var(--SmartThemeQuoteColor);
+}
+
+.iig-card-chevron {
+    font-size: 0.8em;
+    width: 1em;
+    text-align: center;
+    opacity: 0.8;
+}
+
+.iig-card-count {
+    font-size: 0.8em;
+    font-weight: normal;
+    opacity: 0.6;
+}
+
+.iig-card-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
 .iig-naistera-refs h4 {
     margin: 0;
 }
@@ -154,6 +186,14 @@
     margin-top: 10px;
     font-size: 0.9em;
     color: var(--SmartThemeQuoteColor);
+}
+
+.iig-loading-placeholder .iig-timer {
+    margin-top: 4px;
+    font-size: 0.8em;
+    font-variant-numeric: tabular-nums;
+    color: var(--SmartThemeQuoteColor);
+    opacity: 0.7;
 }
 
 @keyframes iig-spin {
@@ -420,6 +460,50 @@ img[data-iig-instruction] {
 /* ═══════════════════════════════════════════
    Reference Slots
    ═══════════════════════════════════════════ */
+.iig-npc-card {
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+    padding-bottom: 6px;
+    margin-bottom: 2px;
+}
+.iig-npc-card .iig-ref-slot {
+    border-bottom: none;
+}
+.iig-npc-card-disabled {
+    opacity: 0.5;
+}
+.iig-npc-enabled-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+}
+.iig-npc-enabled-row input {
+    margin: 0;
+    flex: 0 0 auto;
+}
+.iig-npc-aliases {
+    margin-top: 3px;
+    font-size: 0.82em;
+}
+.iig-npc-desc-row {
+    display: flex;
+    gap: 4px;
+    align-items: flex-start;
+    padding: 2px 0 0 56px;
+}
+
+.iig-npc-toolbar {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+    padding-top: 4px;
+}
+
+.iig-npc-slot-remove {
+    flex-shrink: 0;
+    padding: 4px 6px;
+    color: #cc5555;
+}
 .iig-ref-slot {
     display: flex;
     align-items: center;
@@ -624,6 +708,12 @@ img[data-iig-instruction] {
     color: var(--SmartThemeBodyColor, #fff);
 }
 .sw-btn-delete:hover { color: #f87171 !important; }
+/* Переключатель «примерка»: включён — инвертированный квадрат (как активный бейдж) */
+.sw-btn-tryon.sw-tryon-on {
+    color: var(--SmartThemeBlurTintColor, #111) !important;
+    background: var(--SmartThemeBodyColor, #e2e2e2);
+}
+.sw-btn-tryon.sw-tryon-on:hover { border-color: var(--SmartThemeBodyColor, #e2e2e2); }
 
 .sw-upload-card {
     display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -1173,6 +1263,38 @@ img[data-iig-instruction] {
     background: rgba(255, 255, 255, 0.03);
 }
 
+/* ── Промт примерки (try-on) ── */
+.sw-quick-tryon {
+    display: flex; flex-direction: column; gap: 8px;
+    padding-top: 10px; margin-top: 2px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.sw-quick-tryon .sw-quick-tags-title { justify-content: space-between; }
+.sw-tryon-prompt-area {
+    width: 100%; box-sizing: border-box;
+    resize: vertical; min-height: 110px;
+    font-family: inherit; font-size: 12px; line-height: 1.45;
+}
+.sw-tryon-prompt-reset {
+    display: inline-flex; align-items: center; gap: 5px;
+    margin-left: auto; padding: 3px 8px;
+    font-size: 11px; color: var(--SmartThemeQuoteColor, #999);
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2));
+    border-radius: 6px; cursor: pointer; user-select: none;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.sw-tryon-prompt-reset:hover {
+    color: var(--SmartThemeBodyColor, #e2e2e2);
+    border-color: var(--SmartThemeQuoteColor, rgba(255, 255, 255, 0.4));
+    background: rgba(255, 255, 255, 0.03);
+}
+.sw-tryon-prompt-hint { text-align: left; }
+.sw-tryon-prompt-hint code {
+    font-size: 10px; padding: 1px 4px;
+    background: rgba(255, 255, 255, 0.07); border-radius: 4px;
+    white-space: nowrap;
+}
+
 /* ═══════════════════════════════════════════
    NPC Manager Panel
    ═══════════════════════════════════════════ */
@@ -1614,6 +1736,16 @@ img[data-iig-instruction] {
     pointer-events: none;
 }
 
+/* ── Бейдж «примерка» (картинка = человек в наряде → уходит аватар-референсом) ── */
+.sw-tryon-badge {
+    position: absolute; bottom: 4px; left: 4px;
+    width: 20px; height: 20px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; color: var(--SmartThemeBodyColor, #e2e2e2);
+    background: rgba(0, 0, 0, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
 /* ── Селект типа на карточке (тонкая строка под футером) ── */
 .sw-type-select {
     width: 100%;
@@ -1742,6 +1874,35 @@ img[data-iig-instruction] {
 .sw-form-save:hover { opacity: 0.9; }
 .sw-form-btn-busy { opacity: 0.6; pointer-events: none; }
 
+/* ── Примерка наряда (ИИ) в форме образа ── */
+.sw-tryon-row { display: flex; gap: 8px; align-items: stretch; }
+.sw-tryon-select {
+    flex: 1 1 auto; min-width: 0; width: auto !important;
+    box-sizing: border-box; border-radius: 0 !important;
+}
+.sw-tryon-btn {
+    flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    padding: 6px 12px; cursor: pointer; user-select: none; font-size: 12.5px; white-space: nowrap;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2));
+    color: var(--SmartThemeBodyColor, #e2e2e2); transition: border-color 0.15s, background 0.15s;
+}
+.sw-tryon-btn:hover { border-color: var(--SmartThemeQuoteColor, rgba(255, 255, 255, 0.45)); }
+.sw-tryon-busy { opacity: 0.55; pointer-events: none; }
+.sw-tryon-status { font-size: 11.5px; color: var(--SmartThemeQuoteColor, #999); line-height: 1.35; }
+.sw-tryon-status[hidden] { display: none; }
+.sw-tryon-pick { display: flex; gap: 8px; }
+.sw-tryon-pick[hidden] { display: none; }
+.sw-tryon-opt {
+    flex: 1; min-width: 0; cursor: pointer; text-align: center; padding: 6px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.12));
+    background: rgba(0, 0, 0, 0.25);
+    font-size: 11px; color: var(--SmartThemeQuoteColor, #999);
+    display: flex; flex-direction: column; gap: 4px; align-items: center; user-select: none;
+}
+.sw-tryon-opt img { width: 100%; max-height: 90px; object-fit: contain; display: block; }
+.sw-tryon-opt:hover { border-color: var(--SmartThemeQuoteColor, rgba(255, 255, 255, 0.4)); }
+.sw-tryon-sel { border-color: var(--SmartThemeBodyColor, #e2e2e2) !important; color: var(--SmartThemeBodyColor, #e2e2e2); }
+
 /* ════════════════════════════════════════════════════════════
    Чистка неиспользуемых файлов (превью того, что удаляем)
    ════════════════════════════════════════════════════════════ */
@@ -1849,4 +2010,838 @@ img[data-iig-instruction] {
     }
 }
 
+/* ════════════════════════════════════════════════════════════
+   Global Profiles
+   ════════════════════════════════════════════════════════════ */
 
+.iig-profile-card {
+    margin-top: 8px;
+}
+.iig-profile-bar {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+.iig-profile-title {
+    font-size: 0.95em;
+    white-space: nowrap;
+}
+.iig-profile-bar select {
+    min-width: 120px;
+}
+.iig-profile-bar .menu_button {
+    font-size: 0.85em;
+    padding: 3px 9px;
+}
+.iig-profile-scope {
+    margin-top: 8px;
+}
+.iig-profile-scope-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 2px 12px;
+    margin-top: 4px;
+}
+.iig-profile-scope-grid .checkbox_label {
+    margin: 0 !important;
+    font-size: 0.82em;
+}
+
+/* ════════════════════════════════════════════════════════════
+   Lorebook Refs UI
+   ════════════════════════════════════════════════════════════ */
+
+.iig-lorebook-toolbar {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    margin-bottom: 8px;
+}
+.iig-lorebook-toolbar select {
+    min-width: 0;
+}
+
+.iig-lorebook-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+}
+
+/* Active-lorebook enable checkbox inside the toolbar */
+.iig-lorebook-enabled-label {
+    margin: 0 !important;
+    white-space: nowrap;
+    font-size: 0.85em;
+}
+
+/* Send-descriptions toggle under the list */
+.iig-lorebook-send-desc {
+    margin-top: 8px !important;
+    font-size: 0.85em;
+}
+
+/* Reference card */
+.iig-lb-ref-row {
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 6px;
+    padding: 8px;
+    margin-bottom: 6px;
+    background: rgba(0,0,0,0.1);
+    transition: opacity 0.15s;
+}
+.iig-lb-ref-row-disabled {
+    opacity: 0.5;
+}
+.iig-lb-ref-content {
+    display: flex;
+    gap: 8px;
+}
+.iig-lb-ref-preview {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+}
+.iig-lb-ref-thumb {
+    width: 64px;
+    height: 64px;
+    object-fit: cover;
+    border-radius: 4px;
+    background: rgba(0,0,0,0.2);
+    cursor: pointer;
+}
+.iig-lb-ref-thumb-placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px dashed rgba(255,255,255,0.15);
+}
+.iig-lb-ref-enabled-toggle {
+    margin: 0 !important;
+}
+.iig-lb-ref-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.iig-lb-ref-header {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+}
+.iig-lb-ref-header .text_pole {
+    min-width: 0;
+}
+.iig-lb-ref-description {
+    font-size: 0.85em;
+    resize: vertical;
+    min-height: 38px;
+}
+.iig-lb-ref-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    gap: 4px;
+}
+.iig-lb-ref-grid .text_pole {
+    font-size: 0.82em;
+    padding: 3px 6px;
+}
+.iig-lb-ref-priority {
+    width: 60px;
+}
+.iig-lb-ref-footer {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    font-size: 0.82em;
+}
+.iig-lb-ref-footer .checkbox_label {
+    margin: 0 !important;
+    font-size: inherit;
+}
+.iig-lb-ref-move {
+    display: flex;
+    gap: 2px;
+    margin-left: auto;
+}
+.iig-lb-ref-move .menu_button {
+    padding: 2px 6px;
+    font-size: 0.85em;
+}
+.iig-lb-ref-move .menu_button.disabled {
+    opacity: 0.3;
+    pointer-events: none;
+}
+.iig-lb-ref-vision {
+    font-size: 0.9em;
+}
+.iig-lb-ref-vision.loading i {
+    animation: iig-spin 1s linear infinite;
+}
+@keyframes iig-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+/* Vision section */
+#iig_vision_section .flex-row {
+    margin-bottom: 4px;
+}
+
+@media (max-width: 600px) {
+    .iig-lb-ref-grid {
+        grid-template-columns: 1fr;
+    }
+    .iig-lb-ref-content {
+        flex-direction: column;
+    }
+    .iig-lb-ref-preview {
+        flex-direction: row;
+    }
+}
+
+/* ════════════════════════════════════════════════════════════
+   Reference Mega-Section Tabs
+   ════════════════════════════════════════════════════════════ */
+
+.iig-ref-tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.1));
+    margin-bottom: 10px;
+    overflow-x: auto;
+}
+
+.iig-ref-tab {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 8px 10px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--SmartThemeQuoteColor, #999);
+    border-bottom: 2px solid transparent;
+    transition: color 0.15s, border-color 0.15s;
+    white-space: nowrap;
+    user-select: none;
+    flex: 1;
+    min-width: 0;
+}
+.iig-ref-tab i {
+    font-size: 13px;
+    flex-shrink: 0;
+}
+.iig-ref-tab:hover {
+    color: var(--SmartThemeBodyColor, #e2e2e2);
+}
+.iig-ref-tab.iig-ref-tab-active {
+    color: var(--SmartThemeBodyColor, #e2e2e2);
+    border-bottom-color: var(--SmartThemeQuoteColor, var(--SmartThemeBodyColor, #e2e2e2));
+}
+
+.iig-ref-tab-content {
+    display: none;
+}
+.iig-ref-tab-content.iig-ref-tab-content-active {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+@media (max-width: 500px) {
+    .iig-ref-tab span {
+        display: none;
+    }
+    .iig-ref-tab i {
+        font-size: 16px;
+    }
+    .iig-ref-tab {
+        padding: 10px 8px;
+    }
+}
+
+/* ════════════════════════════════════════════════════════════
+   Debug Modal — Last Generation Info
+   ════════════════════════════════════════════════════════════ */
+
+#iig-debug-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 100010;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    animation: iig-fs-fade-in 0.15s ease-out;
+}
+
+.iig-dbg-panel {
+    width: min(620px, 94vw);
+    max-height: min(85vh, calc(100dvh - 40px));
+    display: flex;
+    flex-direction: column;
+    background: var(--SmartThemeBlurTintColor, rgba(20, 20, 30, 0.97));
+    color: var(--SmartThemeBodyColor, #e2e2e2);
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.12));
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+    overflow: hidden;
+}
+
+.iig-dbg-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    font-size: 14px;
+    font-weight: 500;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.08));
+}
+.iig-dbg-header i {
+    margin-right: 6px;
+    opacity: 0.7;
+}
+
+.iig-dbg-close {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    color: var(--SmartThemeQuoteColor, #999);
+    border: 1px solid transparent;
+    transition: color 0.15s, border-color 0.15s;
+}
+.iig-dbg-close:hover {
+    color: var(--SmartThemeBodyColor, #fff);
+    border-color: var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2));
+}
+
+.iig-dbg-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.iig-dbg-body::-webkit-scrollbar { width: 5px; }
+.iig-dbg-body::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+}
+
+.iig-dbg-info {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 12.5px;
+    line-height: 1.5;
+}
+.iig-dbg-info b {
+    color: var(--SmartThemeQuoteColor, #aaa);
+    font-weight: 500;
+}
+
+.iig-dbg-section-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--SmartThemeQuoteColor, #aaa);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-top: 4px;
+}
+
+.iig-dbg-refs-grid {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.iig-dbg-ref-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    width: 80px;
+}
+.iig-dbg-ref-img {
+    width: 72px;
+    height: 72px;
+    object-fit: cover;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.1));
+    background: rgba(0, 0, 0, 0.25);
+}
+.iig-dbg-ref-label {
+    font-size: 10px;
+    color: var(--SmartThemeQuoteColor, #999);
+    text-align: center;
+    line-height: 1.2;
+    word-break: break-word;
+}
+
+.iig-dbg-prompt {
+    padding: 8px 10px;
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.06));
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 300px;
+    overflow-y: auto;
+    user-select: text;
+}
+.iig-dbg-prompt::-webkit-scrollbar { width: 4px; }
+.iig-dbg-prompt::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 2px;
+}
+
+@media (max-width: 600px) {
+    #iig-debug-overlay {
+        padding: 10px;
+        align-items: flex-start;
+        padding-top: 40px;
+    }
+    .iig-dbg-panel {
+        width: calc(100vw - 20px);
+        max-height: calc(100dvh - 60px);
+    }
+    .iig-dbg-ref-card { width: 64px; }
+    .iig-dbg-ref-img { width: 56px; height: 56px; }
+}
+
+/* ═══════════════════════════════════════════
+   Style presets & site picker
+   ═══════════════════════════════════════════ */
+
+/* Тулбар стилей: поле имени + кнопки в одну компактную строку. */
+.iig-style-toolbar {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+.iig-style-toolbar .menu_button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+/* Пресеты стилей — компактные «чипы», переносятся по ширине вместо длинного столбца. */
+.iig-style-presets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.iig-style-chip {
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 14px;
+    background: rgba(0, 0, 0, 0.2);
+    overflow: hidden;
+}
+
+.iig-style-chip-active {
+    border-color: var(--SmartThemeQuoteColor);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--SmartThemeQuoteColor) 55%, transparent);
+}
+
+.iig-style-chip-name {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    padding: 4px 9px;
+    font-size: 0.85em;
+    cursor: pointer;
+}
+
+.iig-style-chip-name:hover {
+    background: rgba(255, 255, 255, 0.07);
+}
+
+.iig-style-chip-active .iig-style-chip-name {
+    color: var(--SmartThemeQuoteColor);
+}
+
+.iig-style-chip-label {
+    min-width: 0;
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.iig-style-chip-del {
+    padding: 4px 8px;
+    font-size: 0.8em;
+    color: #cc5555;
+    cursor: pointer;
+    opacity: 0.7;
+}
+
+.iig-style-chip-del:hover {
+    opacity: 1;
+    background: rgba(204, 85, 85, 0.15);
+}
+
+.iig-style-editor-card {
+    margin-top: 4px;
+}
+
+.iig-style-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 99999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.76);
+    backdrop-filter: blur(6px);
+}
+
+.iig-style-modal {
+    width: calc(100% - 32px);
+    max-width: 980px;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--SmartThemeBlurTintColor);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 10px;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+}
+
+.iig-style-modal-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+}
+
+.iig-style-modal-title {
+    flex: 1;
+    min-width: 0;
+    font-weight: 700;
+    color: var(--SmartThemeBodyColor);
+}
+
+.iig-style-source-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 9px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    color: var(--SmartThemeBodyColor);
+    text-decoration: none;
+    font-size: 0.82em;
+    white-space: nowrap;
+}
+
+.iig-style-refresh {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    flex-shrink: 0;
+}
+
+.iig-style-refresh.is-loading {
+    opacity: 0.65;
+    pointer-events: none;
+}
+
+.iig-style-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+}
+
+.iig-style-chip {
+    padding: 4px 11px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--SmartThemeBodyColor);
+    cursor: pointer;
+    font-size: 0.82em;
+}
+
+.iig-style-chip.active,
+.iig-style-chip:hover {
+    background: var(--SmartThemeQuoteColor);
+    color: var(--SmartThemeBlurTintColor);
+}
+
+.iig-style-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px;
+}
+
+.iig-style-loading {
+    padding: 42px;
+    text-align: center;
+    opacity: 0.65;
+}
+
+.iig-style-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 12px;
+}
+
+.iig-site-style-card {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.14);
+}
+
+.iig-site-style-card.selected {
+    border-color: var(--SmartThemeBodyColor);
+    box-shadow: 0 0 0 1px var(--SmartThemeBodyColor);
+}
+
+.iig-site-style-preview {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    background: rgba(0, 0, 0, 0.22);
+    color: var(--SmartThemeQuoteColor);
+    font-size: 1.8em;
+}
+
+.iig-site-style-preview img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.iig-site-style-empty {
+    opacity: 0.65;
+}
+
+.iig-site-style-body {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 7px;
+    width: 100%;
+    padding: 10px 12px 12px;
+    border: 0;
+    background: transparent;
+    color: var(--SmartThemeBodyColor);
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+}
+
+.iig-site-style-body:hover {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.iig-site-style-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.iig-site-style-name {
+    flex: 1;
+    min-width: 0;
+    font-weight: 700;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.iig-site-style-badge {
+    flex-shrink: 0;
+    padding: 2px 7px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 999px;
+    font-size: 0.72em;
+    opacity: 0.85;
+}
+
+.iig-site-style-desc {
+    font-size: 0.82em;
+    line-height: 1.45;
+    color: var(--SmartThemeQuoteColor);
+}
+
+.iig-spin-anim {
+    animation: iig-spin 1s linear infinite;
+}
+
+/* ═══════════════════════════════════════════
+   Avatar Library — оформление в стиле sillyimages
+   (острые углы, 1px рамка, ховер→Quote, актив→Body, монохром).
+   Авы компактные.
+   ═══════════════════════════════════════════ */
+.iig-avatar-lib-block .iig-extras-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));
+    gap: 5px;
+}
+.iig-extras-empty {
+    grid-column: 1 / -1;
+    font-size: 0.76em;
+    color: var(--SmartThemeQuoteColor);
+    opacity: 0.65;
+    padding: 4px 2px;
+}
+.iig-extras-card {
+    position: relative;
+    aspect-ratio: 1 / 1;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.12));
+    border-radius: 0;
+    overflow: hidden;
+    cursor: pointer;
+    background: rgba(0, 0, 0, 0.25);
+    transition: border-color 0.15s ease;
+}
+.iig-extras-card:hover { border-color: var(--SmartThemeQuoteColor, rgba(255, 255, 255, 0.35)); }
+.iig-extras-card.iig-extras-active { border-color: var(--SmartThemeBodyColor, #e2e2e2); }
+.iig-extras-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+/* Имя — тонкая полоса снизу, видна только на ховере (экономим место на мелких авах) */
+.iig-extras-overlay {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 2px;
+    padding: 1px 3px;
+    background: var(--SmartThemeBlurTintColor, rgba(0, 0, 0, 0.82));
+    opacity: 0;
+    transition: opacity 0.12s ease;
+}
+.iig-extras-card:hover .iig-extras-overlay { opacity: 1; }
+.iig-extras-name {
+    font-size: 8.5px;
+    line-height: 1.3;
+    color: var(--SmartThemeBodyColor, #e2e2e2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+/* «⋯» на плитке — открывает окошко аватара (удаление живёт там, не на плитке).
+   Зона клика увеличена паддингом (сами плитки мелкие). */
+.iig-extras-more {
+    color: var(--SmartThemeQuoteColor, #999);
+    font-size: 11px;
+    cursor: pointer;
+    flex-shrink: 0;
+    padding: 4px 7px;
+    margin: -4px -5px -4px -2px;
+}
+.iig-extras-more:hover { color: var(--SmartThemeBodyColor, #fff); }
+
+/* ── Окошко аватара: превью, имя, активация, удаление с подтверждением ── */
+#iig-ava-overlay {
+    position: fixed; inset: 0; z-index: 100020;
+    background: rgba(0, 0, 0, 0.55);
+    display: flex; align-items: center; justify-content: center;
+    padding: 20px; pointer-events: all !important;
+}
+#iig-ava-dialog {
+    width: min(320px, 94vw);
+    max-height: min(88vh, calc(100dvh - 30px));
+    display: flex; flex-direction: column;
+    background: var(--SmartThemeBlurTintColor, rgba(20, 20, 30, 0.97));
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.15));
+}
+.iig-ava-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; padding: 8px 10px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.12));
+    font-weight: 600; font-size: 0.9em;
+    color: var(--SmartThemeBodyColor, #e2e2e2);
+}
+.iig-ava-head span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.iig-ava-close { cursor: pointer; padding: 2px 6px; color: var(--SmartThemeQuoteColor, #999); }
+.iig-ava-close:hover { color: var(--SmartThemeBodyColor, #fff); }
+.iig-ava-body { padding: 10px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
+.iig-ava-preview {
+    width: 100%; max-height: 280px; object-fit: contain;
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.08));
+}
+.iig-ava-actions { display: flex; gap: 6px; }
+.iig-ava-actions .menu_button { flex: 1; justify-content: center; font-size: 0.85em; }
+.iig-ava-delete:hover { color: #f87171; }
+.iig-ava-del-confirm { color: #f87171 !important; border-color: #f87171 !important; }
+/* Активный — квадратный бейдж как .sw-active-badge */
+.iig-extras-check {
+    position: absolute;
+    top: 2px; right: 2px;
+    width: 14px; height: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--SmartThemeBodyColor, #e2e2e2);
+    color: var(--SmartThemeBlurTintColor, #111);
+    border-radius: 0;
+    font-size: 8px;
+    font-weight: 700;
+}
+/* Панель описания внешности активного аватара */
+.iig-avatar-desc-panel {
+    margin-top: 6px;
+    padding: 6px 8px;
+    background: transparent;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.1));
+}
+.iig-avatar-desc-head {
+    font-size: 0.78em;
+    color: var(--SmartThemeQuoteColor);
+    margin-bottom: 4px;
+}
+.iig-avatar-desc-head b { color: var(--SmartThemeBodyColor); font-weight: 600; }
+.iig-avatar-desc-textarea {
+    font-size: 0.85em;
+    resize: vertical;
+    min-height: 46px;
+    width: 100%;
+}
+/* Селектор персоны в панели «Внешность (ориг. аватар)» — у каждой персоны своё описание */
+.iig-avatar-desc-persona {
+    width: 100%;
+    font-size: 0.82em;
+    margin-bottom: 4px;
+}
+.iig-avatar-lib-block .iig-extras-add-row .menu_button { white-space: nowrap; }

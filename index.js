@@ -34,6 +34,16 @@
         sharedUserWardrobe: [], sharedUserActive: null, sharedUserActiveByChat: {}, useSharedUserWardrobe: false,
         sharedBotWardrobe:  [], sharedBotActive:  null, sharedBotActiveByChat:  {}, useSharedBotWardrobe:  false,
         maxDimension: 512, showFloatingBtn: false,
+        // Где живёт кнопка-гардероб: 'bar' — в строке ввода, 'float' — плавающая поверх чата,
+        // 'wand' — спрятана в меню «волшебной палочки» (#extensionsMenu), без иконки в чате.
+        btnPlacement: 'bar',
+        // Шаблон промта примерки (try-on). Пусто = использовать SW_DEFAULT_TRYON_PROMPT.
+        // Редактируется юзером в «Быстрых настройках». Плейсхолдеры см. в swBuildTryOnPrompt.
+        tryOnPrompt: '',
+        // Образ-примерка (картинка = человек уже В наряде) при генерации уходит как
+        // аватар-референс вместо пары «аватар + наряд»: ИИ не путает чужую одежду,
+        // и тратится один слот референсов вместо двух.
+        tryOnAsAvatar: true,
     });
 
     function swGetSettings() {
@@ -375,6 +385,8 @@
         for (const o of pending) {
             try {
                 const item = { id: uid(), srcId: o.id, name: o.name || 'Без имени', description: o.description || '', type: swTypeOf(o), addedAt: o.addedAt || Date.now() };
+                if (o.tryOnSide) item.tryOnSide = o.tryOnSide; // примерка остаётся примеркой
+
                 let stored = false;
                 if (o.imagePath && !o.base64) {
                     item.imagePath = o.imagePath; stored = true; // уже файл — просто ссылаемся
@@ -511,10 +523,14 @@
             const oDesc = swSanitizeDesc(o.description);
             const tm = swTypeMeta(swTypeOf(o));
             const opts = swTypes().map(t => `<option value="${t.id}" ${swTypeOf(o) === t.id ? 'selected' : ''}>${esc(t.label)}</option>`).join('');
+            const tryOnBadge = o.tryOnSide ? `<div class="sw-tryon-badge" title="Примерка (${o.tryOnSide === 'bot' ? 'на персонажа' : 'на персону'}): при генерации уходит как аватар-референс — человек уже в наряде"><i class="fa-solid fa-person-rays"></i></div>` : '';
             h += `<div class="sw-outfit-card ${a ? 'sw-outfit-active' : ''}" data-id="${o.id}">
-                <div class="sw-outfit-img-wrap"><img src="${esc(swImgSrc(o))}" alt="${esc(o.name)}" class="sw-outfit-img" loading="lazy">${a ? '<div class="sw-active-badge"><i class="fa-solid fa-check"></i></div>' : ''}<div class="sw-type-badge" title="${esc(tm.label)}"><i class="fa-solid ${tm.icon}"></i></div></div>
+                <div class="sw-outfit-img-wrap"><img src="${esc(swImgSrc(o))}" alt="${esc(o.name)}" class="sw-outfit-img" loading="lazy">${a ? '<div class="sw-active-badge"><i class="fa-solid fa-check"></i></div>' : ''}<div class="sw-type-badge" title="${esc(tm.label)}"><i class="fa-solid ${tm.icon}"></i></div>${tryOnBadge}</div>
                 <div class="sw-outfit-footer"><span class="sw-outfit-name" title="${esc(oDesc || o.name)}">${esc(o.name)}</span>
                     <div class="sw-outfit-btns">
+                        <div class="sw-btn-tryon ${o.tryOnSide ? 'sw-tryon-on' : ''}" title="${o.tryOnSide
+                            ? `ПРИМЕРКА (${o.tryOnSide === 'bot' ? 'на персонажа' : 'на персону'}): при генерации уходит как аватарка — человек уже в наряде. Клик — сделать обычным нарядом`
+                            : 'Обычный наряд: уходит отдельным референсом одежды. Клик — пометить как примерку (картинка = человек уже В наряде, уйдёт как аватарка)'}"><i class="fa-solid fa-person-rays"></i></div>
                         <div class="sw-btn-activate" title="${a ? 'Снять' : 'Надеть'}"><i class="fa-solid ${a ? 'fa-toggle-on' : 'fa-toggle-off'}"></i></div>
                         <div class="sw-btn-edit" title="Редактировать"><i class="fa-solid fa-pen"></i></div>
                         <div class="sw-btn-delete" title="Удалить"><i class="fa-solid fa-trash-can"></i></div>
@@ -576,6 +592,18 @@
         for (const card of c.querySelectorAll('.sw-outfit-card[data-id]')) {
             const id = card.dataset.id;
             card.querySelector('.sw-outfit-img')?.addEventListener('click', (e) => { e.preventDefault(); e.stopImmediatePropagation(); swToggle(id); });
+            card.querySelector('.sw-btn-tryon')?.addEventListener('click', (e) => {
+                e.preventDefault(); e.stopImmediatePropagation();
+                const o = v.find(id); if (!o) return;
+                if (o.tryOnSide) {
+                    delete o.tryOnSide;
+                    toastr.info(`«${o.name}» — обычный наряд: уходит отдельным референсом одежды`, 'Гардероб', { timeOut: 3500 });
+                } else {
+                    o.tryOnSide = v.side; // помечаем на сторону текущего таба — на ней образ и носится
+                    toastr.success(`«${o.name}» — примерка: при генерации уйдёт как аватарка (${v.side === 'bot' ? 'персонажа' : 'персоны'})`, 'Гардероб', { timeOut: 3500 });
+                }
+                swSave(); swRender();
+            });
             card.querySelector('.sw-btn-activate')?.addEventListener('click', (e) => { e.preventDefault(); e.stopImmediatePropagation(); swToggle(id); });
             card.querySelector('.sw-btn-edit')?.addEventListener('click', (e) => { e.preventDefault(); e.stopImmediatePropagation(); swEdit(id); });
             card.querySelector('.sw-btn-delete')?.addEventListener('click', (e) => {
@@ -689,6 +717,118 @@
         return null;
     }
 
+    // ═════════════════════════════════════════════════════════
+    //  ПРИМЕРКА (try-on): фулбоди-генерация «человек в этом наряде».
+    //  Использует API-настройки и генераторы основного модуля SillyImages.
+    // ═════════════════════════════════════════════════════════
+
+    // Референс человека: ручное фото из слотов IIG → аватар персонажа/персоны ST.
+    // Чекбоксы sendCharAvatar/sendUserAvatar тут не учитываются — примерка запрошена явно.
+    async function swGetPersonRefB64(side) {
+        const refs = getCurrentCharacterRefs();
+        if (side === 'bot') {
+            const manual = await getRefBase64(refs.charRef, 'charRef');
+            if (manual) return manual;
+            return await getCharacterAvatarBase64();
+        }
+        const manual = await getRefBase64(refs.userRef, 'userRef');
+        if (manual) return manual;
+        return await getUserAvatarBase64();
+    }
+
+    // Дефолтный шаблон промта примерки. Ключевые отличия от старой версии:
+    //  (1) ЯВНО велит повторять арт-стиль аватар-референса (рендер/линии/шейдинг/палитра),
+    //      а не уходить в обобщённый «fashion lookbook» — из-за чего стиль не совпадал с авой;
+    //  (2) убран жёсткий студийный фон/свет, ломавший стиль.
+    // Плейсхолдеры (подставляются в swBuildTryOnPrompt):
+    //   {{name}}      — имя персонажа/персоны
+    //   {{personRef}} — метка референса человека (CHARACTER/USER REFERENCE)
+    //   {{outfitRef}} — метка референса наряда (CHARACTER/USER OUTFIT REFERENCE)
+    //   {{outfit}}    — «Outfit details: …» (или пусто, если описания нет)
+    const SW_DEFAULT_TRYON_PROMPT =
+        'Virtual outfit try-on. Generate a FULL-BODY, head-to-toe image of {{name}} — the exact person from the {{personRef}} image — wearing EXACTLY the outfit from the {{outfitRef}} image.'
+        + ' Keep the face, hairstyle, hair color, eye color, skin tone and body proportions identical to the person reference.'
+        + ' Replace ALL of their clothing with the referenced outfit: same garments, colors, fabrics, patterns, accessories and footwear.'
+        + ' CRITICAL — keep the same art style: render the result in the EXACT SAME art style, medium, line work, shading, color palette and overall aesthetic as the {{personRef}} image, as if drawn by the same artist. Do NOT switch to photography, 3D render or any different illustration style.'
+        + ' Natural relaxed standing pose facing the viewer, the entire figure visible from head to shoes, simple uncluttered background that does not distract from the character.'
+        + ' {{outfit}}';
+
+    function swBuildTryOnPrompt(side, outfitDesc) {
+        const ctx = SillyTavern.getContext();
+        const name = side === 'bot' ? (swCharName() || 'the character') : (ctx.name1 || 'the user');
+        const personRef = side === 'bot' ? 'CHARACTER REFERENCE' : 'USER REFERENCE';
+        const outfitRef = side === 'bot' ? 'CHARACTER OUTFIT REFERENCE' : 'USER OUTFIT REFERENCE';
+        const tpl = (swGetSettings().tryOnPrompt || '').trim() || SW_DEFAULT_TRYON_PROMPT;
+        const d = swSanitizeDesc(outfitDesc);
+        const outfitClause = d ? `Outfit details: ${d}` : '';
+        // Функции-заменители, чтобы '$' в имени/описании не трактовался как спецпаттерн ($&, $1…).
+        return tpl
+            .replaceAll('{{name}}', () => name)
+            .replaceAll('{{personRef}}', personRef)
+            .replaceAll('{{outfitRef}}', outfitRef)
+            .replaceAll('{{outfit}}', () => outfitClause)
+            .replace(/[ \t]{2,}/g, ' ')
+            .trim();
+    }
+
+    /**
+     * Сгенерировать примерку. side: 'bot' | 'user'. Возвращает PNG base64 (полный размер).
+     * Диспетчеризация по провайдерам — как в generateImageWithRetry, но с ЯВНЫМИ
+     * референсами (человек + наряд) и без авто-сбора контекста чата.
+     */
+    async function swTryOnGenerate(side, outfitB64, outfitDesc) {
+        validateSettings(); // бросает понятную ошибку, если API не настроен
+        const settings = getSettings();
+        const personB64 = await swGetPersonRefB64(side);
+        if (!personB64) {
+            throw new Error(side === 'bot'
+                ? 'Нет референса персонажа: откройте чат с персонажем или загрузите фото в слот «Персонаж» в настройках SillyImages'
+                : 'Нет референса персоны: выберите аватар персоны в ST или загрузите фото в слот «Юзер» в настройках SillyImages');
+        }
+        const refImages = [personB64, outfitB64];
+        const refLabels = side === 'bot' ? ['char_ref', 'char_outfit'] : ['user_ref', 'user_outfit'];
+        const prompt = swBuildTryOnPrompt(side, outfitDesc);
+        // Примерка НЕ подмешивает глобальный пресет стиля ([Style: ...]): стиль должен
+        // диктовать ТОЛЬКО аватар-референс (см. промт), иначе результат уходит в чужой стиль.
+        const style = '';
+        const opts = { aspectRatio: '2:3', refLabels };
+
+        const apiType = settings.apiType;
+        const fmt = apiType === 'custom' ? (settings.customRequestFormat || 'openai') : apiType;
+        if (apiType === 'custom') opts.overrideUrl = (settings.customFullUrl || '').trim() || null;
+        const useGemini = fmt === 'gemini' || (apiType !== 'custom' && isGeminiModel(settings.model));
+
+        let generated;
+        if (fmt === 'naistera') {
+            generated = await generateImageNaistera(prompt, style, { ...opts, referenceImages: refImages.map(b => 'data:image/png;base64,' + b) });
+        } else if (fmt === 'void') {
+            generated = await generateImageVoid(prompt, style, refImages, opts);
+        } else if (fmt === 'electronhub') {
+            generated = await generateImageElectronHub(prompt, style, refImages, opts);
+        } else if (useGemini) {
+            generated = await generateImageGemini(prompt, style, refImages, opts);
+        } else {
+            generated = await generateImageOpenAI(prompt, style, refImages, opts);
+        }
+
+        // Некоторые провайдеры возвращают обычный URL вместо data URL.
+        if (typeof generated === 'string' && /^https?:\/\//i.test(generated)) {
+            generated = await imageUrlToDataUrl(generated);
+        }
+        if (typeof generated !== 'string' || !generated.startsWith('data:image/')) {
+            throw new Error('API вернул не картинку (примерка поддерживает только изображения)');
+        }
+        // Нормализуем в PNG (webp и пр.) — дальше картинка живёт как base64 без mime.
+        const png = await convertDataUrlToPng(generated);
+        return parseImageDataUrl(png).base64Data;
+    }
+
+    // Ужать base64 до maxDimension для хранения в гардеробе (сгенерированные картинки большие).
+    async function swShrinkForStore(b64) {
+        try { return await compressBase64Image(b64, swGetSettings().maxDimension, 0.85); }
+        catch (e) { swLog('WARN', 'try-on shrink failed, storing as is:', e.message); return b64; }
+    }
+
     async function swUpload() {
         const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*';
         inp.addEventListener('change', async () => {
@@ -717,6 +857,10 @@
         const curName = isEdit ? (item.name || '') : (defaultName || '');
         const curDesc = isEdit ? swSanitizeDesc(item.description) : '';
 
+        const stCtx = SillyTavern.getContext();
+        const charNm = swCharName() || 'персонаж';
+        const userNm = stCtx.name1 || 'персона';
+
         const ov = document.createElement('div'); ov.id = 'sw-form-overlay';
         ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
         const panel = document.createElement('div'); panel.id = 'sw-form';
@@ -724,6 +868,18 @@
             <div class="sw-form-header"><span>${isEdit ? 'Редактировать образ' : 'Новый образ'}</span><div class="sw-form-close" title="Закрыть"><i class="fa-solid fa-xmark"></i></div></div>
             <div class="sw-form-body">
                 <div class="sw-form-preview"><img src="${esc(previewSrc)}" alt="preview"></div>
+                <div class="sw-tryon-row">
+                    <select class="text_pole sw-tryon-select" id="sw-tryon-target" title="На кого примерить наряд">
+                        <option value="bot" ${view.side === 'bot' ? 'selected' : ''}>На персонажа — ${esc(charNm)}</option>
+                        <option value="user" ${view.side === 'user' ? 'selected' : ''}>На персону — ${esc(userNm)}</option>
+                    </select>
+                    <div class="sw-tryon-btn" id="sw-tryon-btn" title="Сгенерировать фулбоди-картинку: персонаж в этом наряде (ИИ)"><i class="fa-solid fa-person-rays"></i> Примерить</div>
+                </div>
+                <div class="sw-tryon-status" id="sw-tryon-status" hidden></div>
+                <div class="sw-tryon-pick" id="sw-tryon-pick" hidden>
+                    <div class="sw-tryon-opt" data-pick="orig" title="Сохранить исходную картинку наряда"><img alt="оригинал"><span>Оригинал</span></div>
+                    <div class="sw-tryon-opt" data-pick="gen" title="Сохранить сгенерированную примерку — при генерации картинок она уйдёт как аватар персонажа/персоны (наряд уже надет)"><img alt="примерка"><span>Примерка</span></div>
+                </div>
                 <label class="sw-form-label">Название</label>
                 <input type="text" class="text_pole sw-form-input" id="sw-form-name" value="${esc(curName)}" placeholder="Название образа">
                 <label class="sw-form-label">Тип одежды</label>
@@ -743,20 +899,79 @@
         panel.querySelector('.sw-form-close').addEventListener('click', close);
         panel.querySelector('.sw-form-cancel').addEventListener('click', close);
 
+        // Исходная картинка наряда (add: из загрузки; edit: лениво из base64/файла).
+        let origB64 = base64;
+        async function getFormImageB64() {
+            if (origB64) return origB64;
+            if (item) origB64 = item.base64 || ((item.imagePath && typeof loadRefImageAsBase64 === 'function') ? await loadRefImageAsBase64(item.imagePath) : null);
+            return origB64;
+        }
+
         // ИИ-описание по картинке
         panel.querySelector('#sw-form-ai').addEventListener('click', async () => {
             const aiBtn = panel.querySelector('#sw-form-ai');
             if (aiBtn.classList.contains('sw-form-ai-loading')) return;
             aiBtn.classList.add('sw-form-ai-loading');
             try {
-                let b64 = base64;
-                if (!b64 && item) b64 = item.base64 || ((item.imagePath && typeof loadRefImageAsBase64 === 'function') ? await loadRefImageAsBase64(item.imagePath) : null);
+                const b64 = await getFormImageB64();
                 if (!b64) { toastr.warning('Нет картинки для анализа', 'Гардероб'); return; }
                 const desc = await swAnalyzeOutfit(b64);
                 if (desc) panel.querySelector('#sw-form-desc').value = desc;
                 else toastr.warning('Не удалось получить описание', 'Гардероб');
             } catch (e) { toastr.error('Ошибка ИИ: ' + e.message, 'Гардероб'); }
             finally { aiBtn.classList.remove('sw-form-ai-loading'); }
+        });
+
+        // ── Примерка наряда (ИИ): фулбоди-генерация на персонажа/персону ──
+        let genB64 = null;     // сгенерированная примерка (PNG, полный размер)
+        let genSide = null;    // на кого сгенерирована примерка: 'bot' | 'user' (для флага tryOnSide)
+        let picked = 'orig';   // какая картинка будет сохранена: 'orig' | 'gen'
+        const previewImg = panel.querySelector('.sw-form-preview img');
+        const tryBtn = panel.querySelector('#sw-tryon-btn');
+        const tryStatus = panel.querySelector('#sw-tryon-status');
+        const tryPick = panel.querySelector('#sw-tryon-pick');
+
+        function refreshTryOnUI() {
+            tryPick.hidden = !genB64;
+            if (genB64) {
+                tryPick.querySelector('[data-pick="orig"] img').src = previewSrc;
+                tryPick.querySelector('[data-pick="gen"] img').src = 'data:image/png;base64,' + genB64;
+                for (const o of tryPick.querySelectorAll('.sw-tryon-opt')) o.classList.toggle('sw-tryon-sel', o.dataset.pick === picked);
+            }
+            previewImg.src = (picked === 'gen' && genB64) ? ('data:image/png;base64,' + genB64) : previewSrc;
+        }
+
+        for (const o of tryPick.querySelectorAll('.sw-tryon-opt')) {
+            o.addEventListener('click', () => { picked = o.dataset.pick === 'gen' ? 'gen' : 'orig'; refreshTryOnUI(); });
+        }
+
+        tryBtn.addEventListener('click', async () => {
+            if (tryBtn.classList.contains('sw-tryon-busy')) return;
+            const side = panel.querySelector('#sw-tryon-target').value === 'user' ? 'user' : 'bot';
+            tryBtn.classList.add('sw-tryon-busy');
+            tryBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Генерация…';
+            tryStatus.hidden = false; tryStatus.textContent = 'Готовим референсы…';
+            try {
+                const srcB64 = await getFormImageB64();
+                if (!srcB64) throw new Error('Не удалось получить картинку наряда');
+                const descNow = panel.querySelector('#sw-form-desc').value.trim();
+                tryStatus.textContent = 'Генерация примерки… (обычно 15–60 секунд)';
+                const out = await swTryOnGenerate(side, srcB64, descNow);
+                if (!document.body.contains(panel)) return; // форму уже закрыли
+                genB64 = out; genSide = side; picked = 'gen';
+                refreshTryOnUI();
+                tryStatus.hidden = true;
+                toastr.success('Примерка готова. Ниже выберите, какую картинку сохранить в гардероб', 'Гардероб', { timeOut: 4000 });
+            } catch (e) {
+                swLog('ERROR', 'try-on failed:', e);
+                if (document.body.contains(panel)) { tryStatus.hidden = false; tryStatus.textContent = '⚠ ' + String(e.message || e); }
+                toastr.error(String(e.message || e).slice(0, 300), 'Примерка не удалась', { timeOut: 6000 });
+            } finally {
+                if (document.body.contains(panel)) {
+                    tryBtn.classList.remove('sw-tryon-busy');
+                    tryBtn.innerHTML = '<i class="fa-solid fa-person-rays"></i> Примерить';
+                }
+            }
         });
 
         // Сохранение
@@ -768,25 +983,51 @@
             const saveBtn = panel.querySelector('.sw-form-save');
             saveBtn.classList.add('sw-form-btn-busy'); saveBtn.textContent = 'Сохранение…';
             try {
+                const useGen = picked === 'gen' && !!genB64;
                 if (isEdit) {
-                    item.name = name; item.type = type; item.description = desc; swSave();
+                    item.name = name; item.type = type; item.description = desc;
+                    if (useGen) {
+                        // Заменяем картинку образа на сгенерированную примерку.
+                        let stored = false;
+                        if (view.shared) {
+                            try {
+                                if (typeof compressBase64Image === 'function' && typeof saveRefImageToFile === 'function') {
+                                    const jpeg = await compressBase64Image(genB64, swGetSettings().maxDimension, 0.85);
+                                    const prefix = view.side === 'bot' ? 'sw_bot_' : 'sw_user_';
+                                    item.imagePath = await saveRefImageToFile(jpeg, prefix + name);
+                                    delete item.base64;
+                                    stored = true;
+                                }
+                            } catch (err) { swLog('WARN', 'try-on file store failed, fallback to base64:', err.message); }
+                        }
+                        if (!stored) { item.base64 = await swShrinkForStore(genB64); delete item.imagePath; }
+                        // Картинка образа теперь — примерка (человек в наряде): помечаем, на кого
+                        // она сгенерирована. При генерации такой образ уходит аватар-референсом.
+                        item.tryOnSide = genSide;
+                        // Кэш активного образа мог держать старую картинку этого id — сбрасываем.
+                        swSharedCache[view.side].b64 = null; swSharedCache[view.side].id = null;
+                    }
+                    swSave();
                     if (view.shared) swPreloadSharedActive(view.side);
                 } else {
                     const newItem = { id: uid(), name, type, description: desc, addedAt: Date.now() };
+                    // Сохраняем примерку → помечаем, на кого она сгенерирована (уйдёт аватар-референсом).
+                    if (useGen && genSide) newItem.tryOnSide = genSide;
+                    const imgB64 = useGen ? genB64 : base64;
                     if (view.shared) {
                         // ⚡ ОБЩИЙ гардероб: картинку храним ФАЙЛОМ, в settings — только путь (не раздуваем settings.json).
                         let stored = false;
                         try {
                             if (typeof compressBase64Image === 'function' && typeof saveRefImageToFile === 'function') {
-                                const jpeg = await compressBase64Image(base64, swGetSettings().maxDimension, 0.82);
+                                const jpeg = await compressBase64Image(imgB64, swGetSettings().maxDimension, 0.82);
                                 const prefix = view.side === 'bot' ? 'sw_bot_' : 'sw_user_';
                                 newItem.imagePath = await saveRefImageToFile(jpeg, prefix + name);
                                 stored = true;
                             }
                         } catch (err) { swLog('WARN', 'shared file store failed, fallback to base64:', err.message); }
-                        if (!stored) newItem.base64 = base64;
+                        if (!stored) newItem.base64 = useGen ? await swShrinkForStore(imgB64) : imgB64;
                     } else {
-                        newItem.base64 = base64;
+                        newItem.base64 = useGen ? await swShrinkForStore(imgB64) : imgB64;
                     }
                     view.add(newItem);
                     if (view.shared) swPreloadSharedActive(view.side);
@@ -795,6 +1036,7 @@
                 close();
                 swRender(); swUpdatePromptInjection(); swInjectFloatingBtn();
                 toastr.success(isEdit ? 'Обновлён' : `«${name}» добавлен`, 'Гардероб', { timeOut: 2000 });
+                if (useGen && swGetSettings().tryOnAsAvatar) toastr.info('Образ-примерка: при генерации уйдёт как аватарка (наряд уже надет) — отдельный наряд не отправляется', 'Гардероб', { timeOut: 5000 });
             } catch (e) {
                 toastr.error('Ошибка: ' + e.message, 'Гардероб');
                 saveBtn.classList.remove('sw-form-btn-busy'); saveBtn.textContent = isEdit ? 'Сохранить' : 'Добавить';
@@ -1010,6 +1252,24 @@
                     <div class="sw-quick-hint">«Другое» удалить нельзя — это запасной тег. При удалении тега все его наряды переносятся в «Другое».</div>
                 </div>
 
+                <div class="sw-quick-tryon">
+                    <label class="sw-quick-tags-title">
+                        <i class="fa-solid fa-person-rays"></i> Промт примерки
+                        <span class="sw-tryon-prompt-reset" id="sw-q-tryon-reset" title="Вернуть стандартный промт"><i class="fa-solid fa-rotate-left"></i> Сбросить</span>
+                    </label>
+                    <textarea id="sw-q-tryon-prompt" class="text_pole sw-tryon-prompt-area" rows="7" placeholder="Шаблон промта для ИИ-примерки">${esc(swGetSettings().tryOnPrompt || SW_DEFAULT_TRYON_PROMPT)}</textarea>
+                    <div class="sw-quick-hint sw-tryon-prompt-hint">
+                        Плейсхолдеры: <code>{{name}}</code> — имя, <code>{{personRef}}</code> — метка аватара,
+                        <code>{{outfitRef}}</code> — метка наряда, <code>{{outfit}}</code> — описание наряда.
+                        По умолчанию промт велит ИИ повторять арт-стиль аватара, чтобы примерка совпадала с авой.
+                    </div>
+                    <label class="sw-quick-check" style="margin-top:8px;">
+                        <input type="checkbox" id="sw-q-tryon-avatar" ${swGetSettings().tryOnAsAvatar ? 'checked' : ''}>
+                        <span>Примерка → аватар-референс</span>
+                    </label>
+                    <div class="sw-quick-hint">Если картинка надетого образа — сохранённая примерка, при генерации она отправляется как аватарка персонажа/персоны вместо пары «аватар + наряд». ИИ не перепутает, чья одежда, и референсов уходит меньше.</div>
+                </div>
+
                 <div class="sw-quick-hint">Настройки сохраняются автоматически и синхронизируются с панелью расширения.</div>
 
             </div>`;
@@ -1033,6 +1293,25 @@
             if (swOpen) swRender();
             // Сразу выделить имя нового тега для ввода.
             tagsList.querySelector(`.sw-tag-row[data-id="${tag.id}"] .sw-tag-name`)?.focus();
+        });
+
+        // ── Промт примерки (try-on) ──
+        const tryOnArea = panel.querySelector('#sw-q-tryon-prompt');
+        tryOnArea?.addEventListener('input', () => {
+            const v = tryOnArea.value;
+            // Совпадение с дефолтом (или пусто) храним как '' → значит «использовать стандартный».
+            swGetSettings().tryOnPrompt = (v.trim() && v.trim() !== SW_DEFAULT_TRYON_PROMPT.trim()) ? v : '';
+            swSave();
+        });
+        panel.querySelector('#sw-q-tryon-reset')?.addEventListener('click', () => {
+            swGetSettings().tryOnPrompt = '';
+            swSave();
+            if (tryOnArea) tryOnArea.value = SW_DEFAULT_TRYON_PROMPT;
+            toastr.info('Промт примерки сброшен на стандартный', 'Гардероб', { timeOut: 2000 });
+        });
+        panel.querySelector('#sw-q-tryon-avatar')?.addEventListener('change', (e) => {
+            swGetSettings().tryOnAsAvatar = e.target.checked;
+            swSave();
         });
 
         const save = () => ctx.saveSettingsDebounced();
@@ -1218,145 +1497,33 @@
     //  Manages inline_image_gen.npcReferences (name + photo)
     // ═════════════════════════════════════════════════════════
 
+    // NPC живёт одной полноценной вкладкой в настройках (как в novarakk/megarakk).
+    // Кнопка «Менеджер NPC» в гардеробе — ярлык: закрывает модалку гардероба, открывает
+    // панель расширений ST, разворачивает дровер настроек, переключает на вкладку NPC и
+    // подскролливает к ней. Свой урезанный редактор больше не нужен.
     function swOpenNpcManager() {
         document.getElementById('sw-npc-overlay')?.remove();
+        document.getElementById('sw-modal-overlay')?.remove();
 
-        const ctx = SillyTavern.getContext();
-        if (!ctx.extensionSettings.inline_image_gen) {
-            toastr.error('Настройки расширения не готовы', 'NPC');
-            return;
-        }
-        const iig = ctx.extensionSettings.inline_image_gen;
-        if (!Array.isArray(iig.npcReferences)) iig.npcReferences = [];
-        // Ensure 4 fixed slots like the main panel
-        while (iig.npcReferences.length < 4) iig.npcReferences.push({ name: '', imageBase64: '', imagePath: '' });
+        // 1) Открыть панель расширений ST, если свёрнута.
+        const block = document.getElementById('rm_extensions_block');
+        const needOpenPanel = !!block && block.classList.contains('closedDrawer');
+        if (needOpenPanel) document.querySelector('#extensions-settings-button .drawer-toggle')?.click();
 
-        const ov = document.createElement('div');
-        ov.id = 'sw-npc-overlay';
-        ov.addEventListener('click', (e) => { if (e.target === ov) ov.remove(); });
-
-        const panel = document.createElement('div');
-        panel.id = 'sw-npc-panel';
-        panel.innerHTML = `
-            <div class="sw-npc-header">
-                <span><i class="fa-solid fa-users"></i> NPC референсы</span>
-                <div class="sw-npc-close" title="Закрыть"><i class="fa-solid fa-xmark"></i></div>
-            </div>
-            <div class="sw-npc-hint">NPC автоматически подбираются по имени в промпте. 4 слота.</div>
-            <div class="sw-npc-list sw-npc-grid" id="sw-npc-list"></div>`;
-
-        ov.appendChild(panel);
-        document.body.appendChild(ov);
-
-        panel.querySelector('.sw-npc-close').addEventListener('click', () => ov.remove());
-
-        const persist = () => {
-            ctx.saveSettingsDebounced();
-            try {
-                localStorage.setItem('iig_npc_refs_v3', JSON.stringify({
-                    charRef: iig.charRef, userRef: iig.userRef, npcReferences: iig.npcReferences
-                }));
-            } catch(x) {}
+        const reveal = () => {
+            const mega = document.getElementById('iig_refs_mega_section');
+            if (!mega) { toastr.info('Откройте настройки «Генерация картинок» → вкладка NPC', 'NPC'); return; }
+            // 2) Развернуть inline-дровер настроек расширения, если свёрнут.
+            const content = mega.closest('.inline-drawer-content');
+            if (content && (content.offsetParent === null || getComputedStyle(content).display === 'none')) {
+                content.closest('.inline-drawer')?.querySelector('.inline-drawer-toggle')?.click();
+            }
+            // 3) Переключиться на вкладку NPC и подскроллить к ней.
+            mega.querySelector('.iig-ref-tab[data-tab="npc"]')?.click();
+            setTimeout(() => mega.scrollIntoView({ behavior: 'smooth', block: 'start' }), 120);
         };
-
-        const renderList = () => {
-            const list = panel.querySelector('#sw-npc-list');
-            let html = '';
-            for (let i = 0; i < 4; i++) {
-                const n = iig.npcReferences[i] || { name: '', imageBase64: '', imagePath: '' };
-                const hasImg = !!(n.imagePath || n.imageBase64);
-                const thumb = n.imageBase64 ? `data:image/jpeg;base64,${n.imageBase64}` : (n.imagePath || '');
-                html += `<div class="sw-npc-item ${hasImg ? 'sw-npc-has-img' : ''}" data-idx="${i}">
-                    <div class="sw-npc-thumb" data-idx="${i}" title="${hasImg ? 'Заменить фото' : 'Загрузить фото'}">
-                        ${hasImg ? `<img src="${thumb}" alt="NPC ${i+1}" loading="lazy">` : '<i class="fa-solid fa-image"></i>'}
-                    </div>
-                    <div class="sw-npc-info">
-                        <span class="sw-npc-label">NPC ${i + 1}</span>
-                        <input type="text" class="text_pole sw-npc-name" data-idx="${i}" value="${esc(n.name || '')}" placeholder="Имя (для поиска в промпте)">
-                    </div>
-                    <div class="sw-npc-btns">
-                        <label class="sw-npc-btn sw-npc-upload" title="Загрузить фото">
-                            <i class="fa-solid fa-upload"></i>
-                            <input type="file" accept="image/*" class="sw-npc-file" data-idx="${i}" style="display:none;">
-                        </label>
-                        <div class="sw-npc-btn sw-npc-del ${hasImg || n.name ? '' : 'sw-npc-btn-dim'}" data-idx="${i}" title="Очистить слот"><i class="fa-solid fa-trash-can"></i></div>
-                    </div>
-                </div>`;
-            }
-            list.innerHTML = html;
-
-            for (const inp of list.querySelectorAll('.sw-npc-name')) {
-                inp.addEventListener('input', (e) => {
-                    const i = +e.target.dataset.idx;
-                    if (!iig.npcReferences[i]) iig.npcReferences[i] = { name: '', imageBase64: '', imagePath: '' };
-                    iig.npcReferences[i].name = e.target.value;
-                    persist();
-                });
-            }
-
-            for (const t of list.querySelectorAll('.sw-npc-thumb')) {
-                t.addEventListener('click', () => {
-                    const idx = +t.dataset.idx;
-                    list.querySelector(`.sw-npc-file[data-idx="${idx}"]`)?.click();
-                });
-            }
-
-            for (const fi of list.querySelectorAll('.sw-npc-file')) {
-                fi.addEventListener('change', async (e) => {
-                    const idx = +e.target.dataset.idx;
-                    const file = e.target.files?.[0];
-                    if (!file) return; e.target.value = '';
-                    try {
-                        const raw = await new Promise((res, rej) => {
-                            const r = new FileReader();
-                            r.onloadend = () => res(r.result.split(',')[1]);
-                            r.onerror = rej;
-                            r.readAsDataURL(file);
-                        });
-                        let b64 = raw;
-                        try { if (typeof compressBase64Image === 'function') b64 = await compressBase64Image(raw, 768, 0.8); } catch(x) {}
-                        if (!iig.npcReferences[idx]) iig.npcReferences[idx] = { name: '', imageBase64: '', imagePath: '' };
-                        try {
-                            if (typeof saveRefImageToFile === 'function') {
-                                const path = await saveRefImageToFile(b64, `npc_${idx}`);
-                                iig.npcReferences[idx].imagePath = path;
-                                iig.npcReferences[idx].imageBase64 = '';
-                            } else {
-                                iig.npcReferences[idx].imageBase64 = b64;
-                            }
-                        } catch (err) {
-                            iig.npcReferences[idx].imageBase64 = b64;
-                        }
-                        // Auto-fill name from filename if empty
-                        if (!iig.npcReferences[idx].name) {
-                            iig.npcReferences[idx].name = file.name.replace(/\.[^.]+$/, '');
-                        }
-                        persist();
-                        renderList();
-                        if (typeof renderRefSlots === 'function') { try { renderRefSlots(); } catch(x) {} }
-                        toastr.success(`NPC ${idx + 1}: фото загружено`, 'NPC', { timeOut: 2000 });
-                    } catch (err) {
-                        toastr.error('Ошибка: ' + err.message, 'NPC');
-                    }
-                });
-            }
-
-            for (const d of list.querySelectorAll('.sw-npc-del')) {
-                d.addEventListener('click', () => {
-                    const idx = +d.dataset.idx;
-                    const n = iig.npcReferences[idx];
-                    if (!n || (!n.name && !n.imagePath && !n.imageBase64)) return;
-                    if (!confirm(`Очистить слот NPC ${idx + 1}?`)) return;
-                    iig.npcReferences[idx] = { name: '', imageBase64: '', imagePath: '' };
-                    persist();
-                    renderList();
-                    if (typeof renderRefSlots === 'function') { try { renderRefSlots(); } catch(x) {} }
-                    toastr.info(`NPC ${idx + 1} очищен`, 'NPC', { timeOut: 1500 });
-                });
-            }
-        };
-
-        renderList();
+        // Если панель только что открыли — дать дроверу доехать перед скроллом.
+        setTimeout(reveal, needOpenPanel ? 280 : 0);
     }
 
     // ═════════════════════════════════════════════════════════
@@ -1388,7 +1555,10 @@
         }
         const iig = ctx.extensionSettings?.inline_image_gen;
         if (iig) {
-            addRef(iig.charRef?.imagePath);
+            // Все ручные фото по всем персонажам/персонам, иначе чистка удалит используемые файлы.
+            for (const r of Object.values(iig.charRefByKey || {})) addRef(r?.imagePath);
+            for (const r of Object.values(iig.userRefByKey || {})) addRef(r?.imagePath);
+            addRef(iig.charRef?.imagePath); // legacy/временные
             addRef(iig.userRef?.imagePath);
             for (const n of (iig.npcReferences || [])) addRef(n?.imagePath);
         }
@@ -1615,14 +1785,43 @@
 
     // ── Bar button (inline in leftSendForm, like sims-action-btn) ──
 
+    // Текущее размещение кнопки-гардероба ('bar' | 'float' | 'wand') с миграцией со старого флага.
+    function swGetPlacement() {
+        const s = swGetSettings();
+        if (s.btnPlacement === 'bar' || s.btnPlacement === 'float' || s.btnPlacement === 'wand') return s.btnPlacement;
+        return s.showFloatingBtn ? 'float' : 'bar';
+    }
+    function swSetPlacement(p) {
+        if (p !== 'bar' && p !== 'float' && p !== 'wand') p = 'bar';
+        const s = swGetSettings();
+        s.btnPlacement = p;
+        s.showFloatingBtn = (p === 'float'); // держим старый флаг в синхроне на случай чтения извне
+        SillyTavern.getContext().saveSettingsDebounced();
+        swInjectFloatingBtn();
+    }
+    function swActiveCount() {
+        return (swGetActiveBotOutfit() ? 1 : 0) + (swGetActiveUserOutfit() ? 1 : 0);
+    }
+
     function swInjectFloatingBtn() {
-        // Взаимоисключение: либо плавающая кнопка поверх чата, либо кнопка в строке ввода — не обе сразу.
-        if (swGetSettings().showFloatingBtn) {
+        // Взаимоисключение: кнопка живёт ровно в одном месте — в строке ввода, плавающая, или в «палочке».
+        const placement = swGetPlacement();
+
+        // Пункт в меню «волшебной палочки» — только в режиме 'wand'.
+        swEnsureWandButton(placement === 'wand');
+
+        if (placement === 'wand') {
+            $('#sw-bar-btn').remove();
+            swInjectFloatBtn(false);   // уберёт плавающую
+            return;
+        }
+        if (placement === 'float') {
             $('#sw-bar-btn').remove(); // убираем кнопку из сендбара
-            swInjectFloatBtn();        // показываем/обновляем плавающую
+            swInjectFloatBtn(true);    // показываем/обновляем плавающую
             return;
         }
 
+        // placement === 'bar': кнопка в строке ввода (#leftSendForm).
         let $btn = $('#sw-bar-btn');
         if ($btn.length === 0) {
             $btn = $('<div id="sw-bar-btn" title="Гардероб"><i class="fa-solid fa-shirt"></i></div>');
@@ -1635,24 +1834,16 @@
             if ($left.length) $left.append($btn);
             else $('body').append($btn);
         }
-        const hasBot = !!swGetActiveBotOutfit();
-        const hasUser = !!swGetActiveUserOutfit();
-        const hasActive = hasBot || hasUser;
-        $btn.toggleClass('sw-bar-active', hasActive);
-        if (hasActive) {
-            const count = (hasBot ? 1 : 0) + (hasUser ? 1 : 0);
-            $btn.html(`<i class="fa-solid fa-shirt"></i><span class="sw-bar-count">${count}</span>`);
-        } else {
-            $btn.html('<i class="fa-solid fa-shirt"></i>');
-        }
+        const count = swActiveCount();
+        $btn.toggleClass('sw-bar-active', count > 0);
+        $btn.html(`<i class="fa-solid fa-shirt"></i>${count > 0 ? `<span class="sw-bar-count">${count}</span>` : ''}`);
         $btn.show();
-        swInjectFloatBtn(); // showFloatingBtn=false → эта функция уберёт #sw-float-btn
+        swInjectFloatBtn(false); // на всякий случай уберём плавающую
     }
 
-    // Плавающая кнопка-гардероб поверх чата. Показывается, только если включена настройка showFloatingBtn.
+    // Плавающая кнопка-гардероб поверх чата. show=true → показать/обновить, иначе удалить.
     // Видна и на ПК, и на телефоне (position: fixed + высокий z-index + собственный фон).
-    function swInjectFloatBtn() {
-        const show = !!swGetSettings().showFloatingBtn;
+    function swInjectFloatBtn(show) {
         let $fb = $('#sw-float-btn');
         if (!show) { if ($fb.length) $fb.remove(); return; }
         if ($fb.length === 0) {
@@ -1660,12 +1851,30 @@
             $fb.on('click touchend', function (e) { e.preventDefault(); e.stopPropagation(); swOpenModal(); });
             $('body').append($fb);
         }
-        const hasBot = !!swGetActiveBotOutfit();
-        const hasUser = !!swGetActiveUserOutfit();
-        const count = (hasBot ? 1 : 0) + (hasUser ? 1 : 0);
+        const count = swActiveCount();
         $fb.toggleClass('sw-float-active', count > 0);
         $fb.html(`<i class="fa-solid fa-shirt"></i>${count > 0 ? `<span class="sw-bar-count">${count}</span>` : ''}`);
         $fb.show();
+    }
+
+    // Пункт «Гардероб» в меню «волшебной палочки» (#extensionsMenu) — как у gallery/sillyvn.
+    // show=false → удалить пункт. ST сам прячет саму палочку, если в меню нет видимых пунктов.
+    function swEnsureWandButton(show) {
+        let item = document.getElementById('sw_wand_button');
+        if (!show) { if (item) item.remove(); return; }
+        const menu = document.getElementById('extensionsMenu');
+        if (!menu) return; // меню ещё не построено — повторим на следующем хуке (APP_READY/CHAT_CHANGED)
+        if (!item) {
+            item = document.createElement('div');
+            item.id = 'sw_wand_button';
+            item.className = 'list-group-item flex-container flexGap5';
+            item.title = 'Открыть гардероб';
+            // Меню само закрывается по клику (обработчик на html в core), поэтому достаточно открыть модалку.
+            item.addEventListener('click', () => swOpenModal());
+            menu.appendChild(item);
+        }
+        const count = swActiveCount();
+        item.innerHTML = `<div class="fa-solid fa-shirt extensionsMenuExtensionButton"></div><span>Гардероб${count > 0 ? ` (${count})` : ''}</span>`;
     }
 
     // ── Public API ──
@@ -1687,10 +1896,20 @@
         },
         getActiveOutfitDataUrl(type) { const b = this.getActiveOutfitBase64(type); return b ? `data:image/png;base64,${b}` : null; },
         getActiveOutfitData(type) { return swGetActiveSideOutfit(type === 'bot' ? 'bot' : 'user'); },
+        // Активный образ стороны — ИИ-примерка (картинка = человек уже В наряде)?
+        // true → при генерации картинка уходит аватар-референсом вместо пары «аватар + наряд».
+        // Учитывает настройку tryOnAsAvatar и то, что примерка сгенерирована именно на ЭТУ сторону.
+        isActiveOutfitTryOn(type) {
+            const side = type === 'bot' ? 'bot' : 'user';
+            if (!swGetSettings().tryOnAsAvatar) return false;
+            return swGetActiveSideOutfit(side)?.tryOnSide === side;
+        },
         debugInjection: swDebugInjection,
         forceReinject: swUpdatePromptInjection,
         preloadShared: swPreloadAllShared,
         refreshFloatBtn: () => swInjectFloatingBtn(),
+        getPlacement: () => swGetPlacement(),
+        setPlacement: (p) => swSetPlacement(p),
         migrateUserOutfits: () => swMigrateToShared('user'),
         migrateBotOutfits: () => swMigrateToShared('bot'),
         countPendingMigration: (side) => swCountPendingMigration(side === 'bot' ? 'bot' : 'user'),
@@ -1798,7 +2017,7 @@ const defaultSettings = Object.freeze({
     externalBlocks: false,
     imageContextEnabled: false,
     imageContextCount: 1,
-    apiType: 'openai', // 'openai' | 'void' | 'gemini' | 'naistera' | 'custom'
+    apiType: 'openai', // 'openai' | 'void' | 'gemini' | 'naistera' | 'electronhub' | 'custom'
     customRequestFormat: 'openai', // 'openai' | 'void' | 'gemini' | 'naistera' — when apiType === 'custom'
     customFullUrl: '', // optional: use the endpoint exactly as typed (no /v1/... append)
     endpoint: '',
@@ -1823,12 +2042,30 @@ const defaultSettings = Object.freeze({
     charRef: { name: '', imageBase64: '', imagePath: '' },
     userRef: { name: '', imageBase64: '', imagePath: '' },
     npcReferences: [],
+    charDescription: '',
+    userDescription: '',
+    // Per-character / per-persona внешность. {{char}} ключуется по файлу аватара карточки
+    // (character.avatar), {{user}} — по персоне ST (user_avatar). Старые charDescription/
+    // userDescription/charRef/userRef остаются как источник для разовой миграции (migratePerCharOnce).
+    charDescByKey: {},
+    userDescByKey: {},
+    charRefByKey: {},
+    userRefByKey: {},
+    injectDescriptions: true,
+    // ── Avatar Library (порт из megarakk) ──
+    // Кастомные аватары char/user. Элемент: {id, name, imageData(base64), target, appearance}.
+    // Активный элемент даёт картинку-референс И текст внешности. Хранится по СТАБИЛЬНОМУ id —
+    // поэтому всегда сохраняется (в отличие от ключей по персоне/персонажу).
+    avatarItems: [],
+    activeAvatarChar: null,
+    activeAvatarUser: null,
+    injectAvatarAppearanceToGeneration: true,
+    injectAvatarAppearanceToChatEnabled: false,
+    avatarAppearanceInjectionDepth: 1,
     // Avatar auto-send (from ST avatars)
     sendCharAvatar: false,
     sendUserAvatar: false,
     userAvatarFile: '',
-    charPhotoOpen: false,
-    userPhotoOpen: false,
     // Model list filter — false = только image-модели, true = вообще все модели с эндпоинта
     showAllModels: false,
     // ElectronHub-специфичные параметры
@@ -1837,10 +2074,47 @@ const defaultSettings = Object.freeze({
     electronhubGuidanceScale: '',  // 1.0–20.0, чем выше тем точнее следует промпту (но менее креативно)
     electronhubSteps: '',          // 10–100, больше = качественнее но медленнее
     electronhubEnableReferences: false, // экспериментальная поддержка референсов (большинство моделей не работает)
+    // Стили (пресеты) — name + value, один активный.
+    styles: [],
+    activeStyleId: '',
+    stylesOpen: true, // свёрнута ли карточка «Стили» в настройках
+    // Лорбуки — коллекции ref-записей с триггерами, группами, приоритетами.
+    lorebooks: [],
+    activeLorebookId: '',
+    // Отправлять текстовые описания совпавших лорбук-референсов в промпт картинки.
+    sendRefDescriptions: true,
+    // Vision API — отдельный эндпоинт для описания референсов через vision-модель.
+    visionEndpoint: '',
+    visionApiKey: '',
+    visionModel: '',
+    visionPrompt: '',
+    // ── Профили (полные именованные снимки настроек) ──
+    // Каждый профиль несёт только выбранные секции (см. PROFILE_SECTIONS). Отдельно
+    // от connectionPresets (те — только про подключение). Ключи хранятся локально,
+    // при экспорте в файл секреты по умолчанию вырезаются.
+    profiles: [],
+    activeProfileId: '',
+    // Какие секции отмечены в чеклисте «Что сохранять» при создании/обновлении профиля.
+    // По умолчанию профиль про КОНТЕНТ (активные авы/NPC/лорбуки/стиль); провайдер/параметры — по желанию.
+    profileSaveScope: {
+        avatars: true,
+        npc: true,
+        lorebooks: true,
+        styles: true,
+        connection: false,
+        generation: false,
+        imageContext: false,
+        autoAvatar: false,
+        descriptions: false,
+        vision: false,
+        flags: false,
+    },
 });
 
 const MAX_CONTEXT_IMAGES = 3;
-const MAX_GENERATION_REFERENCE_IMAGES = 5;
+// Лимит референс-картинок на запрос. Лорбук-рефы добавляются после char/user/NPC/гардероба,
+// поэтому при 5 их часто срезало хвостом — даём запас, чтобы они доезжали до генерации.
+const MAX_GENERATION_REFERENCE_IMAGES = 8;
 
 // Image model detection keywords (from your api_client.py)
 const IMAGE_MODEL_KEYWORDS = [
@@ -1882,24 +2156,58 @@ function isImageModel(modelId) {
 }
 
 /**
- * Check if model is Gemini/nano-banana type
+ * Check if model is Gemini/nano-banana type. Accepts both proxy aliases (nano-banana*) and the
+ * official Google ids (gemini-2.5-flash-image / gemini-3-pro-image / gemini-3.1-flash-image),
+ * with or without a provider prefix like "google/". Ported from novarakk.
  */
 function isGeminiModel(modelId) {
-    const mid = modelId.toLowerCase();
-    return mid.includes('nano-banana');
+    let mid = String(modelId || '').toLowerCase();
+    const slashIdx = mid.indexOf('/');
+    if (slashIdx !== -1) mid = mid.slice(slashIdx + 1);
+    return mid.includes('nano-banana')
+        || mid.startsWith('gemini-2.5-flash-image')
+        || mid.startsWith('gemini-3-pro-image')
+        || mid.startsWith('gemini-3.1-flash-image');
+}
+
+/**
+ * Gemini-style route: native Google /v1beta/models/{model}:generateContent wire format.
+ * Use this in every place that branches on (apiType === 'gemini' || isGeminiModel(...)).
+ */
+function usesGeminiRoute(settings = getSettings()) {
+    return settings.apiType === 'gemini' || isGeminiModel(settings.model);
 }
 
 const NAISTERA_MODELS = Object.freeze(['grok', 'grok-pro', 'nano banana', 'nano banana 2', 'novelai']);
 const DEFAULT_ENDPOINTS = Object.freeze({
     naistera: 'https://naistera.org',
+    electronhub: 'https://api.electronhub.top',
 });
 const ENDPOINT_PLACEHOLDERS = Object.freeze({
     openai: 'https://api.openai.com',
     void: 'https://api.voidai.app',
     gemini: 'https://generativelanguage.googleapis.com',
     naistera: 'https://naistera.org',
+    electronhub: 'https://api.electronhub.top',
     custom: 'https://your-api.com/v1/images/generations  (полный URL или базовый)',
 });
+
+// Built-in default hosts we prefill when a provider is selected. Used to decide whether an
+// endpoint was auto-filled (safe to swap) vs hand-typed (keep) when switching providers.
+const BUILTIN_DEFAULT_ENDPOINTS = Object.freeze([
+    'https://api.openai.com',
+    'https://api.voidai.app',
+    'https://generativelanguage.googleapis.com',
+    'https://naistera.org',
+    'https://api.electronhub.top',
+]);
+
+function isBuiltinDefaultEndpoint(endpoint) {
+    const t = String(endpoint || '').trim().replace(/\/+$/, '').toLowerCase();
+    return BUILTIN_DEFAULT_ENDPOINTS.includes(t);
+}
+
+let _lastGenDebug = null;
 
 function normalizeNaisteraModel(model) {
     const raw = String(model || '').trim().toLowerCase();
@@ -1962,7 +2270,8 @@ function getEndpointPlaceholder(apiType) {
 function normalizeConfiguredEndpoint(apiType, endpoint) {
     const trimmed = String(endpoint || '').trim().replace(/\/+$/, '');
     if (!trimmed) {
-        return apiType === 'naistera' ? DEFAULT_ENDPOINTS.naistera : '';
+        if (apiType === 'naistera') return DEFAULT_ENDPOINTS.naistera;
+        return '';
     }
     if (apiType === 'naistera') {
         return trimmed.replace(/\/api\/generate$/i, '');
@@ -1999,7 +2308,13 @@ function getSettings() {
             context.extensionSettings[MODULE_NAME][key] = defaultSettings[key];
         }
     }
-    
+
+    // Миграция: неизвестный тип API (настройки от старой/другой сборки) — переводим на gemini.
+    const knownApiTypes = ['openai', 'void', 'gemini', 'naistera', 'electronhub', 'custom'];
+    if (!knownApiTypes.includes(context.extensionSettings[MODULE_NAME].apiType)) {
+        context.extensionSettings[MODULE_NAME].apiType = 'gemini';
+    }
+
     return context.extensionSettings[MODULE_NAME];
 }
 
@@ -2022,6 +2337,581 @@ function getMessageRenderText(message, settings = getSettings()) {
         return message.extra.display_text;
     }
     return message.mes || '';
+}
+
+// ── Style presets ──
+
+const IIG_STYLE_SOURCE_URL = 'https://wewwaistyping.github.io/slayimagespromts/';
+const IIG_STYLE_CACHE_KEY = 'iig_site_styles_cache_v1';
+const IIG_STYLE_CACHE_TTL = 24 * 60 * 60 * 1000;
+
+function ensureStyles(settings = getSettings()) {
+    if (!Array.isArray(settings.styles)) {
+        const legacy = Array.isArray(settings.stylePresets) ? settings.stylePresets : [];
+        settings.styles = legacy.map(p => ({
+            id: String(p?.id || `iig-s-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
+            name: String(p?.name || '').trim(),
+            value: String(p?.style || p?.value || '').trim(),
+        }));
+    }
+    settings.styles = settings.styles.map((s, i) => ({
+        id: String(s?.id || `iig-s-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 8)}`),
+        name: String(s?.name || `Стиль ${i + 1}`).trim(),
+        value: String(s?.value ?? s?.style ?? '').trim(),
+    }));
+    if (!settings.styles.some(s => s.id === settings.activeStyleId)) settings.activeStyleId = '';
+    return settings.styles;
+}
+
+function createStylePreset(name = '') {
+    const settings = getSettings();
+    const styles = ensureStyles(settings);
+    const style = {
+        id: `iig-s-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        name: String(name || '').trim() || `Стиль ${styles.length + 1}`,
+        value: '',
+    };
+    styles.push(style);
+    settings.activeStyleId = style.id;
+    return style;
+}
+
+function getActiveStylePreset(settings = getSettings()) {
+    const styles = ensureStyles(settings);
+    return styles.find(s => s.id === settings.activeStyleId) || null;
+}
+
+function updateStylePreset(styleId, patch) {
+    const settings = getSettings();
+    const style = ensureStyles(settings).find(s => s.id === styleId);
+    if (!style) return null;
+    if (patch.name !== undefined) style.name = String(patch.name || '').trim() || style.name;
+    if (patch.value !== undefined) style.value = String(patch.value || '').trim();
+    return style;
+}
+
+function removeStylePreset(styleId) {
+    const settings = getSettings();
+    const styles = ensureStyles(settings);
+    const idx = styles.findIndex(s => s.id === styleId);
+    if (idx === -1) return false;
+    styles.splice(idx, 1);
+    if (settings.activeStyleId === styleId) settings.activeStyleId = styles[0]?.id || '';
+    return true;
+}
+
+function resolveEffectiveStyle(tagStyle = '') {
+    const active = getActiveStylePreset();
+    const preset = String(active?.value || '').trim();
+    return preset || String(tagStyle || '').trim();
+}
+
+function readSiteStyleCache() {
+    try {
+        const raw = localStorage.getItem(IIG_STYLE_CACHE_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed?.styles) ? parsed : null;
+    } catch { return null; }
+}
+
+function writeSiteStyleCache(styles, meta = {}) {
+    try {
+        localStorage.setItem(IIG_STYLE_CACHE_KEY, JSON.stringify({
+            styles, etag: meta.etag || '', lastModified: meta.lastModified || '', ts: Date.now(),
+        }));
+    } catch { /* ignore */ }
+}
+
+function parseSiteStyles(html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const result = [];
+    for (const card of doc.querySelectorAll('article.style-card')) {
+        const name = card.querySelector('h2.card-title')?.textContent?.trim() || '';
+        const tags = String(card.getAttribute('data-tags') || '').split(',').map(t => t.trim()).filter(Boolean);
+        const descEl = card.querySelector('p.card-desc');
+        const description = (descEl?.getAttribute('data-ru') || descEl?.textContent || '').trim();
+        const images = Array.from(card.querySelectorAll('.carousel-track img')).map(img => {
+            const src = img.getAttribute('src') || '';
+            if (!src) return '';
+            try { return new URL(src, IIG_STYLE_SOURCE_URL).href; } catch { return ''; }
+        }).filter(Boolean);
+        const badgeEl = card.querySelector('.badge-green') || card.querySelector('.badge-yellow');
+        const badge = (badgeEl?.getAttribute('data-ru') || badgeEl?.textContent || '').trim();
+        const promptRaw = card.querySelector('.prompt-panel[data-panel="direct"] .prompt-code')?.textContent?.trim() || '';
+        const prompt = promptRaw.replace(/^\[Describe your scene here\]\.\s*/i, '').trim();
+        if (name && prompt) result.push({ name, tags, description, images, badge, prompt });
+    }
+    return result;
+}
+
+async function fetchSiteStyles(cached = null, force = false) {
+    const headers = {};
+    if (!force && cached?.etag) headers['If-None-Match'] = cached.etag;
+    if (!force && cached?.lastModified) headers['If-Modified-Since'] = cached.lastModified;
+    const response = await fetch(IIG_STYLE_SOURCE_URL, { headers });
+    if (response.status === 304 && cached) return { styles: cached.styles, notModified: true };
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const html = await response.text();
+    const styles = parseSiteStyles(html);
+    writeSiteStyleCache(styles, {
+        etag: response.headers.get('ETag') || '',
+        lastModified: response.headers.get('Last-Modified') || '',
+    });
+    return { styles, notModified: false };
+}
+
+// ── Lorebook system ──
+
+const MAX_LOREBOOK_REFS = 200;
+
+function makeLorebookId() {
+    return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
+}
+
+function normalizeGroupName(raw) {
+    // Регистр сохраняем (как в оригинале 2.0-beta) — заголовки групп в {{iig-book}}
+    // и в карточках отображаются ровно так, как ввёл пользователь.
+    return String(raw || '').trim();
+}
+
+function normalizeSecondaryKeysString(raw) {
+    return String(raw || '').split(',').map(k => k.trim()).filter(Boolean).join(', ');
+}
+
+function normalizeReferenceEntry(raw) {
+    return {
+        id: String(raw?.id || '').trim() || makeLorebookId(),
+        name: String(raw?.name || '').trim(),
+        description: String(raw?.description || '').trim(),
+        imagePath: String(raw?.imagePath || '').trim(),
+        matchMode: raw?.matchMode === 'always' ? 'always' : 'match',
+        enabled: raw?.enabled !== false,
+        group: normalizeGroupName(raw?.group),
+        priority: Number.isFinite(raw?.priority) ? raw.priority : 0,
+        useRegex: raw?.useRegex === true,
+        secondaryKeys: normalizeSecondaryKeysString(raw?.secondaryKeys),
+    };
+}
+
+function normalizeReferencesArrayInternal(raw) {
+    const arr = Array.isArray(raw) ? raw : [];
+    return arr.slice(0, MAX_LOREBOOK_REFS).map(normalizeReferenceEntry);
+}
+
+function ensureLorebooks(settings = getSettings()) {
+    if (!Array.isArray(settings.lorebooks)) {
+        settings.lorebooks = [];
+    }
+    settings.lorebooks = settings.lorebooks.map(raw => ({
+        id: String(raw?.id || '').trim() || makeLorebookId(),
+        name: String(raw?.name || '').trim() || 'Untitled',
+        enabled: raw?.enabled !== false,
+        refs: normalizeReferencesArrayInternal(raw?.refs),
+        meta: {
+            sourceUrl: String(raw?.meta?.sourceUrl || '').trim(),
+            importedAt: Number.isFinite(raw?.meta?.importedAt) ? raw.meta.importedAt : null,
+            version: Number.isFinite(raw?.meta?.version) ? raw.meta.version : null,
+        },
+    }));
+    if (settings.lorebooks.length === 0) {
+        settings.lorebooks.push({
+            id: makeLorebookId(),
+            name: 'My library',
+            enabled: true,
+            refs: [],
+            meta: { sourceUrl: '', importedAt: null, version: null },
+        });
+    }
+    if (!settings.lorebooks.some(lb => lb.id === settings.activeLorebookId)) {
+        settings.activeLorebookId = settings.lorebooks[0].id;
+    }
+    return settings.lorebooks;
+}
+
+function getActiveLorebook(settings = getSettings()) {
+    const lorebooks = ensureLorebooks(settings);
+    return lorebooks.find(lb => lb.id === settings.activeLorebookId) || lorebooks[0] || null;
+}
+
+function ensureActiveLorebookRefs(settings = getSettings()) {
+    const active = getActiveLorebook(settings);
+    if (!active) return [];
+    active.refs = normalizeReferencesArrayInternal(active.refs);
+    return active.refs;
+}
+
+function getAllEnabledLorebookReferences(settings = getSettings()) {
+    const lorebooks = ensureLorebooks(settings);
+    const result = [];
+    for (const lb of lorebooks) {
+        if (!lb.enabled) continue;
+        for (const ref of lb.refs) {
+            result.push({ ...ref, _lorebookName: lb.name });
+        }
+    }
+    return result;
+}
+
+function lorebookCreate(name, settings = getSettings()) {
+    ensureLorebooks(settings);
+    const lorebook = {
+        id: makeLorebookId(),
+        name: String(name || '').trim() || `Lorebook ${settings.lorebooks.length + 1}`,
+        enabled: true,
+        refs: [],
+        meta: { sourceUrl: '', importedAt: Date.now(), version: null },
+    };
+    settings.lorebooks.push(lorebook);
+    settings.activeLorebookId = lorebook.id;
+    return lorebook;
+}
+
+function lorebookRename(lorebookId, newName, settings = getSettings()) {
+    const lb = ensureLorebooks(settings).find(x => x.id === lorebookId);
+    if (!lb) return null;
+    lb.name = String(newName || '').trim() || lb.name;
+    return lb;
+}
+
+function lorebookSetEnabled(lorebookId, enabled, settings = getSettings()) {
+    const lb = ensureLorebooks(settings).find(x => x.id === lorebookId);
+    if (!lb) return null;
+    lb.enabled = Boolean(enabled);
+    return lb;
+}
+
+function lorebookRemove(lorebookId, settings = getSettings()) {
+    const lorebooks = ensureLorebooks(settings);
+    if (lorebooks.length <= 1) return false;
+    const index = lorebooks.findIndex(x => x.id === lorebookId);
+    if (index === -1) return false;
+    lorebooks.splice(index, 1);
+    if (settings.activeLorebookId === lorebookId) {
+        settings.activeLorebookId = lorebooks[0]?.id || '';
+    }
+    return true;
+}
+
+function lorebookSetActive(lorebookId, settings = getSettings()) {
+    const lb = ensureLorebooks(settings).find(x => x.id === lorebookId);
+    if (!lb) return null;
+    settings.activeLorebookId = lb.id;
+    return lb;
+}
+
+// ── Lorebook matching ──
+
+function normalizeReferenceTriggerText(raw) {
+    return String(raw || '').trim().replace(/\s+/g, ' ');
+}
+
+function promptContainsReferenceName(prompt, name) {
+    const normalizedPrompt = String(prompt || '').trim().toLowerCase();
+    const normalizedName = normalizeReferenceTriggerText(name).toLowerCase();
+    if (!normalizedPrompt || !normalizedName) return false;
+    const pattern = normalizedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    try {
+        const regex = new RegExp(`(^|[^\\p{L}\\p{N}_])${pattern}(?=$|[^\\p{L}\\p{N}_])`, 'iu');
+        return regex.test(normalizedPrompt);
+    } catch (_) {
+        return normalizedPrompt.includes(normalizedName);
+    }
+}
+
+function parseReferenceAliases(name) {
+    return String(name || '').split(',').map(a => normalizeReferenceTriggerText(a)).filter(Boolean);
+}
+
+function findPrimaryKeyMatch(prompt, name, useRegex) {
+    if (!useRegex) {
+        const aliases = parseReferenceAliases(name);
+        const hit = aliases.find(alias => promptContainsReferenceName(prompt, alias));
+        return hit ? { kind: 'primary', detail: hit } : null;
+    }
+    const raw = String(name || '').trim();
+    if (!raw) return null;
+    let pattern = raw;
+    let flags = 'iu';
+    const slashMatch = raw.match(/^\/(.+)\/([gimsuvy]*)$/);
+    if (slashMatch) {
+        pattern = slashMatch[1];
+        flags = slashMatch[2] || 'iu';
+    }
+    try {
+        const regex = new RegExp(pattern, flags);
+        return regex.test(String(prompt || '')) ? { kind: 'regex', detail: raw } : null;
+    } catch (_) {
+        if (String(prompt || '').toLowerCase().includes(pattern.toLowerCase())) {
+            return { kind: 'regex-fallback', detail: raw };
+        }
+        return null;
+    }
+}
+
+function promptMatchesAllSecondaryKeys(prompt, secondaryKeysRaw) {
+    const keys = String(secondaryKeysRaw || '').split(',').map(k => k.trim()).filter(Boolean);
+    if (keys.length === 0) return true;
+    return keys.every(key => promptContainsReferenceName(prompt, key));
+}
+
+function getMatchedLorebookReferences(prompt) {
+    const refs = getAllEnabledLorebookReferences()
+        .filter(ref => ref.enabled && ref.name && ref.imagePath);
+    const matched = [];
+    const seenKeys = new Set();
+    for (const ref of refs) {
+        let matchReason = null;
+        if (ref.matchMode === 'always') {
+            matchReason = { kind: 'always', detail: '' };
+        } else {
+            matchReason = findPrimaryKeyMatch(prompt, ref.name, ref.useRegex);
+        }
+        if (!matchReason) continue;
+        if (!promptMatchesAllSecondaryKeys(prompt, ref.secondaryKeys)) continue;
+        const dedupeKey = `${ref.name}::${ref.imagePath}`;
+        if (seenKeys.has(dedupeKey)) continue;
+        seenKeys.add(dedupeKey);
+        matched.push({ ...ref, _matchReason: matchReason });
+    }
+    matched.sort((a, b) => (b.priority || 0) - (a.priority || 0));
+    return matched;
+}
+
+// ── Vision API ──
+
+const DEFAULT_VISION_PROMPT = 'Describe this clothing outfit in detail for a character in a roleplay. Focus on: type of garment, color, material/texture, style, notable features, accessories. Be concise but thorough (2-4 sentences). Write in English.';
+const DEFAULT_REF_VISION_PROMPT = 'Describe what is shown in this reference image. Focus on the appearance, features, colors, and distinctive characteristics. Be concise but thorough (2-4 sentences). Write in English.';
+
+function getEffectiveVisionConfig(settings = getSettings()) {
+    const endpoint = String(settings.visionEndpoint || '').trim() || String(settings.endpoint || '').trim();
+    const apiKey = String(settings.visionApiKey || '').trim() || String(settings.apiKey || '').trim();
+    const model = String(settings.visionModel || '').trim();
+    const promptText = String(settings.visionPrompt || '').trim() || DEFAULT_VISION_PROMPT;
+    return { endpoint, apiKey, model, promptText };
+}
+
+async function callVisionApi(imageBase64, promptText) {
+    const { endpoint, apiKey, model } = getEffectiveVisionConfig();
+    if (!endpoint) throw new Error('Vision: эндпоинт не настроен');
+    if (!apiKey) throw new Error('Vision: API ключ не настроен');
+    if (!model) throw new Error('Vision: модель не выбрана');
+    const url = `${endpoint.replace(/\/+$/, '')}/v1/chat/completions`;
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            model,
+            messages: [{
+                role: 'user',
+                content: [
+                    { type: 'image_url', image_url: { url: `data:image/png;base64,${imageBase64}` } },
+                    { type: 'text', text: promptText },
+                ],
+            }],
+            max_tokens: 500,
+            temperature: 0.3,
+        }),
+    });
+    if (!response.ok) {
+        const errorText = await response.text().catch(() => '');
+        throw new Error(`Vision API ${response.status}: ${String(errorText).slice(0, 400)}`);
+    }
+    const result = await response.json();
+    const description = String(result?.choices?.[0]?.message?.content || '').trim();
+    if (!description) throw new Error('Vision: пустой ответ от модели');
+    return description;
+}
+
+async function fetchVisionModels() {
+    const { endpoint, apiKey } = getEffectiveVisionConfig();
+    if (!endpoint || !apiKey) return [];
+    const url = `${endpoint.replace(/\/+$/, '')}/v1/models`;
+    try {
+        const response = await fetch(url, {
+            method: 'GET',
+            headers: { 'Authorization': `Bearer ${apiKey}` },
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        const list = Array.isArray(data?.data) ? data.data : [];
+        return list.map(m => String(m?.id || '')).filter(Boolean).sort();
+    } catch (error) {
+        iigLog('ERROR', `Vision fetchModels failed: ${error.message}`);
+        toastr.error(`Ошибка загрузки vision-моделей: ${error.message}`, 'Генерация картинок');
+        return [];
+    }
+}
+
+async function generateReferenceDescription(refId) {
+    const settings = getSettings();
+    let targetRef = null;
+    for (const lb of ensureLorebooks(settings)) {
+        const found = lb.refs.find(r => r.id === refId);
+        if (found) { targetRef = found; break; }
+    }
+    if (!targetRef) throw new Error('Референс не найден');
+    const imagePath = targetRef.imagePath;
+    if (!imagePath) throw new Error('Нет изображения для этого референса');
+    const imgBase64 = await loadRefImageAsBase64(imagePath) || await imageUrlToBase64(imagePath);
+    if (!imgBase64) throw new Error('Не удалось загрузить изображение референса');
+    const description = await callVisionApi(imgBase64, DEFAULT_REF_VISION_PROMPT);
+    iigLog('INFO', `Vision: описание для "${targetRef.name}": ${description.slice(0, 100)}`);
+    targetRef.description = description;
+    saveSettings();
+    return description;
+}
+
+// ── Lorebook export/import ──
+
+function buildLorebookExportJson(lorebook) {
+    const refs = Array.isArray(lorebook?.refs) ? lorebook.refs : [];
+    return {
+        kind: 'iig-lorebook',
+        version: 1,
+        name: String(lorebook?.name || 'Lorebook'),
+        refs: refs.map(ref => ({
+            name: String(ref?.name || ''),
+            description: String(ref?.description || ''),
+            matchMode: ref?.matchMode === 'always' ? 'always' : 'match',
+            enabled: ref?.enabled !== false,
+            group: String(ref?.group || ''),
+            priority: Number.isFinite(ref?.priority) ? ref.priority : 0,
+            useRegex: ref?.useRegex === true,
+            secondaryKeys: String(ref?.secondaryKeys || ''),
+            imageUrl: '',
+        })),
+    };
+}
+
+function parseLorebookJson(rawText) {
+    let payload;
+    try { payload = JSON.parse(String(rawText || '')); } catch (e) {
+        throw new Error(`Невалидный JSON: ${e.message}`);
+    }
+    if (!payload || typeof payload !== 'object') throw new Error('Невалидный лорбук');
+    if (payload.kind !== 'iig-lorebook') throw new Error('Поле "kind" должно быть "iig-lorebook"');
+    if (payload.version !== 1) throw new Error(`Неподдерживаемая версия: ${payload.version}`);
+    if (!Array.isArray(payload.refs)) throw new Error('Поле "refs" должно быть массивом');
+    return { kind: 'iig-lorebook', version: 1, name: String(payload.name || 'Imported lorebook'), refs: payload.refs };
+}
+
+async function importLorebookFromPayload(payload, meta = {}) {
+    const settings = getSettings();
+    const newLorebook = lorebookCreate(payload.name, settings);
+    newLorebook.meta = {
+        sourceUrl: String(meta.sourceUrl || '').trim(),
+        importedAt: Date.now(),
+        version: 1,
+    };
+    let imagesDownloaded = 0;
+    let imagesFailed = 0;
+    for (let index = 0; index < payload.refs.length; index++) {
+        const raw = payload.refs[index];
+        const ref = normalizeReferenceEntry(raw);
+        ref.imagePath = '';
+        const imageUrl = String(raw?.imageUrl || '').trim();
+        if (imageUrl) {
+            try {
+                const dataUrl = await imageUrlToDataUrl(imageUrl);
+                if (dataUrl) {
+                    const b64 = dataUrl.split(',')[1];
+                    ref.imagePath = await saveRefImageToFile(b64, `lorebook_${index}`);
+                    imagesDownloaded++;
+                }
+            } catch (error) {
+                iigLog('WARN', `Failed to download imageUrl for "${ref.name}": ${error.message}`);
+                imagesFailed++;
+            }
+        }
+        newLorebook.refs.push(ref);
+    }
+    saveSettings();
+    return { lorebookId: newLorebook.id, refsCount: payload.refs.length, imagesDownloaded, imagesFailed };
+}
+
+async function importLorebookFromUrl(url) {
+    const trimmed = String(url || '').trim();
+    if (!trimmed) throw new Error('URL пуст');
+    const response = await fetch(trimmed);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const text = await response.text();
+    const payload = parseLorebookJson(text);
+    return importLorebookFromPayload(payload, { sourceUrl: trimmed });
+}
+
+async function importLorebookFromFile(file) {
+    if (!(file instanceof File)) throw new Error('Файл не выбран');
+    const text = await file.text();
+    const payload = parseLorebookJson(text);
+    return importLorebookFromPayload(payload);
+}
+
+function lorebookFileNameFromTitle(title) {
+    const base = String(title || 'lorebook')
+        .normalize('NFKD')
+        .replace(/[^\w\s.-]+/g, '')
+        .trim()
+        .replace(/\s+/g, '_')
+        .slice(0, 64) || 'lorebook';
+    return `${base}.iig.json`;
+}
+
+function triggerBrowserDownload(fileName, content, mimeType = 'application/json') {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = fileName;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+// ── {{iig-book}} macro ──
+
+function renderIigBookMacro(settings = getSettings()) {
+    const lorebooks = ensureLorebooks(settings).filter(lb => lb.enabled !== false);
+    if (lorebooks.length === 0) return '';
+    const blocks = [];
+    const showHeader = lorebooks.length > 1;
+    for (const lb of lorebooks) {
+        const active = lb.refs.filter(ref => ref.enabled !== false && String(ref?.name || '').trim());
+        if (active.length === 0) continue;
+        const groupOrder = [];
+        const byGroup = new Map();
+        for (const ref of active) {
+            const g = normalizeGroupName(ref.group) || 'other';
+            if (!byGroup.has(g)) { byGroup.set(g, []); groupOrder.push(g); }
+            byGroup.get(g).push(ref);
+        }
+        const body = groupOrder.map(group => {
+            const lines = byGroup.get(group).map(ref => {
+                const trigger = parseReferenceAliases(ref.name)[0] || ref.name;
+                const desc = String(ref.description || ref.name || '').trim();
+                return `${ref.name} (${trigger}) — ${desc}`;
+            });
+            return `[${group}]\n${lines.join('\n')}`;
+        }).join('\n\n');
+        blocks.push(showHeader ? `=== ${lb.name} ===\n${body}` : body);
+    }
+    return blocks.join('\n\n');
+}
+
+function registerIigBookMacro() {
+    try {
+        const context = SillyTavern.getContext();
+        if (typeof context?.registerMacro === 'function') {
+            context.registerMacro('iig-book', () => renderIigBookMacro(), 'Inline Image Generation: renders lorebook references grouped by category.');
+            iigLog('INFO', 'Registered {{iig-book}} macro');
+        }
+    } catch (error) {
+        iigLog('WARN', 'Failed to register {{iig-book}} macro:', error.message);
+    }
 }
 
 // ── Unified character references system (from aceeenvw/notsosillynotsoimages) ──
@@ -2086,9 +2976,23 @@ async function saveRefImageToFile(base64Data, label) {
 /**
  * Load a reference image from server path → base64 string.
  */
+// Приводит сохранённый путь картинки к виду, который точно зафетчится:
+// data:/http(s) — как есть, иначе гарантируем ведущий «/» (порт из novarakk/megarakk).
+// Без этого относительные пути (импортированные лорбуки и т.п.) молча падают в 404,
+// из-за чего реф «не виден» при генерации.
+function normalizeStoredImagePath(path) {
+    const raw = String(path || '').trim();
+    if (!raw) return '';
+    if (raw.startsWith('data:')) return raw;
+    if (/^(?:https?:)?\/\//i.test(raw)) return raw;
+    return raw.startsWith('/') ? raw : `/${raw.replace(/^\/+/, '')}`;
+}
+
 async function loadRefImageAsBase64(path) {
+    const url = normalizeStoredImagePath(path);
+    if (!url) return null;
     try {
-        const response = await fetch(path);
+        const response = await fetch(url);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const blob = await response.blob();
         return await new Promise((resolve, reject) => {
@@ -2120,6 +3024,8 @@ async function fetchUserAvatars() {
  */
 async function getCharacterAvatarBase64() {
     try {
+        const override = getActiveAvatarOverrideBase64('char');
+        if (override) return override;
         const context = SillyTavern.getContext();
         if (context.characterId === undefined || context.characterId === null) return null;
         if (typeof context.getCharacterAvatar === 'function') {
@@ -2137,14 +3043,20 @@ async function getCharacterAvatarBase64() {
  */
 async function getUserAvatarBase64() {
     try {
+        const override = getActiveAvatarOverrideBase64('user');
+        if (override) return override;
         const context = SillyTavern.getContext();
         const settings = getSettings();
+        // Явный выбор в выпадашке главнее авто-персоны (пустой выбор «-- Авто --» = следовать за персоной ST).
+        if (settings.userAvatarFile) {
+            const b = await imageUrlToBase64(`/User Avatars/${encodeURIComponent(settings.userAvatarFile)}`);
+            if (b) return b;
+        }
         const currentAvatar = context.user_avatar;
         if (currentAvatar) {
             const b = await imageUrlToBase64(`/User Avatars/${encodeURIComponent(currentAvatar)}`);
             if (b) return b;
         }
-        if (settings.userAvatarFile) return await imageUrlToBase64(`/User Avatars/${encodeURIComponent(settings.userAvatarFile)}`);
         return null;
     } catch (e) { iigLog('WARN', 'getUserAvatarBase64 failed:', e.message); return null; }
 }
@@ -2242,48 +3154,273 @@ function selectUserAvatar(avatarFile) {
     });
     const dropdown = document.getElementById('iig_user_avatar_dropdown');
     if (dropdown) dropdown.classList.remove('open');
+
+    // Ава {{user}} сменилась → панель «Внешность (ориг. аватар)» и инъекция внешности следуют за ней.
+    iigUserDescPersona = null;
+    try { renderAvatarAppearancePanel('user'); } catch (e) { iigLog('WARN', 'appearance panel refresh failed:', e.message); }
+    try { updateAvatarAppearanceInjection(); } catch (e) {}
 }
 
-/**
- * Match NPC references against the generation prompt.
- * Matching is case-insensitive, partial (any word >2 chars from the name).
- */
+// NPC-матчинг «по-новому» (порт из novarakk/megarakk): по полному имени + алиасам,
+// по границам слов (как лорбук-триггеры) — без ложных срабатываний внутри слов.
+// Уважает per-NPC тумблер enabled. NPC участвует, если может помочь генерации:
+// есть картинка ИЛИ текст внешности (description) — текст работает и без фото.
 function matchNpcReferences(prompt, npcList) {
-    if (!prompt || !npcList || npcList.length === 0) return [];
-    const lowerPrompt = prompt.toLowerCase();
+    if (!prompt || !Array.isArray(npcList) || npcList.length === 0) return [];
     const matched = [];
     for (const npc of npcList) {
-        if (!npc || !npc.name || (!npc.imagePath && !npc.imageBase64)) continue;
-        const words = npc.name.trim().split(/\s+/).filter(w => w.length > 2);
-        if (words.length === 0) continue;
-        const isMatch = words.some(word => lowerPrompt.includes(word.toLowerCase()));
-        if (isMatch) {
-            matched.push({ name: npc.name, imageBase64: npc.imageBase64, imagePath: npc.imagePath });
+        if (!npc || npc.enabled === false || !npc.name) continue;
+        const hasImage = !!(npc.imagePath || npc.imageBase64);
+        const hasDesc = !!String(npc.description || '').trim();
+        if (!hasImage && !hasDesc) continue;
+        const triggers = [npc.name, ...(Array.isArray(npc.aliases) ? npc.aliases : [])]
+            .map(s => String(s || '').trim()).filter(Boolean);
+        const hit = triggers.some(tr => promptContainsReferenceName(prompt, tr));
+        if (hit) {
+            matched.push({
+                name: npc.name,
+                aliases: Array.isArray(npc.aliases) ? npc.aliases : [],
+                imageBase64: npc.imageBase64 || '',
+                imagePath: npc.imagePath || '',
+                description: String(npc.description || ''),
+            });
         }
     }
     return matched;
 }
 
-/**
- * Get refs directly from flat settings.
- */
+// ── Ключи сущностей ───────────────────────────────────────────────
+// {{char}} → файл аватара карточки (уникален, переживает переименование);
+// {{user}} → текущая персона ST (user_avatar). '' если не на ком закрепить (нет чата / группа).
+function getCharKey() {
+    const ctx = SillyTavern.getContext();
+    const c = (ctx.characterId !== undefined && ctx.characterId !== null) ? ctx.characters?.[ctx.characterId] : null;
+    return c?.avatar || '';
+}
+function getPersonaKey() {
+    // Явно выбранная в выпадашке ава (userAvatarFile) главнее авто-персоны ST:
+    // описание внешности следует за той авой, чья картинка реально уходит референсом.
+    const file = getSettings().userAvatarFile;
+    if (file) return file;
+    // Никогда не пусто: без активной персоны — стабильный дефолт, чтобы запись внешности не терялась.
+    return SillyTavern.getContext().user_avatar || '__default_persona__';
+}
+// Какую персону сейчас редактируем в UI (селектор). null → активная персона.
+let iigUserDescPersona = null;
+function iigCurrentUserDescKey() { return iigUserDescPersona || getPersonaKey(); }
+function iigPersonaLabel(key) {
+    const ctx = SillyTavern.getContext();
+    if (key === '__default_persona__') return 'Персона по умолчанию';
+    if (key === getPersonaKey()) return `${ctx.name1 || key} (активная)`;
+    return key;
+}
+// Опции селектора персон: активная + все, у кого уже есть описание (+ текущая выбранная).
+function iigBuildPersonaOptionsHtml(selectedKey) {
+    const s = getSettings();
+    const keys = [];
+    const add = (k) => { k = String(k || '').trim(); if (k && !keys.includes(k)) keys.push(k); };
+    add(getPersonaKey());
+    for (const k of Object.keys(s.userDescByKey || {})) add(k);
+    add(selectedKey);
+    return keys.map(k => `<option value="${sanitizeForHtml(k)}" ${k === selectedKey ? 'selected' : ''}>${sanitizeForHtml(iigPersonaLabel(k))}</option>`).join('');
+}
+function _emptyRef() { return { name: '', imageBase64: '', imagePath: '' }; }
+function _refHasImage(r) { return !!(r && (r.imagePath || r.imageBase64)); }
+
+// Разовая миграция старого глобального {{char}} в per-character карту.
+// {{user}} НЕ мигрируем в карты — он остаётся глобальным (см. migrateUserBackToGlobal).
+function migratePerCharOnce() {
+    const s = getSettings();
+    const ck = getCharKey();
+    // {{char}} мигрируем только когда есть ключ перса — иначе на welcome-экране (перс не открыт)
+    // можно было бы стереть глобальное описание {{char}} до переноса.
+    if (!s._charMigrated && ck) {
+        s.charDescByKey = s.charDescByKey || {};
+        s.charRefByKey = s.charRefByKey || {};
+        if (s.charDescription && s.charDescByKey[ck] === undefined) s.charDescByKey[ck] = s.charDescription;
+        if (_refHasImage(s.charRef) && !s.charRefByKey[ck]) s.charRefByKey[ck] = s.charRef;
+        s.charDescription = ''; s.charRef = _emptyRef();
+        s._charMigrated = true;
+        saveSettings();
+    }
+}
+
+// {{user}} описание — per-persona (userDescByKey по аватару персоны). Фото {{user}} — глобальное.
+// Разовая миграция: переносит остаток глобального userDescription на активную персону и
+// поднимает глобальное фото из per-persona карты, если оно там осталось (прямой апгрейд).
+function migrateUserToPerPersona() {
+    const s = getSettings();
+    if (s._userPerPersonaV2) return;
+    s.userDescByKey = s.userDescByKey || {};
+    const pk = getPersonaKey();
+    // Описание: лишнее глобальное значение переносим активной персоне, если у неё пусто.
+    if (String(s.userDescription || '').trim() && !String(s.userDescByKey[pk] || '').trim()) {
+        s.userDescByKey[pk] = s.userDescription;
+    }
+    s.userDescription = '';
+    // Фото остаётся глобальным: если глобальный userRef пуст, поднимем картинку из карты.
+    if (!_refHasImage(s.userRef) && s.userRefByKey && typeof s.userRefByKey === 'object') {
+        const pickRef = _refHasImage(s.userRefByKey[pk]) ? s.userRefByKey[pk]
+            : Object.values(s.userRefByKey).find(r => _refHasImage(r));
+        if (pickRef) s.userRef = { name: pickRef.name || '', imageBase64: pickRef.imageBase64 || '', imagePath: pickRef.imagePath || '' };
+    }
+    s._userPerPersonaV2 = true;
+    saveSettings();
+}
+
+// {{char}} внешность — per-character (карта по аватару карточки).
+function getCharDescription() { const s = getSettings(); const k = getCharKey(); return (k && s.charDescByKey?.[k]) || ''; }
+function setCharDescription(v) {
+    const s = getSettings(); const k = getCharKey(); if (!k) return;
+    if (!s.charDescByKey) s.charDescByKey = {};
+    if (v && v.trim()) s.charDescByKey[k] = v; else delete s.charDescByKey[k];
+    saveSettings();
+}
+// {{user}} внешность — per-persona (карта userDescByKey по аватару персоны ST).
+// Селектор в UI редактирует любую персону; на генерации берётся активная (getPersonaKey).
+function getUserDescriptionFor(key) { const k = String(key || '') || getPersonaKey(); return String(getSettings().userDescByKey?.[k] || ''); }
+function setUserDescriptionFor(key, v) {
+    const s = getSettings();
+    const k = String(key || '') || getPersonaKey();
+    if (!s.userDescByKey) s.userDescByKey = {};
+    const val = String(v || '');
+    if (val.trim()) s.userDescByKey[k] = val; else delete s.userDescByKey[k];
+    saveSettings();
+}
+function getUserDescription() { return getUserDescriptionFor(getPersonaKey()); }
+function setUserDescription(v) { setUserDescriptionFor(getPersonaKey(), v); }
+
 function getCurrentCharacterRefs() {
     const settings = getSettings();
-    if (!settings.charRef) settings.charRef = { name: '', imageBase64: '', imagePath: '' };
-    if (!settings.userRef) settings.userRef = { name: '', imageBase64: '', imagePath: '' };
+    if (!settings.charRefByKey) settings.charRefByKey = {};
+    if (!settings.userRefByKey) settings.userRefByKey = {};
     if (!Array.isArray(settings.npcReferences)) settings.npcReferences = [];
-    while (settings.npcReferences.length < 4) {
-        settings.npcReferences.push({ name: '', imageBase64: '', imagePath: '' });
-    }
+    migratePerCharOnce();
+    migrateUserToPerPersona();
+    // {{char}} — привязка плоского .charRef к записи текущего перса ПО ССЫЛКЕ (per-character).
+    // {{user}} — .userRef ГЛОБАЛЬНЫЙ (один объект на всех), просто гарантируем его существование.
+    const ck = getCharKey();
+    settings.charRef = ck ? (settings.charRefByKey[ck] || (settings.charRefByKey[ck] = _emptyRef())) : _emptyRef();
+    if (!settings.userRef || typeof settings.userRef !== 'object' || Array.isArray(settings.userRef)) settings.userRef = _emptyRef();
     return settings;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Avatar Library — порт 1:1 из megarakk.
+   Кастомные аватары char/user: элемент {id, name, imageData(base64), target, appearance}.
+   Активный элемент (activeAvatarChar/activeAvatarUser) даёт картинку-референс И текст внешности.
+   Хранится по СТАБИЛЬНОМУ id (makeAvatarId), а НЕ по волатильному ключу персоны/персонажа —
+   поэтому ввод всегда сохраняется и читается.
+   ═══════════════════════════════════════════════════════════════ */
+function makeAvatarId(prefix) { return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`; }
+
+function ensureAvatarItems(settings = getSettings()) {
+    if (!Array.isArray(settings.avatarItems)) settings.avatarItems = [];
+    for (const item of settings.avatarItems) if (item && !Object.hasOwn(item, 'appearance')) item.appearance = '';
+    return settings.avatarItems;
+}
+function addAvatarItem(name, imageData, target = 'char') {
+    const settings = getSettings();
+    const items = ensureAvatarItems(settings);
+    const item = {
+        id: makeAvatarId('ava'),
+        name: String(name || '').trim() || 'Avatar',
+        imageData,
+        target: target === 'user' ? 'user' : 'char',
+        appearance: '',
+        createdAt: Date.now(),
+    };
+    items.push(item);
+    // Первый аватар для стороны делаем активным, чтобы заработал сразу.
+    const key = item.target === 'user' ? 'activeAvatarUser' : 'activeAvatarChar';
+    if (!settings[key]) settings[key] = item.id;
+    saveSettings();
+    return item;
+}
+function removeAvatarItem(itemId) {
+    const settings = getSettings();
+    if (settings.activeAvatarChar === itemId) settings.activeAvatarChar = null;
+    if (settings.activeAvatarUser === itemId) settings.activeAvatarUser = null;
+    settings.avatarItems = ensureAvatarItems(settings).filter(a => a.id !== itemId);
+    saveSettings();
+}
+function setActiveAvatar(itemId, target) {
+    const settings = getSettings();
+    const key = target === 'user' ? 'activeAvatarUser' : 'activeAvatarChar';
+    settings[key] = settings[key] === itemId ? null : itemId; // повторный клик снимает активность
+    saveSettings();
+    updateAvatarAppearanceInjection();
+    return settings[key];
+}
+function getActiveAvatarItem(target, settings = getSettings()) {
+    const id = target === 'user' ? settings.activeAvatarUser : settings.activeAvatarChar;
+    if (!id) return null;
+    return ensureAvatarItems(settings).find(a => a.id === id) || null;
+}
+function updateAvatarItemAppearance(itemId, appearance) {
+    const settings = getSettings();
+    const item = ensureAvatarItems(settings).find(a => a.id === itemId);
+    if (!item) return null;
+    item.appearance = String(appearance || '');
+    saveSettings();
+    updateAvatarAppearanceInjection();
+    return item;
+}
+// Картинка активного аватара (base64) для подмены дефолтного аватара char/user.
+function getActiveAvatarOverrideBase64(target) {
+    try { return getActiveAvatarItem(target)?.imageData || null; } catch (_) { return null; }
+}
+async function generateAvatarItemAppearance(itemId) {
+    const item = ensureAvatarItems().find(a => a.id === itemId);
+    if (!item?.imageData) throw new Error('Нет картинки у этого аватара');
+    const prompt = "Describe this character's physical appearance in detail for consistent image generation. Focus on: face features, eye color, hair color and style, skin tone, body type, distinctive features. Be concise but thorough (2-4 sentences). Write in English.";
+    const description = await callVisionApi(item.imageData, prompt);
+    updateAvatarItemAppearance(itemId, description);
+    return description;
+}
+// Инъекция описания внешности активных аватаров в LLM-контекст (setExtensionPrompt).
+function updateAvatarAppearanceInjection() {
+    try {
+        const context = SillyTavern.getContext();
+        const settings = getSettings();
+        const injectionKey = `${MODULE_NAME}_avatar_appearance`;
+        if (typeof context.setExtensionPrompt !== 'function') return;
+        if (!settings.injectAvatarAppearanceToChatEnabled) { context.setExtensionPrompt(injectionKey, '', 0, 0); return; }
+        const parts = [];
+        // Активный аватар библиотеки → его внешность; не выбран → описание ориг. аватара ST (per-char/per-persona).
+        const charItem = getActiveAvatarItem('char', settings);
+        const charApp = charItem ? String(charItem.appearance || '').trim() : getCharDescription().trim();
+        if (charApp) { const cn = context.characters?.[context.characterId]?.name || 'Character'; parts.push(`[${cn} looks like: ${charApp}]`); }
+        const userItem = getActiveAvatarItem('user', settings);
+        const userApp = userItem ? String(userItem.appearance || '').trim() : getUserDescription().trim();
+        if (userApp) { const un = context.name1 || 'User'; parts.push(`[${un} looks like: ${userApp}]`); }
+        const depth = Number.isFinite(settings.avatarAppearanceInjectionDepth) ? settings.avatarAppearanceInjectionDepth : 1;
+        context.setExtensionPrompt(injectionKey, parts.join('\n'), 1, depth);
+    } catch (e) { iigLog('ERROR', 'avatar appearance injection error:', e.message); }
+}
+// Файл → resized base64 (без data: префикса), для добавления аватара в библиотеку.
+function iigFileToResizedBase64(file, maxDim = 512) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = async () => {
+            try { resolve(await compressBase64Image(String(reader.result).split(',')[1], maxDim, 0.85)); }
+            catch (e) { reject(e); }
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+    });
 }
 
 function persistRefsToLocalStorage() {
     try {
         const settings = getSettings();
         const payload = {
-            charRef: settings.charRef,
-            userRef: settings.userRef,
+            charRefByKey: settings.charRefByKey || {},
+            userRefByKey: settings.userRefByKey || {},
+            charDescByKey: settings.charDescByKey || {},
+            userDescByKey: settings.userDescByKey || {},
+            userRef: settings.userRef || {},           // {{user}} — глобальные
+            userDescription: settings.userDescription || '',
             npcReferences: settings.npcReferences,
         };
         localStorage.setItem(LS_KEY, JSON.stringify(payload));
@@ -2299,8 +3436,15 @@ function restoreRefsFromLocalStorage() {
         const backup = JSON.parse(raw);
         if (!backup || typeof backup !== 'object') return;
         const settings = getSettings();
-        if (backup.charRef) settings.charRef = backup.charRef;
+        if (backup.charRefByKey) settings.charRefByKey = backup.charRefByKey;
+        if (backup.userRefByKey) settings.userRefByKey = backup.userRefByKey;
+        if (backup.charDescByKey) settings.charDescByKey = backup.charDescByKey;
+        if (backup.userDescByKey) settings.userDescByKey = backup.userDescByKey;
+        // {{user}} — глобальные поля.
         if (backup.userRef) settings.userRef = backup.userRef;
+        if (typeof backup.userDescription === 'string') settings.userDescription = backup.userDescription;
+        // charRef из старого формата — временное поле, миграция {{char}} перенесёт в карту.
+        if (backup.charRef) settings.charRef = backup.charRef;
         if (backup.npcReferences) settings.npcReferences = backup.npcReferences;
         iigLog('INFO', 'Refs restored from localStorage');
     } catch(e) {
@@ -3191,6 +4335,11 @@ async function generateImageGemini(prompt, style, referenceImages = [], options 
     const rawModel = String(settings.model || '');
     const model = rawModel.includes('/') ? rawModel.split('/').pop() : rawModel;
     const url = options.overrideUrl || `${settings.endpoint.replace(/\/$/, '')}/v1beta/models/${model}:generateContent`;
+
+    // Некоторые OpenAI-совместимые прокси гоняют banana-модели через /v1/chat/completions,
+    // а не через нативный /v1beta generateContent (там у них 404). Такой маршрут включается
+    // опцией forceChatCompletions и шлёт полный каталожный id модели ("google/...").
+    const forceChatCompletions = !!options.forceChatCompletions;
     
     // Determine aspect ratio: tag option > settings, with validation
     let aspectRatio = options.aspectRatio || settings.aspectRatio || '1:1';
@@ -3264,7 +4413,21 @@ async function generateImageGemini(prompt, style, referenceImages = [], options 
     
     const labelSummary = refLabels.reduce((acc, l) => { acc[l] = (acc[l] || 0) + 1; return acc; }, {});
     console.log(`[IIG] Gemini request: ${referenceImages.length} refs (${JSON.stringify(labelSummary)}) + prompt (${fullPrompt.length} chars)`);
-    
+
+    // Обходной маршрут: мимо /v1beta, сразу в OpenAI-style chat completions.
+    if (forceChatCompletions) {
+        iigLog('INFO', `Chat-completions route for model=${rawModel}`);
+        return await generateImageViaChatCompletions({
+            settings,
+            model: rawModel,           // полный каталожный id (сохраняем префикс "google/")
+            fullPrompt,
+            referenceImages,
+            refLabels,
+            aspectRatio,
+            imageSize,
+        });
+    }
+
     const body = {
         contents: [{
             role: 'user',
@@ -3848,6 +5011,21 @@ function buildPersistedVideoTag(templateHtml, persistedSrc, posterSrc = '') {
 }
 
 /**
+ * Активный образ гардероба стороны ('bot'|'user') для референсов генерации.
+ * tryOn=true — картинка образа является ИИ-примеркой (человек уже В наряде):
+ * такую отправляем КАК аватар-референс вместо пары «аватар + наряд» — модель
+ * не путает, чья одежда, и уходит один слот референсов вместо двух.
+ * usedAsAvatar проставляет вызывающий код, чтобы не отправить картинку дважды.
+ */
+async function getWardrobeOutfitRef(side) {
+    const sw = window.sillyWardrobe;
+    if (!sw?.isReady()) return null;
+    const b64 = sw.getActiveOutfitBase64Async ? await sw.getActiveOutfitBase64Async(side) : sw.getActiveOutfitBase64(side);
+    if (!b64) return null;
+    return { b64, tryOn: !!sw.isActiveOutfitTryOn?.(side), usedAsAvatar: false };
+}
+
+/**
  * Generate image with retry logic
  * @param {string} prompt - Image description
  * @param {string} style - Style tag
@@ -3869,22 +5047,27 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
     const refs = getCurrentCharacterRefs();
 
     // Gemini/nano-banana references: PRIORITY ORDER — chars first, outfits second, context last
-    if (settings.apiType === 'gemini' || isGeminiModel(settings.model)) {
-        // 1. Character reference: manual photo OR auto from ST avatar (checkbox)
-        const charManualB64 = await getRefBase64(refs.charRef, 'charRef');
-        if (charManualB64) {
-            referenceImages.push(charManualB64); refLabels.push('char_ref');
-        } else if (settings.sendCharAvatar) {
-            const charAvatarB64 = await getCharacterAvatarBase64();
-            if (charAvatarB64) { referenceImages.push(charAvatarB64); refLabels.push('char_ref'); }
+    if (usesGeminiRoute(settings)) {
+        // Активные образы гардероба — заранее: образ-примерка подменяет собой аватар-референс.
+        const botOutfit = await getWardrobeOutfitRef('bot');
+        const userOutfit = await getWardrobeOutfitRef('user');
+        // 1. Character reference (примерка образа → ручной charRef → Avatar Library → ST аватар) — ТОЛЬКО если включено
+        if (settings.sendCharAvatar) {
+            if (botOutfit?.tryOn) {
+                referenceImages.push(botOutfit.b64); refLabels.push('char_ref'); botOutfit.usedAsAvatar = true;
+            } else {
+                const charB64 = await getRefBase64(refs.charRef, 'charRef') || await getCharacterAvatarBase64();
+                if (charB64) { referenceImages.push(charB64); refLabels.push('char_ref'); }
+            }
         }
-        // 2. User reference: manual photo OR auto from ST persona (checkbox)
-        const userManualB64 = await getRefBase64(refs.userRef, 'userRef');
-        if (userManualB64) {
-            referenceImages.push(userManualB64); refLabels.push('user_ref');
-        } else if (settings.sendUserAvatar) {
-            const userAvatarB64 = await getUserAvatarBase64();
-            if (userAvatarB64) { referenceImages.push(userAvatarB64); refLabels.push('user_ref'); }
+        // 2. User reference (примерка образа → ручной userRef → Avatar Library → ST персона) — ТОЛЬКО если включено
+        if (settings.sendUserAvatar) {
+            if (userOutfit?.tryOn) {
+                referenceImages.push(userOutfit.b64); refLabels.push('user_ref'); userOutfit.usedAsAvatar = true;
+            } else {
+                const userB64 = await getRefBase64(refs.userRef, 'userRef') || await getUserAvatarBase64();
+                if (userB64) { referenceImages.push(userB64); refLabels.push('user_ref'); }
+            }
         }
         // 3. NPC references (auto-matched by name in prompt)
         const matchedNpcs = matchNpcReferences(prompt, refs.npcReferences);
@@ -3893,14 +5076,18 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
             if (npcB64) { referenceImages.push(npcB64); refLabels.push('npc_ref'); }
         }
         if (matchedNpcs.length > 0) iigLog('INFO', `NPC refs matched: ${matchedNpcs.map(n => n.name).join(', ')}`);
-        // 4. Wardrobe outfits
-        if (window.sillyWardrobe?.isReady()) {
-            const botB64 = window.sillyWardrobe.getActiveOutfitBase64Async ? await window.sillyWardrobe.getActiveOutfitBase64Async('bot') : window.sillyWardrobe.getActiveOutfitBase64('bot');
-            const userB64 = window.sillyWardrobe.getActiveOutfitBase64Async ? await window.sillyWardrobe.getActiveOutfitBase64Async('user') : window.sillyWardrobe.getActiveOutfitBase64('user');
-            if (botB64) { referenceImages.push(botB64); refLabels.push('char_outfit'); }
-            if (userB64) { referenceImages.push(userB64); refLabels.push('user_outfit'); }
-            if (botB64 || userB64) iigLog('INFO', `Wardrobe refs added: bot=${!!botB64}, user=${!!userB64}`);
+        // 3b. Lorebook refs (auto-matched by trigger in prompt)
+        const matchedLbRefs = getMatchedLorebookReferences(prompt);
+        for (const lbRef of matchedLbRefs) {
+            const lbPath = normalizeStoredImagePath(lbRef.imagePath);
+            const lbB64 = await loadRefImageAsBase64(lbPath) || await imageUrlToBase64(lbPath);
+            if (lbB64) { referenceImages.push(lbB64); refLabels.push('npc_ref'); }
         }
+        if (matchedLbRefs.length > 0) iigLog('INFO', `Lorebook refs matched: ${matchedLbRefs.map(r => r.name).join(', ')}`);
+        // 4. Wardrobe outfits — только те, что НЕ ушли аватар-референсом (примерки)
+        if (botOutfit && !botOutfit.usedAsAvatar) { referenceImages.push(botOutfit.b64); refLabels.push('char_outfit'); }
+        if (userOutfit && !userOutfit.usedAsAvatar) { referenceImages.push(userOutfit.b64); refLabels.push('user_outfit'); }
+        if (botOutfit || userOutfit) iigLog('INFO', `Wardrobe refs: bot=${botOutfit ? (botOutfit.usedAsAvatar ? 'try-on→avatar' : 'outfit') : 'none'}, user=${userOutfit ? (userOutfit.usedAsAvatar ? 'try-on→avatar' : 'outfit') : 'none'}`);
         // 5. Context (previous generated images — LOWEST priority)
         if (settings.imageContextEnabled) {
             const contextCount = normalizeImageContextCount(settings.imageContextCount);
@@ -3911,55 +5098,81 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
 
     // Naistera references: data URLs
     if (settings.apiType === 'naistera') {
-        const charManualUrl = await getRefDataUrl(refs.charRef);
-        if (charManualUrl) {
-            referenceDataUrls.push(charManualUrl);
-        } else if (settings.sendCharAvatar) {
-            const charAvatarB64 = await getCharacterAvatarBase64();
-            if (charAvatarB64) referenceDataUrls.push(`data:image/png;base64,${charAvatarB64}`);
+        // Активные образы гардероба — заранее: образ-примерка подменяет собой аватар-референс.
+        const botOutfit = await getWardrobeOutfitRef('bot');
+        const userOutfit = await getWardrobeOutfitRef('user');
+        // Character/User reference — ТОЛЬКО если включено (примерка → ручной ref → Avatar Library → ST)
+        if (settings.sendCharAvatar) {
+            if (botOutfit?.tryOn) {
+                referenceDataUrls.push(`data:image/png;base64,${botOutfit.b64}`); botOutfit.usedAsAvatar = true;
+            } else {
+                const charUrl = await getRefDataUrl(refs.charRef);
+                if (charUrl) {
+                    referenceDataUrls.push(charUrl);
+                } else {
+                    const charAvatarB64 = await getCharacterAvatarBase64();
+                    if (charAvatarB64) referenceDataUrls.push(`data:image/png;base64,${charAvatarB64}`);
+                }
+            }
         }
-        const userManualUrl = await getRefDataUrl(refs.userRef);
-        if (userManualUrl) {
-            referenceDataUrls.push(userManualUrl);
-        } else if (settings.sendUserAvatar) {
-            const userAvatarB64 = await getUserAvatarBase64();
-            if (userAvatarB64) referenceDataUrls.push(`data:image/png;base64,${userAvatarB64}`);
+        if (settings.sendUserAvatar) {
+            if (userOutfit?.tryOn) {
+                referenceDataUrls.push(`data:image/png;base64,${userOutfit.b64}`); userOutfit.usedAsAvatar = true;
+            } else {
+                const userUrl = await getRefDataUrl(refs.userRef);
+                if (userUrl) {
+                    referenceDataUrls.push(userUrl);
+                } else {
+                    const userAvatarB64 = await getUserAvatarBase64();
+                    if (userAvatarB64) referenceDataUrls.push(`data:image/png;base64,${userAvatarB64}`);
+                }
+            }
         }
         const matchedNpcs = matchNpcReferences(prompt, refs.npcReferences);
         for (const npc of matchedNpcs) {
             const npcUrl = await getRefDataUrl(npc);
             if (npcUrl) referenceDataUrls.push(npcUrl);
         }
+        // Lorebook refs (Naistera uses data URLs)
+        const matchedLbRefsNaistera = getMatchedLorebookReferences(prompt);
+        for (const lbRef of matchedLbRefsNaistera) {
+            const lbPath = normalizeStoredImagePath(lbRef.imagePath);
+            const lbB64 = await loadRefImageAsBase64(lbPath) || await imageUrlToBase64(lbPath);
+            if (lbB64) referenceDataUrls.push(`data:image/png;base64,${lbB64}`);
+        }
+        if (matchedLbRefsNaistera.length > 0) iigLog('INFO', `Lorebook refs matched (naistera): ${matchedLbRefsNaistera.map(r => r.name).join(', ')}`);
         if (settings.imageContextEnabled) {
             const contextCount = normalizeImageContextCount(settings.imageContextCount);
             const contextRefs = await collectPreviousContextReferences(options.messageId, 'dataUrl', contextCount);
             referenceDataUrls.push(...contextRefs);
         }
-        if (window.sillyWardrobe?.isReady()) {
-            const botB64 = window.sillyWardrobe.getActiveOutfitBase64Async ? await window.sillyWardrobe.getActiveOutfitBase64Async('bot') : window.sillyWardrobe.getActiveOutfitBase64('bot');
-            const userB64 = window.sillyWardrobe.getActiveOutfitBase64Async ? await window.sillyWardrobe.getActiveOutfitBase64Async('user') : window.sillyWardrobe.getActiveOutfitBase64('user');
-            if (botB64) referenceDataUrls.push(`data:image/png;base64,${botB64}`);
-            if (userB64) referenceDataUrls.push(`data:image/png;base64,${userB64}`);
-        }
+        // Wardrobe outfits — только те, что НЕ ушли аватар-референсом (примерки)
+        if (botOutfit && !botOutfit.usedAsAvatar) referenceDataUrls.push(`data:image/png;base64,${botOutfit.b64}`);
+        if (userOutfit && !userOutfit.usedAsAvatar) referenceDataUrls.push(`data:image/png;base64,${userOutfit.b64}`);
     }
 
     // OpenAI / Void / Custom (non-gemini, non-naistera): collect references
-    if (settings.apiType !== 'gemini' && !isGeminiModel(settings.model) && settings.apiType !== 'naistera') {
-        // 1. Character reference: manual photo OR auto from ST avatar
-        const charManualB64 = await getRefBase64(refs.charRef, 'charRef');
-        if (charManualB64) {
-            referenceImages.push(charManualB64); refLabels.push('char_ref');
-        } else if (settings.sendCharAvatar) {
-            const charAvatarB64 = await getCharacterAvatarBase64();
-            if (charAvatarB64) { referenceImages.push(charAvatarB64); refLabels.push('char_ref'); }
+    if (!usesGeminiRoute(settings) && settings.apiType !== 'naistera') {
+        // Активные образы гардероба — заранее: образ-примерка подменяет собой аватар-референс.
+        const botOutfit = await getWardrobeOutfitRef('bot');
+        const userOutfit = await getWardrobeOutfitRef('user');
+        // 1. Character reference (примерка образа → ручной charRef → Avatar Library → ST аватар) — ТОЛЬКО если включено
+        if (settings.sendCharAvatar) {
+            if (botOutfit?.tryOn) {
+                referenceImages.push(botOutfit.b64); refLabels.push('char_ref'); botOutfit.usedAsAvatar = true;
+            } else {
+                const charB64 = await getRefBase64(refs.charRef, 'charRef') || await getCharacterAvatarBase64();
+                if (charB64) { referenceImages.push(charB64); refLabels.push('char_ref'); }
+            }
         }
-        // 2. User reference: manual photo OR auto from ST persona
-        const userManualB64 = await getRefBase64(refs.userRef, 'userRef');
-        if (userManualB64) {
-            referenceImages.push(userManualB64); refLabels.push('user_ref');
-        } else if (settings.sendUserAvatar) {
-            const userAvatarB64 = await getUserAvatarBase64();
-            if (userAvatarB64) { referenceImages.push(userAvatarB64); refLabels.push('user_ref'); }
+        // 2. User reference (примерка образа → ручной userRef → Avatar Library → ST персона) — ТОЛЬКО если включено
+        if (settings.sendUserAvatar) {
+            if (userOutfit?.tryOn) {
+                referenceImages.push(userOutfit.b64); refLabels.push('user_ref'); userOutfit.usedAsAvatar = true;
+            } else {
+                const userB64 = await getRefBase64(refs.userRef, 'userRef') || await getUserAvatarBase64();
+                if (userB64) { referenceImages.push(userB64); refLabels.push('user_ref'); }
+            }
         }
         // 3. NPC references (auto-matched by name in prompt)
         const matchedNpcs = matchNpcReferences(prompt, refs.npcReferences);
@@ -3968,13 +5181,17 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
             if (npcB64) { referenceImages.push(npcB64); refLabels.push('npc_ref'); }
         }
         if (matchedNpcs.length > 0) iigLog('INFO', `NPC refs matched: ${matchedNpcs.map(n => n.name).join(', ')}`);
-        // 4. Wardrobe outfits
-        if (window.sillyWardrobe?.isReady()) {
-            const botB64 = window.sillyWardrobe.getActiveOutfitBase64Async ? await window.sillyWardrobe.getActiveOutfitBase64Async('bot') : window.sillyWardrobe.getActiveOutfitBase64('bot');
-            const userB64 = window.sillyWardrobe.getActiveOutfitBase64Async ? await window.sillyWardrobe.getActiveOutfitBase64Async('user') : window.sillyWardrobe.getActiveOutfitBase64('user');
-            if (botB64) { referenceImages.push(botB64); refLabels.push('char_outfit'); }
-            if (userB64) { referenceImages.push(userB64); refLabels.push('user_outfit'); }
+        // 3b. Lorebook refs (auto-matched by trigger in prompt)
+        const matchedLbRefsOai = getMatchedLorebookReferences(prompt);
+        for (const lbRef of matchedLbRefsOai) {
+            const lbPath = normalizeStoredImagePath(lbRef.imagePath);
+            const lbB64 = await loadRefImageAsBase64(lbPath) || await imageUrlToBase64(lbPath);
+            if (lbB64) { referenceImages.push(lbB64); refLabels.push('npc_ref'); }
         }
+        if (matchedLbRefsOai.length > 0) iigLog('INFO', `Lorebook refs matched: ${matchedLbRefsOai.map(r => r.name).join(', ')}`);
+        // 4. Wardrobe outfits — только те, что НЕ ушли аватар-референсом (примерки)
+        if (botOutfit && !botOutfit.usedAsAvatar) { referenceImages.push(botOutfit.b64); refLabels.push('char_outfit'); }
+        if (userOutfit && !userOutfit.usedAsAvatar) { referenceImages.push(userOutfit.b64); refLabels.push('user_outfit'); }
     }
 
     if (referenceImages.length > MAX_GENERATION_REFERENCE_IMAGES) {
@@ -3989,7 +5206,49 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
         && settings.naisteraVideoTest
         && shouldUseNaisteraVideoTest(options.model || settings.naisteraModel)
         && shouldTriggerNaisteraVideoForMessage(options.messageId, settings.naisteraVideoEveryN);
-    
+
+    // Промпт до инъекций внешности — на нём матчились картинки-референсы выше;
+    // на нём же матчим описания лорбук-референсов, чтобы наборы картинок и описаний
+    // совпадали (как в оригинале 2.0-beta).
+    const userPromptForRefs = prompt;
+
+    // ── Inject appearance descriptions into prompt ──
+    {
+        const ctx = SillyTavern.getContext();
+        const charName = (ctx.characterId !== undefined && ctx.characters?.[ctx.characterId]?.name) || 'Character';
+        const userName = ctx.name1 || 'User';
+
+        // Внешность аватаров — по своему флагу. Активный аватар библиотеки даёт свой текст;
+        // если аватар из библиотеки НЕ выбран (работает ориг. аватар ST) — фолбэк на
+        // per-char/per-persona описание (charDescByKey/userDescByKey). Без кросс-фолбэка:
+        // при активном аватаре описание ориг. авы не подмешиваем — это другое лицо.
+        if (settings.injectAvatarAppearanceToGeneration) {
+            const parts = [];
+            const charItem = getActiveAvatarItem('char');
+            const charApp = charItem ? String(charItem.appearance || '').trim() : getCharDescription().trim();
+            if (charApp) parts.push(`[${charName} looks like: ${charApp}]`);
+            const userItem = getActiveAvatarItem('user');
+            const userApp = userItem ? String(userItem.appearance || '').trim() : getUserDescription().trim();
+            if (userApp) parts.push(`[${userName} looks like: ${userApp}]`);
+            if (parts.length > 0) {
+                prompt = `${parts.join(' ')}\n${prompt}`;
+                iigLog('INFO', `Avatar appearance injected: ${parts.length}`);
+            }
+        }
+
+        // NPC внешность — по совпадению имени/алиасов в промпте.
+        if (settings.injectDescriptions !== false) {
+            const matchedNpcsForDesc = matchNpcReferences(prompt, refs.npcReferences);
+            const npcDescParts = matchedNpcsForDesc
+                .filter(n => String(n.description || '').trim())
+                .map(n => `[NPC Reference: ${n.name}'s appearance: ${n.description.trim()}]`);
+            if (npcDescParts.length > 0) {
+                prompt = `${npcDescParts.join(' ')}\n${prompt}`;
+                iigLog('INFO', `NPC descriptions injected: ${npcDescParts.map(p => p.slice(0, 40)).join(', ')}`);
+            }
+        }
+    }
+
     // ── Inject wardrobe outfit descriptions into prompt ──
     if (window.sillyWardrobe?.isReady()) {
         const botData = window.sillyWardrobe.getActiveOutfitData('bot');
@@ -4011,8 +5270,55 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
         }
     }
 
+    // ── Inject lorebook ref descriptions into prompt (gated by sendRefDescriptions) ──
+    if (settings.sendRefDescriptions !== false) {
+        const allMatched = getMatchedLorebookReferences(userPromptForRefs);
+        const descItems = allMatched
+            .map(ref => {
+                const name = String(ref?.name || '').trim();
+                const desc = String(ref?.description || '').trim();
+                if (name && desc) return `${name}: ${desc}`;
+                return desc || name;
+            })
+            .filter(Boolean);
+        if (descItems.length > 0) {
+            const block = `Reference descriptions (use these to keep characters and items visually consistent):\n${descItems.map(d => `- ${d}`).join('\n')}`;
+            prompt = `${prompt}\n\n${block}`;
+            iigLog('INFO', `Lorebook descriptions injected: ${descItems.length} items`);
+        }
+    }
+
+    // ── Save debug snapshot ──
+    {
+        const previewRefs = [];
+        for (let ri = 0; ri < refLabels.length; ri++) {
+            let rawB64 = '';
+            if (ri < referenceImages.length && referenceImages[ri]) rawB64 = referenceImages[ri];
+            else if (ri < referenceDataUrls.length && referenceDataUrls[ri]) rawB64 = referenceDataUrls[ri].replace(/^data:[^;]+;base64,/, '');
+            if (rawB64) previewRefs.push({ label: refLabels[ri], _b64: rawB64 });
+        }
+        for (const pr of previewRefs) {
+            try { pr.dataUrl = `data:image/jpeg;base64,${await compressBase64Image(pr._b64, 96, 0.5)}`; }
+            catch { pr.dataUrl = `data:image/png;base64,${pr._b64}`; }
+            delete pr._b64;
+        }
+        _lastGenDebug = {
+            timestamp: new Date().toISOString(),
+            apiType: settings.apiType,
+            model: settings.apiType === 'naistera' ? normalizeNaisteraModel(options.model || settings.naisteraModel) : settings.model,
+            size: settings.size || '(auto)',
+            style: style || '(none)',
+            refCount: refLabels.length,
+            refLabels: [...refLabels],
+            previewRefs,
+            matchedNpcs: matchNpcReferences(userPromptForRefs, refs.npcReferences).map(n => n.name),
+            matchedLorebook: getMatchedLorebookReferences(userPromptForRefs).map(r => r.name),
+            prompt,
+        };
+    }
+
     let lastError;
-    
+
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
             onStatusUpdate?.(`Генерация${attempt > 0 ? ` (повтор ${attempt}/${maxRetries})` : ''}...`);
@@ -4049,7 +5355,7 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
                 generated = await generateImageElectronHub(prompt, style, referenceImages, { ...options, refLabels });
             } else if (settings.apiType === 'void') {
                 generated = await generateImageVoid(prompt, style, referenceImages, { ...options, refLabels });
-            } else if (settings.apiType === 'gemini' || isGeminiModel(settings.model)) {
+            } else if (usesGeminiRoute(settings)) {
                 generated = await generateImageGemini(prompt, style, referenceImages, { ...options, refLabels });
             } else {
                 generated = await generateImageOpenAI(prompt, style, referenceImages, { ...options, refLabels });
@@ -4409,7 +5715,16 @@ function createLoadingPlaceholder(tagId) {
     placeholder.innerHTML = `
         <div class="iig-spinner"></div>
         <div class="iig-status">Генерация картинки...</div>
+        <div class="iig-timer">0s</div>
     `;
+    const timerEl = placeholder.querySelector('.iig-timer');
+    const start = Date.now();
+    const iv = setInterval(() => {
+        if (!placeholder.isConnected) { clearInterval(iv); return; }
+        const sec = Math.floor((Date.now() - start) / 1000);
+        timerEl.textContent = sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m ${sec % 60}s`;
+    }, 1000);
+    placeholder._timerInterval = iv;
     return placeholder;
 }
 
@@ -4637,7 +5952,7 @@ async function processMessageTags(messageId) {
         try {
             const generated = await generateImageWithRetry(
                 tag.prompt,
-                tag.style,
+                resolveEffectiveStyle(tag.style),
                 (status) => { statusEl.textContent = status; },
                 { aspectRatio: tag.aspectRatio, imageSize: tag.imageSize, quality: tag.quality, preset: tag.preset, messageId }
             );
@@ -4828,7 +6143,7 @@ async function regenerateMessageImages(messageId) {
                 
                 const generated = await generateImageWithRetry(
                     tag.prompt,
-                    tag.style,
+                    resolveEffectiveStyle(tag.style),
                     (status) => { statusEl.textContent = status; },
                     { aspectRatio: tag.aspectRatio, imageSize: tag.imageSize, quality: tag.quality, preset: tag.preset, messageId }
                 );
@@ -5003,6 +6318,111 @@ function isVisionModel(modelId) {
 }
 
 /**
+ * Render lorebook selector and ref cards.
+ */
+function renderLorebookUI() {
+    const settings = getSettings();
+    const lorebooks = ensureLorebooks(settings);
+    const active = getActiveLorebook(settings);
+
+    // Populate lorebook selector
+    const select = document.getElementById('iig_lorebook_select');
+    if (select) {
+        select.innerHTML = lorebooks.map(lb =>
+            `<option value="${sanitizeForHtml(lb.id)}" ${lb.id === settings.activeLorebookId ? 'selected' : ''}>${sanitizeForHtml(lb.name)}${lb.enabled ? '' : ' (выкл)'}</option>`
+        ).join('');
+    }
+
+    // Active-lorebook enabled checkbox
+    const enabledCb = document.getElementById('iig_lorebook_enabled');
+    if (enabledCb) enabledCb.checked = active ? active.enabled !== false : false;
+
+    // Send-descriptions checkbox
+    const sendDescCb = document.getElementById('iig_lorebook_send_descriptions');
+    if (sendDescCb) sendDescCb.checked = settings.sendRefDescriptions !== false;
+
+    // Render ref cards
+    const container = document.getElementById('iig_lorebook_refs_list');
+    if (!container || !active) return;
+
+    if (active.refs.length === 0) {
+        container.innerHTML = '<p class="hint">Пусто. Добавьте референс с именем-триггером и картинкой.</p>';
+        updateLorebookStatus();
+        return;
+    }
+
+    const lastIndex = active.refs.length - 1;
+    container.innerHTML = active.refs.map((ref, index) => {
+        const previewSrc = normalizeStoredImagePath(ref.imagePath);
+        const isAlways = ref.matchMode === 'always';
+        const isEnabled = ref.enabled !== false;
+        const useRegex = ref.useRegex === true;
+        const previewHtml = previewSrc
+            ? `<img src="${sanitizeForHtml(previewSrc)}" alt="${sanitizeForHtml(ref.name || `ref-${index + 1}`)}" class="iig-lb-ref-thumb">`
+            : `<div class="iig-lb-ref-thumb iig-lb-ref-thumb-placeholder"><i class="fa-solid fa-image" style="color:var(--SmartThemeQuoteColor);font-size:18px;"></i></div>`;
+        return `
+            <div class="iig-lb-ref-row ${isEnabled ? '' : 'iig-lb-ref-row-disabled'}" data-ref-index="${index}" data-ref-id="${sanitizeForHtml(ref.id)}">
+                <div class="iig-lb-ref-content">
+                    <div class="iig-lb-ref-preview">
+                        ${previewHtml}
+                        <label class="checkbox_label iig-lb-ref-enabled-toggle" title="${isEnabled ? 'Выключить' : 'Включить'}">
+                            <input type="checkbox" class="iig-lb-ref-enabled" ${isEnabled ? 'checked' : ''}>
+                            <span></span>
+                        </label>
+                    </div>
+                    <div class="iig-lb-ref-main">
+                        <div class="iig-lb-ref-header">
+                            <input type="text" class="text_pole flex1 iig-lb-ref-name" placeholder="Имя-триггер (или regex)" value="${sanitizeForHtml(ref.name || '')}">
+                            <label class="menu_button iig-lb-ref-upload" title="Загрузить изображение">
+                                <i class="fa-solid fa-upload"></i>
+                                <input type="file" accept="image/*" class="iig-lb-ref-file" style="display:none">
+                            </label>
+                            <div class="menu_button iig-lb-ref-upload-url" title="Загрузить по URL"><i class="fa-solid fa-link"></i></div>
+                            <div class="menu_button iig-lb-ref-remove" title="Удалить" style="color:#cc5555;"><i class="fa-solid fa-trash"></i></div>
+                        </div>
+                        <textarea class="text_pole flex1 iig-lb-ref-description" rows="2" placeholder="Описание референса">${sanitizeForHtml(ref.description || '')}</textarea>
+                        <div class="iig-lb-ref-grid">
+                            <input type="text" class="text_pole iig-lb-ref-group" placeholder="Группа (characters, locations...)" value="${sanitizeForHtml(ref.group || '')}">
+                            <input type="text" class="text_pole iig-lb-ref-secondary" placeholder="Вторичные ключи (AND, через запятую)" value="${sanitizeForHtml(ref.secondaryKeys || '')}">
+                            <input type="number" class="text_pole iig-lb-ref-priority" placeholder="Приоритет" step="1" value="${Number.isFinite(ref.priority) ? ref.priority : 0}" title="Выше = приоритетнее при лимите референсов">
+                        </div>
+                        <div class="iig-lb-ref-footer">
+                            <label class="checkbox_label">
+                                <input type="checkbox" class="iig-lb-ref-always" ${isAlways ? 'checked' : ''}>
+                                <span>${isAlways ? 'Всегда' : 'По совпадению'}</span>
+                            </label>
+                            <label class="checkbox_label" title="Интерпретировать триггер как JS regex (напр. /кот|котик/i)">
+                                <input type="checkbox" class="iig-lb-ref-regex" ${useRegex ? 'checked' : ''}>
+                                <span>Regex</span>
+                            </label>
+                            <div class="menu_button iig-lb-ref-vision ${previewSrc ? '' : 'iig-hidden'}" title="Сгенерировать описание через Vision AI"><i class="fa-solid fa-robot"></i></div>
+                            <div class="iig-lb-ref-move">
+                                <div class="menu_button iig-lb-ref-move-up ${index === 0 ? 'disabled' : ''}" title="Вверх"><i class="fa-solid fa-arrow-up"></i></div>
+                                <div class="menu_button iig-lb-ref-move-down ${index === lastIndex ? 'disabled' : ''}" title="Вниз"><i class="fa-solid fa-arrow-down"></i></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>`;
+    }).join('');
+
+    updateLorebookStatus();
+}
+
+function updateLorebookStatus() {
+    const status = document.getElementById('iig_lorebook_status');
+    if (!status) return;
+    const allRefs = getAllEnabledLorebookReferences().filter(ref => ref.name && ref.imagePath);
+    const enabledRefs = allRefs.filter(ref => ref.enabled !== false);
+    const alwaysCount = enabledRefs.filter(ref => ref.matchMode === 'always').length;
+    if (allRefs.length > 0) {
+        status.textContent = `Активных референсов: ${enabledRefs.length}/${allRefs.length}. Всегда отправляются: ${alwaysCount}.`;
+    } else {
+        status.textContent = '';
+    }
+}
+
+/**
  * Render reference image slots in the UI.
  */
 function renderRefSlots() {
@@ -5010,33 +6430,6 @@ function renderRefSlots() {
     if (!container) return;
     const settings = getSettings();
     const refs = getCurrentCharacterRefs();
-
-    // ── Helper: build the manual-photo row (upload + delete + thumb) ──
-    function manualSlotHTML(refType, ref) {
-        const src = ref.imagePath || (ref.imageBase64 ? `data:image/jpeg;base64,${ref.imageBase64}` : '');
-        const hasImg = !!(ref.imagePath || ref.imageBase64);
-        return `
-            <div class="iig-ref-slot" data-ref-type="${refType}" style="display:flex;gap:6px;align-items:center;">
-                <img class="iig-ref-thumb" src="${src}"
-                     style="width:48px;height:48px;object-fit:cover;border-radius:4px;background:#333;"
-                     onerror="this.src=''">
-                <label class="menu_button iig-ref-upload-btn" title="Загрузить фото">
-                    <i class="fa-solid fa-upload"></i>
-                    <input type="file" class="iig-ref-file-input" accept="image/*" style="display:none;">
-                </label>
-                <div class="menu_button iig-ref-delete-btn"
-                     style="color:#cc5555;${hasImg ? '' : 'visibility:hidden;'}"
-                     title="Очистить"><i class="fa-solid fa-trash"></i></div>
-            </div>`;
-    }
-
-    // ── {{char}} section ──
-    const charHasImg = !!(refs.charRef.imagePath || refs.charRef.imageBase64);
-    const charDotHTML = charHasImg ? '<i class="fa-solid fa-circle" style="color:#7cb87c;font-size:8px;margin-left:4px;" title="Загружено"></i>' : '';
-
-    // ── {{user}} section ──
-    const userHasImg = !!(refs.userRef.imagePath || refs.userRef.imageBase64);
-    const userDotHTML = userHasImg ? '<i class="fa-solid fa-circle" style="color:#7cb87c;font-size:8px;margin-left:4px;" title="Загружено"></i>' : '';
 
     const userAvatarDropdownHTML = `
         <div id="iig_user_avatar_manual_section" class="${!settings.sendUserAvatar ? 'iig-hidden' : ''}" style="margin-bottom:6px;">
@@ -5060,25 +6453,51 @@ function renderRefSlots() {
             </div>
         </div>`;
 
-    // ── NPC slots ──
+    // ── NPC slots (dynamic) ──
+    const npcList = refs.npcReferences;
     let npcHTML = '';
-    for (let i = 0; i < 4; i++) {
-        const npc = refs.npcReferences[i] || { name: '', imageBase64: '', imagePath: '' };
+    for (let i = 0; i < npcList.length; i++) {
+        const npc = npcList[i] || { name: '', aliases: [], imageBase64: '', imagePath: '', description: '', enabled: true };
         const hasImg = !!(npc.imagePath || npc.imageBase64);
-        const thumbSrc = npc.imageBase64 ? `data:image/jpeg;base64,${npc.imageBase64}` : (npc.imagePath || '');
+        const thumbSrc = npc.imageBase64 ? `data:image/jpeg;base64,${npc.imageBase64}` : normalizeStoredImagePath(npc.imagePath);
+        const npcDescVal = (npc.description || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const npcAliasesVal = (Array.isArray(npc.aliases) ? npc.aliases.join(', ') : '').replace(/"/g, '&quot;');
+        const npcEnabled = npc.enabled !== false;
         npcHTML += `
-            <div class="iig-ref-slot" data-slot-key="npc_${i}">
-                <div class="iig-ref-slot-thumb" data-slot-key="npc_${i}" title="Загрузить изображение">
-                    ${hasImg ? `<img src="${thumbSrc}" alt="NPC ${i+1}">` : `<i class="fa-solid fa-image" style="color:var(--SmartThemeQuoteColor);font-size:20px;"></i>`}
+            <div class="iig-npc-card ${npcEnabled ? '' : 'iig-npc-card-disabled'}" data-slot-key="npc_${i}">
+                <div class="iig-ref-slot" data-slot-key="npc_${i}">
+                    <div class="iig-ref-slot-thumb" data-slot-key="npc_${i}" title="Загрузить изображение">
+                        ${hasImg ? `<img src="${thumbSrc}" alt="NPC ${i+1}">` : `<i class="fa-solid fa-image" style="color:var(--SmartThemeQuoteColor);font-size:20px;"></i>`}
+                    </div>
+                    <div class="iig-ref-slot-info">
+                        <label class="iig-ref-slot-label iig-npc-enabled-row" title="Включить/выключить NPC">
+                            <input type="checkbox" class="iig-npc-enabled" data-npc-idx="${i}" ${npcEnabled ? 'checked' : ''}>
+                            <span>NPC ${i + 1}</span>
+                        </label>
+                        <input type="text" class="text_pole iig-ref-name-input" data-slot-key="npc_${i}"
+                               placeholder="Имя (триггер в промпте)" value="${(npc.name || '').replace(/"/g, '&quot;')}">
+                        <input type="text" class="text_pole iig-npc-aliases" data-npc-idx="${i}"
+                               placeholder="Алиасы через запятую" value="${npcAliasesVal}"
+                               title="Доп. имена-триггеры, через запятую">
+                    </div>
+                    <div class="menu_button iig-npc-slot-remove" data-npc-idx="${i}" title="Удалить слот"><i class="fa-solid fa-trash-can"></i></div>
                 </div>
-                <div class="iig-ref-slot-info">
-                    <span class="iig-ref-slot-label">NPC ${i + 1}</span>
-                    <input type="text" class="text_pole iig-ref-name-input" data-slot-key="npc_${i}"
-                           placeholder="Имя" value="${(npc.name || '').replace(/"/g, '&quot;')}">
+                <div class="iig-npc-desc-row">
+                    <textarea class="text_pole iig-npc-desc-input" data-npc-idx="${i}" rows="1"
+                              placeholder="Описание внешности..."
+                              style="font-size:0.82em;resize:vertical;min-height:28px;">${npcDescVal}</textarea>
+                    <div class="menu_button iig-npc-desc-vision iig-lb-ref-vision" data-npc-idx="${i}" title="Описать через Vision AI"
+                         style="padding:2px 6px;font-size:0.82em;${hasImg ? '' : 'opacity:0.3;pointer-events:none;'}">
+                        <i class="fa-solid fa-wand-magic-sparkles"></i>
+                    </div>
                 </div>
-                ${hasImg ? `<div class="menu_button iig-ref-slot-delete" data-slot-key="npc_${i}" title="Удалить"><i class="fa-solid fa-trash-can"></i></div>` : ''}
             </div>`;
     }
+    npcHTML += `
+        <div class="iig-npc-toolbar">
+            <div id="iig_npc_add" class="menu_button" title="Добавить NPC"><i class="fa-solid fa-plus"></i> Добавить NPC</div>
+            ${npcList.length > 0 ? `<div id="iig_npc_clear_all" class="menu_button" title="Очистить все" style="color:#cc5555;"><i class="fa-solid fa-trash-can"></i> Очистить все</div>` : ''}
+        </div>`;
 
     container.innerHTML = `
         <!-- ── {{char}} ── -->
@@ -5088,18 +6507,39 @@ function renderRefSlots() {
                 <span>Отправлять аватар {{char}}</span>
             </label>
         </div>
-        <div style="margin-bottom:10px;">
-            <div id="iig_char_photo_toggle" class="menu_button" style="width:100%;text-align:left;font-size:0.85em;padding:4px 8px;">
-                <i class="fa-solid fa-chevron-${settings.charPhotoOpen ? 'down' : 'right'}"></i>
-                <i class="fa-solid fa-robot" style="margin-left:4px;"></i> Фото {{char}} вручную
-                ${charDotHTML}
-            </div>
-            <div id="iig_char_photo_section" class="${settings.charPhotoOpen ? '' : 'iig-hidden'}"
-                 style="margin-top:4px;padding:6px;background:rgba(0,0,0,0.15);border-radius:4px;">
-                ${manualSlotHTML('char', refs.charRef)}
-                <p style="font-size:10px;color:#888;margin:4px 0 0;">Если загружено — заменяет аватар {{char}} из чекбокса выше</p>
+        <div style="margin-bottom:6px;">
+            <label class="checkbox_label">
+                <input type="checkbox" id="iig_inject_descriptions" ${settings.injectDescriptions !== false ? 'checked' : ''}>
+                <span>Добавлять описания внешности в промпт</span>
+            </label>
+        </div>
+        <div class="iig-avatar-appearance-controls" style="margin-bottom:8px;">
+            <label class="checkbox_label" style="font-size:0.85em;">
+                <input type="checkbox" id="iig_inject_avatar_appearance_gen" ${settings.injectAvatarAppearanceToGeneration ? 'checked' : ''}>
+                <span>Внешность аватара → в промпт генерации</span>
+            </label>
+            <label class="checkbox_label" style="font-size:0.85em;">
+                <input type="checkbox" id="iig_inject_avatar_appearance_chat" ${settings.injectAvatarAppearanceToChatEnabled ? 'checked' : ''}>
+                <span>Внешность аватара → в контекст LLM</span>
+            </label>
+            <div style="font-size:0.78em;color:var(--SmartThemeQuoteColor);margin:2px 0 4px;">Берётся у активного аватара из библиотеки; если он не выбран — описание ориг. аватара ST (панель под сеткой).</div>
+            <div class="flex-row" style="margin-top:2px;align-items:center;gap:6px;">
+                <label for="iig_avatar_appearance_depth" style="font-size:0.8em;">Глубина инъекции</label>
+                <input type="number" id="iig_avatar_appearance_depth" class="text_pole" style="width:64px;" value="${Number.isFinite(settings.avatarAppearanceInjectionDepth) ? settings.avatarAppearanceInjectionDepth : 1}" min="0" max="10">
             </div>
         </div>
+        <div class="iig-avatar-lib-block" style="margin-bottom:10px;">
+            <div style="font-size:0.85em;color:var(--SmartThemeQuoteColor);margin-bottom:4px;"><i class="fa-solid fa-images"></i> Аватары {{char}} — клик = сделать активным</div>
+            <div id="iig_avatar_lib_char" class="iig-extras-grid"></div>
+            <div id="iig_avatar_desc_char"></div>
+            <div class="iig-extras-add-row" style="display:flex;gap:4px;margin-top:4px;">
+                <input type="text" id="iig_avatar_lib_char_name" class="text_pole flex1" placeholder="Имя аватара (необязательно)" style="font-size:0.82em;">
+                <input type="file" id="iig_avatar_lib_char_file" accept="image/*" style="display:none">
+                <div id="iig_avatar_lib_char_add" class="menu_button" title="Добавить аватар"><i class="fa-solid fa-plus"></i> Добавить</div>
+            </div>
+        </div>
+
+        <hr style="margin:8px 0;opacity:0.15;">
 
         <!-- ── {{user}} ── -->
         <div style="margin-bottom:6px;">
@@ -5109,24 +6549,326 @@ function renderRefSlots() {
             </label>
         </div>
         ${userAvatarDropdownHTML}
-        <div style="margin-bottom:10px;">
-            <div id="iig_user_photo_toggle" class="menu_button" style="width:100%;text-align:left;font-size:0.85em;padding:4px 8px;">
-                <i class="fa-solid fa-chevron-${settings.userPhotoOpen ? 'down' : 'right'}"></i>
-                <i class="fa-solid fa-user" style="margin-left:4px;"></i> Фото {{user}} вручную
-                ${userDotHTML}
-            </div>
-            <div id="iig_user_photo_section" class="${settings.userPhotoOpen ? '' : 'iig-hidden'}"
-                 style="margin-top:4px;padding:6px;background:rgba(0,0,0,0.15);border-radius:4px;">
-                ${manualSlotHTML('user', refs.userRef)}
-                <p style="font-size:10px;color:#888;margin:4px 0 0;">Если загружено — заменяет аватар {{user}} из чекбокса выше</p>
+        <div class="iig-avatar-lib-block" style="margin-bottom:6px;">
+            <div style="font-size:0.85em;color:var(--SmartThemeQuoteColor);margin-bottom:4px;"><i class="fa-solid fa-images"></i> Аватары {{user}} — клик = сделать активным</div>
+            <div id="iig_avatar_lib_user" class="iig-extras-grid"></div>
+            <div id="iig_avatar_desc_user"></div>
+            <div class="iig-extras-add-row" style="display:flex;gap:4px;margin-top:4px;">
+                <input type="text" id="iig_avatar_lib_user_name" class="text_pole flex1" placeholder="Имя аватара (необязательно)" style="font-size:0.82em;">
+                <input type="file" id="iig_avatar_lib_user_file" accept="image/*" style="display:none">
+                <div id="iig_avatar_lib_user_add" class="menu_button" title="Добавить аватар"><i class="fa-solid fa-plus"></i> Добавить</div>
             </div>
         </div>
 
-        <hr style="margin:8px 0;opacity:0.2;">
+        `;
 
-        <!-- ── NPC slots ── -->
-        <p class="hint" style="margin-bottom:6px;">NPC автоматически подбираются по имени в промпте</p>
-        ${npcHTML}`;
+    // ── NPC — replace container to discard stale event listeners ──
+    const oldNpcContainer = document.getElementById('iig_npc_slots');
+    if (oldNpcContainer) {
+        const fresh = oldNpcContainer.cloneNode(false);
+        fresh.innerHTML = npcHTML;
+        oldNpcContainer.replaceWith(fresh);
+    }
+
+    // ── Avatar Library — наполняем сетки + панели внешности активных элементов ──
+    renderAvatarGrid('char');
+    renderAvatarGrid('user');
+}
+
+/* ── Avatar Library: рендер сетки аватаров (порт из megarakk) ── */
+function renderAvatarGrid(target) {
+    const containerId = target === 'user' ? 'iig_avatar_lib_user' : 'iig_avatar_lib_char';
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    const settings = getSettings();
+    const items = ensureAvatarItems(settings).filter(a => a.target === target);
+    const activeId = target === 'user' ? settings.activeAvatarUser : settings.activeAvatarChar;
+
+    if (items.length === 0) {
+        container.innerHTML = `<div class="iig-extras-empty">Пока нет аватаров. Добавьте, чтобы заменить дефолтный.</div>`;
+        renderAvatarAppearancePanel(target);
+        return;
+    }
+
+    container.innerHTML = items.map(item => `
+        <div class="iig-extras-card ${item.id === activeId ? 'iig-extras-active' : ''}" data-ava-id="${sanitizeForHtml(item.id)}" data-ava-target="${target}">
+            <img src="data:image/png;base64,${item.imageData}" class="iig-extras-img" alt="${sanitizeForHtml(item.name)}">
+            <div class="iig-extras-overlay">
+                <span class="iig-extras-name" title="${sanitizeForHtml(item.name)}">${sanitizeForHtml(item.name)}</span>
+                <i class="fa-solid fa-ellipsis iig-extras-more" data-ava-more="${sanitizeForHtml(item.id)}" title="Окошко аватара: имя, активация, удаление"></i>
+            </div>
+            ${item.id === activeId ? '<div class="iig-extras-check"><i class="fa-solid fa-check"></i></div>' : ''}
+        </div>
+    `).join('');
+
+    container.querySelectorAll('.iig-extras-card').forEach(card => {
+        card.addEventListener('click', (e) => {
+            if (e.target instanceof Element && e.target.closest('.iig-extras-more')) return;
+            const avaId = card.getAttribute('data-ava-id');
+            const avaTarget = card.getAttribute('data-ava-target') || target;
+            if (!avaId) return;
+            setActiveAvatar(avaId, avaTarget);
+            renderAvatarGrid(avaTarget);
+        });
+    });
+    // Удаление НЕ на плитке (случайные клики) — только внутри окошка аватара, с подтверждением.
+    container.querySelectorAll('.iig-extras-more').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const avaId = btn.getAttribute('data-ava-more');
+            if (avaId) openAvatarDialog(avaId, target);
+        });
+    });
+
+    renderAvatarAppearancePanel(target);
+}
+
+/* ── Avatar Library: окошко аватара — превью, переименование, активация, удаление с подтверждением ── */
+function openAvatarDialog(itemId, target) {
+    document.getElementById('iig-ava-overlay')?.remove();
+    const settings = getSettings();
+    const item = ensureAvatarItems(settings).find(a => a.id === itemId);
+    if (!item) return;
+    const isActive = (target === 'user' ? settings.activeAvatarUser : settings.activeAvatarChar) === item.id;
+
+    const ov = document.createElement('div');
+    ov.id = 'iig-ava-overlay';
+    ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
+    // Окошко живёт в body, т.е. «вне» выдвижной панели расширений — гасим всплытие,
+    // иначе ST считает клик кликом-наружу и закрывает панель настроек.
+    for (const evt of ['mousedown', 'mouseup', 'click', 'touchstart', 'pointerdown']) {
+        ov.addEventListener(evt, (e) => e.stopPropagation());
+    }
+    const panel = document.createElement('div');
+    panel.id = 'iig-ava-dialog';
+    panel.innerHTML = `
+        <div class="iig-ava-head"><span></span><div class="iig-ava-close" title="Закрыть"><i class="fa-solid fa-xmark"></i></div></div>
+        <div class="iig-ava-body">
+            <img class="iig-ava-preview" src="data:image/png;base64,${item.imageData}" alt="avatar">
+            <input type="text" class="text_pole iig-ava-name" maxlength="60" placeholder="Имя аватара">
+            <div class="iig-ava-actions">
+                <div class="menu_button iig-ava-activate">${isActive ? '<i class="fa-solid fa-toggle-on"></i> Активен — снять' : '<i class="fa-solid fa-toggle-off"></i> Сделать активным'}</div>
+                <div class="menu_button iig-ava-delete"><i class="fa-solid fa-trash-can"></i> Удалить</div>
+            </div>
+        </div>`;
+    ov.appendChild(panel); document.body.appendChild(ov);
+    // Имя через .value/.textContent, не через innerHTML — кавычки в имени не ломают разметку.
+    panel.querySelector('.iig-ava-head span').textContent = item.name;
+    const nameInp = panel.querySelector('.iig-ava-name');
+    nameInp.value = item.name;
+
+    function escHandler(e) { if (e.key === 'Escape') { e.stopImmediatePropagation(); close(); } }
+    function close() { document.removeEventListener('keydown', escHandler, true); ov.remove(); }
+    document.addEventListener('keydown', escHandler, true);
+    panel.querySelector('.iig-ava-close').addEventListener('click', close);
+
+    nameInp.addEventListener('input', () => {
+        item.name = nameInp.value.trim() || 'Avatar';
+        panel.querySelector('.iig-ava-head span').textContent = item.name;
+        saveSettings();
+        renderAvatarGrid(target);
+    });
+
+    panel.querySelector('.iig-ava-activate').addEventListener('click', () => {
+        setActiveAvatar(item.id, target);
+        renderAvatarGrid(target);
+        close();
+    });
+
+    // Двухшаговое удаление: первый клик — «Точно удалить?», второй — удаляет.
+    const delBtn = panel.querySelector('.iig-ava-delete');
+    delBtn.addEventListener('click', () => {
+        if (!delBtn.classList.contains('iig-ava-del-confirm')) {
+            delBtn.classList.add('iig-ava-del-confirm');
+            delBtn.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> Точно удалить?';
+            return;
+        }
+        removeAvatarItem(item.id);
+        renderAvatarGrid(target);
+        close();
+        toastr.info(`Аватар «${item.name}» удалён`, 'Генерация картинок', { timeOut: 2000 });
+    });
+}
+
+/* ── Avatar Library: панель описания внешности активного аватара ── */
+function renderAvatarAppearancePanel(target) {
+    const panelId = target === 'user' ? 'iig_avatar_desc_user' : 'iig_avatar_desc_char';
+    const panel = document.getElementById(panelId);
+    if (!panel) return;
+    const activeItem = getActiveAvatarItem(target);
+    // Аватар из библиотеки не выбран → работает ОРИГИНАЛЬНЫЙ аватар ST — даём панель для него.
+    if (!activeItem) { renderOrigAvatarAppearancePanel(panel, target); return; }
+
+    panel.innerHTML = `
+        <div class="iig-avatar-desc-panel">
+            <div class="iig-avatar-desc-head"><i class="fa-solid fa-user"></i> Внешность: <b>${sanitizeForHtml(activeItem.name)}</b></div>
+            <textarea class="text_pole iig-avatar-desc-textarea" rows="3"
+                placeholder="Опишите внешность вручную или нажмите «ИИ» для авто-описания..."
+                data-ava-id="${sanitizeForHtml(activeItem.id)}">${sanitizeForHtml(activeItem.appearance || '')}</textarea>
+            <div class="iig-avatar-desc-actions" style="display:flex;gap:4px;margin-top:4px;">
+                <div class="menu_button iig-avatar-desc-generate" data-ava-id="${sanitizeForHtml(activeItem.id)}" title="Сгенерировать через Vision AI"><i class="fa-solid fa-robot"></i> ИИ</div>
+                <div class="menu_button iig-avatar-desc-clear" data-ava-id="${sanitizeForHtml(activeItem.id)}" title="Очистить"><i class="fa-solid fa-eraser"></i></div>
+                <div class="menu_button iig-avatar-desc-delete" style="margin-left:auto;" title="Удалить этот аватар из библиотеки"><i class="fa-solid fa-trash-can"></i></div>
+            </div>
+        </div>
+    `;
+
+    // Удаление активного аватара — двухшаговое подтверждение (защита от случайного клика).
+    const delBtn = panel.querySelector('.iig-avatar-desc-delete');
+    delBtn?.addEventListener('click', () => {
+        if (!delBtn.classList.contains('iig-ava-del-confirm')) {
+            delBtn.classList.add('iig-ava-del-confirm');
+            delBtn.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> Точно?';
+            return;
+        }
+        removeAvatarItem(activeItem.id);
+        renderAvatarGrid(target);
+        toastr.info(`Аватар «${activeItem.name}» удалён`, 'Генерация картинок', { timeOut: 2000 });
+    });
+
+    const textarea = panel.querySelector('.iig-avatar-desc-textarea');
+    // Сохраняем и на input (мгновенно), и на blur — ввод не теряется.
+    textarea?.addEventListener('input', () => updateAvatarItemAppearance(textarea.getAttribute('data-ava-id'), textarea.value));
+    panel.querySelector('.iig-avatar-desc-clear')?.addEventListener('click', () => {
+        if (!textarea) return;
+        textarea.value = '';
+        updateAvatarItemAppearance(textarea.getAttribute('data-ava-id'), '');
+        toastr.info('Описание очищено', 'Генерация картинок', { timeOut: 1500 });
+    });
+    panel.querySelector('.iig-avatar-desc-generate')?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        const avaId = btn.getAttribute('data-ava-id');
+        if (!avaId) return;
+        btn.classList.add('disabled');
+        const orig = btn.innerHTML;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> ...';
+        try {
+            const description = await generateAvatarItemAppearance(avaId);
+            if (textarea) textarea.value = description;
+            toastr.success('Описание сгенерировано', 'Vision AI');
+        } catch (err) {
+            toastr.error(err.message || 'Ошибка Vision API', 'Vision AI');
+        } finally {
+            btn.classList.remove('disabled');
+            btn.innerHTML = orig;
+        }
+    });
+}
+
+/* ── Внешность ОРИГИНАЛЬНОГО аватара (ST) — когда аватар из библиотеки не выбран ──
+   Для старых ав, которые не хочется переносить в библиотеку. Описание НЕ одно на всех:
+   {{char}} — у КАЖДОГО персонажа своё (charDescByKey по файлу карточки, редактируется
+   для открытого перса); {{user}} — у КАЖДОЙ персоны своё (userDescByKey по аватару
+   персоны, селектор позволяет заполнить любую, не переключаясь). При генерации и в
+   контекст LLM уходит описание АКТИВНОЙ персоны / открытого перса — фолбэком вместо
+   внешности активного аватара библиотеки. */
+function renderOrigAvatarAppearancePanel(panel, target) {
+    const ctx = SillyTavern.getContext();
+    if (target === 'char' && !getCharKey()) { panel.innerHTML = ''; return; } // персонаж не открыт — не на ком закрепить
+    const isUser = target === 'user';
+
+    const personaLabel = (k) => {
+        if (k === '__default_persona__') return 'Персона по умолчанию';
+        const nm = getPersonaDisplayName(k) || k;
+        return k === getPersonaKey() ? `${nm} (активная)` : nm;
+    };
+    const curKey = () => isUser ? iigCurrentUserDescKey() : getCharKey();
+    const curName = () => isUser
+        ? personaLabel(curKey())
+        : (ctx.characters?.[ctx.characterId]?.name || 'персонаж');
+    const getDesc = () => isUser ? getUserDescriptionFor(curKey()) : getCharDescription();
+    const save = (v) => {
+        if (isUser) setUserDescriptionFor(curKey(), v); else setCharDescription(v);
+        updateAvatarAppearanceInjection(); // на генерации берётся активная персона / открытый перс
+    };
+
+    panel.innerHTML = `
+        <div class="iig-avatar-desc-panel">
+            <div class="iig-avatar-desc-head"><i class="fa-solid fa-id-badge"></i> Внешность (ориг. аватар): <b></b></div>
+            ${isUser ? '<select class="text_pole iig-avatar-desc-persona" title="Чьё описание редактируем — у каждой персоны своё. На генерации используется активная."></select>' : ''}
+            <textarea class="text_pole iig-avatar-desc-textarea" rows="3"
+                placeholder="${isUser
+                    ? 'Описание внешности для ориг. аватарки выбранной персоны (у каждой — своё). Вручную или кнопкой «ИИ»...'
+                    : 'Описание внешности для ориг. аватарки этого персонажа (у каждого — своё). Вручную или кнопкой «ИИ»...'}"></textarea>
+            <div class="iig-avatar-desc-actions" style="display:flex;gap:4px;margin-top:4px;">
+                <div class="menu_button iig-avatar-desc-generate" title="Описать ориг. аватар через Vision AI"><i class="fa-solid fa-robot"></i> ИИ</div>
+                <div class="menu_button iig-avatar-desc-clear" title="Очистить"><i class="fa-solid fa-eraser"></i></div>
+            </div>
+        </div>
+    `;
+    // Имя и текст — через .textContent/.value, чтобы кавычки не ломали разметку.
+    const headB = panel.querySelector('.iig-avatar-desc-head b');
+    const textarea = panel.querySelector('.iig-avatar-desc-textarea');
+    const refresh = () => { headB.textContent = curName(); textarea.value = getDesc(); };
+    refresh();
+
+    // ── Селектор персон ({{user}}): активная + все с описанием + весь список персон ST (async) ──
+    if (isUser) {
+        const sel = panel.querySelector('.iig-avatar-desc-persona');
+        const fill = (keys) => {
+            const seen = new Set();
+            sel.innerHTML = '';
+            for (const k of keys) {
+                const key = String(k || '').trim();
+                if (!key || seen.has(key)) continue;
+                seen.add(key);
+                const opt = document.createElement('option');
+                opt.value = key; opt.textContent = personaLabel(key);
+                opt.selected = key === curKey();
+                sel.appendChild(opt);
+            }
+        };
+        fill([getPersonaKey(), ...Object.keys(getSettings().userDescByKey || {}), curKey()]);
+        fetchUserAvatars().then(list => {
+            if (!Array.isArray(list) || !document.body.contains(sel)) return;
+            const have = new Set(Array.from(sel.options).map(o => o.value));
+            fill([...Array.from(sel.options).map(o => o.value), ...list.filter(f => !have.has(String(f || '').trim()))]);
+        }).catch(() => {});
+        sel.addEventListener('change', () => {
+            iigUserDescPersona = sel.value === getPersonaKey() ? null : (sel.value || null);
+            refresh();
+        });
+    }
+
+    textarea.addEventListener('input', () => save(textarea.value));
+    panel.querySelector('.iig-avatar-desc-clear').addEventListener('click', () => {
+        textarea.value = '';
+        save('');
+        toastr.info('Описание очищено', 'Генерация картинок', { timeOut: 1500 });
+    });
+    panel.querySelector('.iig-avatar-desc-generate').addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        if (btn.classList.contains('disabled')) return;
+        btn.classList.add('disabled');
+        const orig = btn.innerHTML;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> ...';
+        try {
+            let imageB64 = null;
+            if (isUser && curKey() !== getPersonaKey()) {
+                // Выбрана НЕ активная персона — описываем именно ЕЁ аватарку (ключ = файл авы).
+                if (curKey() !== '__default_persona__') imageB64 = await imageUrlToBase64(`/User Avatars/${encodeURIComponent(curKey())}`);
+                if (!imageB64) throw new Error('Не удалось загрузить аватарку этой персоны');
+            } else {
+                // Активная персона / персонаж: ручное фото-референс, если задано, иначе ориг. аватар ST.
+                const refs = getCurrentCharacterRefs();
+                const ref = isUser ? refs.userRef : refs.charRef;
+                imageB64 = ref?.imageBase64 || null;
+                if (!imageB64 && ref?.imagePath) imageB64 = await imageUrlToBase64(ref.imagePath);
+                if (!imageB64) imageB64 = isUser ? await getUserAvatarBase64() : await getCharacterAvatarBase64();
+                if (!imageB64) throw new Error(isUser ? 'Нет аватара: выберите персону в ST' : 'Нет аватара: откройте чат с персонажем');
+            }
+            const prompt = "Describe this character's physical appearance in detail for consistent image generation. Focus on: face features, eye color, hair color and style, skin tone, body type, distinctive features. Be concise but thorough (2-4 sentences). Write in English.";
+            const description = await callVisionApi(imageB64, prompt);
+            save(description);
+            textarea.value = description;
+            toastr.success('Описание сгенерировано', 'Vision AI');
+        } catch (err) {
+            toastr.error(err.message || 'Ошибка Vision API', 'Vision AI');
+        } finally {
+            btn.classList.remove('disabled');
+            btn.innerHTML = orig;
+        }
+    });
 }
 
 /**
@@ -5151,22 +6893,119 @@ function bindRefSlotEvents() {
     });
 
     // ── Collapsible photo sections ──
-    function bindPhotoToggle(toggleId, sectionId, settingKey) {
-        document.getElementById(toggleId)?.addEventListener('click', () => {
-            const s = getSettings();
-            s[settingKey] = !s[settingKey];
-            saveSettings();
-            const sec = document.getElementById(sectionId);
-            if (sec) sec.classList.toggle('iig-hidden', !s[settingKey]);
-            const icon = document.querySelector(`#${toggleId} .fa-chevron-right, #${toggleId} .fa-chevron-down`);
-            if (icon) {
-                icon.classList.toggle('fa-chevron-right', !s[settingKey]);
-                icon.classList.toggle('fa-chevron-down', s[settingKey]);
+    // ── Inject descriptions toggle (NPC) ──
+    document.getElementById('iig_inject_descriptions')?.addEventListener('change', (e) => {
+        getSettings().injectDescriptions = e.target.checked;
+        saveSettings();
+    });
+
+    // ── Avatar Library: добавление аватара + флаги инъекции внешности ──
+    const bindAvatarLibAdd = (target) => {
+        const addBtn = document.getElementById(`iig_avatar_lib_${target}_add`);
+        const fileInput = document.getElementById(`iig_avatar_lib_${target}_file`);
+        const nameInput = document.getElementById(`iig_avatar_lib_${target}_name`);
+        addBtn?.addEventListener('click', () => fileInput?.click());
+        fileInput?.addEventListener('change', async (e) => {
+            const file = e.target?.files?.[0];
+            if (!file) return;
+            try {
+                const resized = await iigFileToResizedBase64(file, 512);
+                const name = (nameInput?.value || '').trim() || file.name.replace(/\.[^.]+$/, '') || 'Avatar';
+                addAvatarItem(name, resized, target);
+                if (nameInput) nameInput.value = '';
+                if (fileInput) fileInput.value = '';
+                renderAvatarGrid(target);
+                toastr.success(`Аватар «${name}» добавлен`, 'Генерация картинок', { timeOut: 2000 });
+            } catch (err) {
+                toastr.error('Не удалось добавить аватар: ' + (err.message || err), 'Генерация картинок');
             }
         });
+    };
+    bindAvatarLibAdd('char');
+    bindAvatarLibAdd('user');
+
+    document.getElementById('iig_inject_avatar_appearance_gen')?.addEventListener('change', (e) => {
+        getSettings().injectAvatarAppearanceToGeneration = e.target.checked;
+        saveSettings();
+    });
+    document.getElementById('iig_inject_avatar_appearance_chat')?.addEventListener('change', (e) => {
+        getSettings().injectAvatarAppearanceToChatEnabled = e.target.checked;
+        saveSettings();
+        updateAvatarAppearanceInjection();
+    });
+    document.getElementById('iig_avatar_appearance_depth')?.addEventListener('input', (e) => {
+        const v = Number.parseInt(e.target.value, 10);
+        getSettings().avatarAppearanceInjectionDepth = Number.isFinite(v) && v >= 0 ? v : 1;
+        saveSettings();
+        updateAvatarAppearanceInjection();
+    });
+
+    // ── Avatar description textareas ──
+    document.getElementById('iig_char_description')?.addEventListener('input', (e) => {
+        setCharDescription(e.target.value);
+    });
+    document.getElementById('iig_user_description')?.addEventListener('input', (e) => {
+        setUserDescriptionFor(iigCurrentUserDescKey(), e.target.value);
+    });
+    // Селектор персоны: выбрал → редактируем описание именно этой персоны.
+    const userDescPersonaSel = document.getElementById('iig_user_desc_persona');
+    if (userDescPersonaSel) {
+        userDescPersonaSel.addEventListener('change', (e) => {
+            iigUserDescPersona = e.target.value || null;
+            const ta = document.getElementById('iig_user_description');
+            if (ta) ta.value = getUserDescriptionFor(iigCurrentUserDescKey());
+        });
+        // Дополняем список ВСЕМИ персонами ST (асинхронно), сохраняя выбор.
+        fetchUserAvatars().then(list => {
+            if (!Array.isArray(list) || !document.body.contains(userDescPersonaSel)) return;
+            const have = new Set(Array.from(userDescPersonaSel.options).map(o => o.value));
+            for (const file of list) {
+                const key = String(file || '').trim();
+                if (!key || have.has(key)) continue;
+                const opt = document.createElement('option');
+                opt.value = key; opt.textContent = iigPersonaLabel(key);
+                userDescPersonaSel.appendChild(opt);
+            }
+        }).catch(() => {});
     }
-    bindPhotoToggle('iig_char_photo_toggle', 'iig_char_photo_section', 'charPhotoOpen');
-    bindPhotoToggle('iig_user_photo_toggle', 'iig_user_photo_section', 'userPhotoOpen');
+
+    // ── Vision describe avatar buttons ──
+    async function describeAvatarVision(role) {
+        const refs = getCurrentCharacterRefs();
+        const btn = document.getElementById(role === 'char' ? 'iig_char_desc_vision' : 'iig_user_desc_vision');
+        const textarea = document.getElementById(role === 'char' ? 'iig_char_description' : 'iig_user_description');
+        if (!btn || !textarea) return;
+
+        btn.classList.add('loading');
+        btn.style.pointerEvents = 'none';
+        try {
+            let imageB64 = null;
+            const ref = role === 'char' ? refs.charRef : refs.userRef;
+            if (ref.imagePath || ref.imageBase64) {
+                imageB64 = ref.imageBase64 || await imageUrlToBase64(ref.imagePath);
+            }
+            if (!imageB64) {
+                imageB64 = role === 'char' ? await getCharacterAvatarBase64() : await getUserAvatarBase64();
+            }
+            if (!imageB64) throw new Error('Нет изображения для описания');
+
+            const prompt = "Describe this character's physical appearance in detail for consistent image generation. Focus on: face features, eye color, hair color and style, skin tone, body type, distinctive features. Be concise but thorough (2-4 sentences). Write in English.";
+            const description = await callVisionApi(imageB64, prompt);
+            textarea.value = description;
+            if (role === 'char') setCharDescription(description);
+            else setUserDescriptionFor(iigCurrentUserDescKey(), description);
+            toastr.success('Описание сгенерировано', 'Vision AI');
+        } catch (err) {
+            toastr.error(err.message || 'Ошибка Vision API', 'Vision AI');
+            iigLog('ERROR', `Avatar vision describe (${role}): ${err.message}`);
+        } finally {
+            btn.classList.remove('loading');
+            btn.style.pointerEvents = '';
+        }
+    }
+
+    document.getElementById('iig_char_desc_vision')?.addEventListener('click', () => describeAvatarVision('char'));
+    document.getElementById('iig_user_desc_vision')?.addEventListener('click', () => describeAvatarVision('user'));
 
     // ── User avatar dropdown ──
     document.getElementById('iig_user_avatar_dropdown_selected')?.addEventListener('click', (e) => {
@@ -5194,11 +7033,378 @@ function bindRefSlotEvents() {
         document.getElementById('iig_user_avatar_dropdown')?.classList.add('open');
     });
 
-    // ── Manual photo upload (char / user) ──
-    for (const slot of container.querySelectorAll('.iig-ref-slot[data-ref-type]')) {
-        const refType = slot.dataset.refType;
+    // ── NPC slot events (delegated) ──
+    const npcContainer = document.getElementById('iig_npc_slots');
+    if (npcContainer) {
+        npcContainer.addEventListener('click', async (e) => {
+            // Upload image via thumbnail click
+            const thumb = e.target.closest('.iig-ref-slot-thumb');
+            if (thumb) {
+                const key = thumb.dataset.slotKey;
+                const inp = document.createElement('input');
+                inp.type = 'file'; inp.accept = 'image/*';
+                inp.addEventListener('change', async () => {
+                    const f = inp.files?.[0];
+                    if (!f) return;
+                    try {
+                        const reader = new FileReader();
+                        reader.onload = async (ev) => {
+                            const rawBase64 = ev.target.result.split(',')[1];
+                            const compressed = await compressBase64Image(rawBase64);
+                            const ref = getRefByKey(key, settings);
+                            ref.imageBase64 = compressed;
+                            try {
+                                ref.imagePath = await saveRefImageToFile(compressed, key);
+                                ref.imageBase64 = '';
+                            }
+                            catch (saveErr) { iigLog('WARN', `Could not save ref to file: ${saveErr.message}`); }
+                            if (!ref.name) ref.name = f.name.replace(/\.[^.]+$/, '');
+                            saveSettings();
+                            renderRefSlots(); bindRefSlotEvents();
+                            toastr.success('Референс загружен', 'Генерация картинок');
+                        };
+                        reader.readAsDataURL(f);
+                    } catch (err) { toastr.error('Ошибка: ' + err.message, 'Генерация картинок'); }
+                });
+                inp.click(); return;
+            }
 
-        slot.querySelector('.iig-ref-file-input')?.addEventListener('change', async (e) => {
+            // Remove single NPC slot
+            const removeBtn = e.target.closest('.iig-npc-slot-remove');
+            if (removeBtn) {
+                const idx = parseInt(removeBtn.dataset.npcIdx, 10);
+                if (isNaN(idx)) return;
+                settings.npcReferences.splice(idx, 1);
+                saveSettings(); renderRefSlots(); bindRefSlotEvents();
+                toastr.info(`NPC ${idx + 1} удалён`, 'Генерация картинок');
+                return;
+            }
+        });
+
+        // Add NPC button
+        npcContainer.querySelector('#iig_npc_add')?.addEventListener('click', () => {
+            settings.npcReferences.push({ name: '', aliases: [], imageBase64: '', imagePath: '', description: '', enabled: true });
+            saveSettings(); renderRefSlots(); bindRefSlotEvents();
+        });
+
+        // Clear all NPCs
+        npcContainer.querySelector('#iig_npc_clear_all')?.addEventListener('click', () => {
+            if (!settings.npcReferences.length) return;
+            if (!confirm('Очистить все NPC?')) return;
+            settings.npcReferences = [];
+            saveSettings(); renderRefSlots(); bindRefSlotEvents();
+            toastr.info('Все NPC удалены', 'Генерация картинок');
+        });
+
+        npcContainer.querySelectorAll('.iig-ref-name-input').forEach(input => {
+            input.addEventListener('input', (e) => {
+                const key = e.target.dataset.slotKey;
+                const ref = getRefByKey(key, settings);
+                ref.name = e.target.value;
+                saveSettings();
+            });
+        });
+
+        // ── NPC description textareas ──
+        npcContainer.querySelectorAll('.iig-npc-desc-input').forEach(ta => {
+            ta.addEventListener('input', (e) => {
+                const idx = parseInt(e.target.dataset.npcIdx, 10);
+                if (!isNaN(idx) && settings.npcReferences[idx]) {
+                    settings.npcReferences[idx].description = e.target.value;
+                    saveSettings();
+                }
+            });
+        });
+
+        // ── NPC aliases (доп. имена-триггеры, через запятую) ──
+        npcContainer.querySelectorAll('.iig-npc-aliases').forEach(input => {
+            input.addEventListener('input', (e) => {
+                const idx = parseInt(e.target.dataset.npcIdx, 10);
+                if (!isNaN(idx) && settings.npcReferences[idx]) {
+                    settings.npcReferences[idx].aliases = e.target.value.split(',').map(s => s.trim()).filter(Boolean);
+                    saveSettings();
+                }
+            });
+        });
+
+        // ── NPC enabled toggle ──
+        npcContainer.querySelectorAll('.iig-npc-enabled').forEach(cb => {
+            cb.addEventListener('change', (e) => {
+                const idx = parseInt(e.target.dataset.npcIdx, 10);
+                if (!isNaN(idx) && settings.npcReferences[idx]) {
+                    settings.npcReferences[idx].enabled = e.target.checked;
+                    saveSettings();
+                    e.target.closest('.iig-npc-card')?.classList.toggle('iig-npc-card-disabled', !e.target.checked);
+                }
+            });
+        });
+
+        // ── NPC vision describe buttons ──
+        npcContainer.querySelectorAll('.iig-npc-desc-vision').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const idx = parseInt(btn.dataset.npcIdx, 10);
+                const npc = settings.npcReferences?.[idx];
+                if (!npc) return;
+                const ta = npcContainer.querySelector(`.iig-npc-desc-input[data-npc-idx="${idx}"]`);
+                if (!ta) return;
+
+                btn.classList.add('loading');
+                btn.style.pointerEvents = 'none';
+                try {
+                    let imageB64 = null;
+                    if (npc.imageBase64) imageB64 = npc.imageBase64;
+                    else if (npc.imagePath) imageB64 = await imageUrlToBase64(npc.imagePath);
+                    if (!imageB64) throw new Error('Нет изображения NPC');
+
+                    const visionPrompt = "Describe this character's physical appearance in detail for consistent image generation. Focus on: face features, eye color, hair color and style, skin tone, body type, distinctive features. Be concise but thorough (2-4 sentences). Write in English.";
+                    const description = await callVisionApi(imageB64, visionPrompt);
+                    ta.value = description;
+                    npc.description = description;
+                    saveSettings();
+                    toastr.success(`Описание NPC «${npc.name || idx + 1}» сгенерировано`, 'Vision AI');
+                } catch (err) {
+                    toastr.error(err.message || 'Ошибка Vision API', 'Vision AI');
+                    iigLog('ERROR', `NPC vision describe (${idx}): ${err.message}`);
+                } finally {
+                    btn.classList.remove('loading');
+                    btn.style.pointerEvents = '';
+                }
+            });
+        });
+    }
+}
+
+/**
+ * Bind lorebook UI events.
+ */
+function bindLorebookEvents() {
+    const settings = getSettings();
+
+    // Lorebook selector
+    document.getElementById('iig_lorebook_select')?.addEventListener('change', (e) => {
+        lorebookSetActive(e.target.value, settings);
+        saveSettings();
+        renderLorebookUI();
+        bindLorebookRefCardEvents();
+    });
+
+    // Create lorebook
+    document.getElementById('iig_lorebook_add')?.addEventListener('click', () => {
+        const name = (prompt('Название нового лорбука:') || '').trim();
+        if (!name) return;
+        lorebookCreate(name, settings);
+        saveSettings();
+        renderLorebookUI();
+        bindLorebookRefCardEvents();
+        toastr.success(`Лорбук «${name}» создан`, 'Генерация картинок');
+    });
+
+    // Rename lorebook
+    document.getElementById('iig_lorebook_rename')?.addEventListener('click', () => {
+        const active = getActiveLorebook(settings);
+        if (!active) return;
+        const name = (prompt('Новое название:', active.name) || '').trim();
+        if (!name) return;
+        lorebookRename(active.id, name, settings);
+        saveSettings();
+        renderLorebookUI();
+        toastr.success(`Переименован: ${name}`, 'Генерация картинок');
+    });
+
+    // Enable/disable active lorebook
+    document.getElementById('iig_lorebook_enabled')?.addEventListener('change', (e) => {
+        const active = getActiveLorebook(settings);
+        if (!active) return;
+        lorebookSetEnabled(active.id, e.target.checked, settings);
+        saveSettings();
+        renderLorebookUI();
+        toastr.info(`Лорбук «${active.name}» ${e.target.checked ? 'включён' : 'выключен'}`, 'Генерация картинок');
+    });
+
+    // Send reference descriptions toggle
+    document.getElementById('iig_lorebook_send_descriptions')?.addEventListener('change', (e) => {
+        settings.sendRefDescriptions = e.target.checked;
+        saveSettings();
+    });
+
+    // Delete lorebook
+    document.getElementById('iig_lorebook_delete')?.addEventListener('click', () => {
+        const active = getActiveLorebook(settings);
+        if (!active) return;
+        if (ensureLorebooks(settings).length <= 1) {
+            toastr.warning('Нельзя удалить единственный лорбук', 'Генерация картинок');
+            return;
+        }
+        if (!confirm(`Удалить лорбук «${active.name}» и все его референсы?`)) return;
+        lorebookRemove(active.id, settings);
+        saveSettings();
+        renderLorebookUI();
+        bindLorebookRefCardEvents();
+        toastr.info('Лорбук удалён', 'Генерация картинок');
+    });
+
+    // Add ref
+    document.getElementById('iig_lorebook_add_ref')?.addEventListener('click', () => {
+        const active = getActiveLorebook(settings);
+        if (!active) return;
+        active.refs.push(normalizeReferenceEntry({}));
+        saveSettings();
+        renderLorebookUI();
+        bindLorebookRefCardEvents();
+    });
+
+    // Import from file
+    document.getElementById('iig_lorebook_import_file')?.addEventListener('click', () => {
+        const inp = document.createElement('input');
+        inp.type = 'file';
+        inp.accept = '.json,.iig.json';
+        inp.addEventListener('change', async () => {
+            const file = inp.files?.[0];
+            if (!file) return;
+            try {
+                const result = await importLorebookFromFile(file);
+                renderLorebookUI();
+                bindLorebookRefCardEvents();
+                toastr.success(`Импортировано: ${result.refsCount} референсов, ${result.imagesDownloaded} картинок`, 'Генерация картинок');
+            } catch (err) {
+                toastr.error(`Ошибка импорта: ${err.message}`, 'Генерация картинок');
+            }
+        });
+        inp.click();
+    });
+
+    // Import from URL
+    document.getElementById('iig_lorebook_import_url')?.addEventListener('click', async () => {
+        const url = (prompt('URL JSON-файла лорбука:') || '').trim();
+        if (!url) return;
+        try {
+            const result = await importLorebookFromUrl(url);
+            renderLorebookUI();
+            bindLorebookRefCardEvents();
+            toastr.success(`Импортировано: ${result.refsCount} референсов, ${result.imagesDownloaded} картинок`, 'Генерация картинок');
+        } catch (err) {
+            toastr.error(`Ошибка импорта: ${err.message}`, 'Генерация картинок');
+        }
+    });
+
+    // Export
+    document.getElementById('iig_lorebook_export')?.addEventListener('click', () => {
+        const active = getActiveLorebook(settings);
+        if (!active) return;
+        const json = buildLorebookExportJson(active);
+        const fileName = lorebookFileNameFromTitle(active.name);
+        triggerBrowserDownload(fileName, JSON.stringify(json, null, 2));
+        toastr.success(`Экспорт: ${fileName}`, 'Генерация картинок');
+    });
+
+    // Load references by URL (bulk) — скачивает картинки и добавляет refs в активный лорбук
+    document.getElementById('iig_lorebook_load_ref')?.addEventListener('click', async () => {
+        const active = getActiveLorebook(settings);
+        if (!active) return;
+        const raw = (prompt('URL изображений — по одному на строку или через запятую:') || '').trim();
+        if (!raw) return;
+        const urls = raw.split(/[\s,]+/).map(u => u.trim()).filter(Boolean);
+        if (urls.length === 0) return;
+        const slots = MAX_LOREBOOK_REFS - active.refs.length;
+        if (slots <= 0) {
+            toastr.warning(`Достигнут лимит референсов: ${MAX_LOREBOOK_REFS}`, 'Генерация картинок');
+            return;
+        }
+        const queue = urls.slice(0, slots);
+        const importedRefs = [];
+        let fail = 0;
+        for (let i = 0; i < queue.length; i++) {
+            try {
+                const dataUrl = await imageUrlToDataUrl(queue[i]);
+                if (!dataUrl) throw new Error('empty');
+                const b64 = dataUrl.split(',')[1];
+                const compressed = await compressBase64Image(b64, 768, 0.8);
+                const imagePath = await saveRefImageToFile(compressed, `lorebook_ref_${active.refs.length + i}`);
+                let name = '';
+                try { name = decodeURIComponent(new URL(queue[i]).pathname.split('/').pop() || '').replace(/\.[^.]+$/, ''); } catch (_) {}
+                importedRefs.push(normalizeReferenceEntry({ name: name || `reference-${i + 1}`, imagePath }));
+            } catch (_) {
+                fail++;
+            }
+        }
+        active.refs.unshift(...importedRefs);
+        saveSettings();
+        renderLorebookUI();
+        bindLorebookRefCardEvents();
+        toastr.success(`Загружено референсов: ${importedRefs.length}${fail ? `, ошибок: ${fail}` : ''}`, 'Генерация картинок');
+    });
+
+    // Bind ref card events
+    bindLorebookRefCardEvents();
+}
+
+function bindLorebookRefCardEvents() {
+    const container = document.getElementById('iig_lorebook_refs_list');
+    if (!container) return;
+    const settings = getSettings();
+    const active = getActiveLorebook(settings);
+    if (!active) return;
+
+    for (const row of container.querySelectorAll('.iig-lb-ref-row')) {
+        const index = parseInt(row.dataset.refIndex, 10);
+        const ref = active.refs[index];
+        if (!ref) continue;
+
+        // Enable/disable
+        row.querySelector('.iig-lb-ref-enabled')?.addEventListener('change', (e) => {
+            ref.enabled = e.target.checked;
+            row.classList.toggle('iig-lb-ref-row-disabled', !ref.enabled);
+            saveSettings();
+            updateLorebookStatus();
+        });
+
+        // Name
+        row.querySelector('.iig-lb-ref-name')?.addEventListener('input', (e) => {
+            ref.name = e.target.value;
+            saveSettings();
+        });
+
+        // Description
+        row.querySelector('.iig-lb-ref-description')?.addEventListener('input', (e) => {
+            ref.description = e.target.value;
+            saveSettings();
+        });
+
+        // Group
+        row.querySelector('.iig-lb-ref-group')?.addEventListener('input', (e) => {
+            ref.group = e.target.value;
+            saveSettings();
+        });
+
+        // Secondary keys
+        row.querySelector('.iig-lb-ref-secondary')?.addEventListener('input', (e) => {
+            ref.secondaryKeys = e.target.value;
+            saveSettings();
+        });
+
+        // Priority
+        row.querySelector('.iig-lb-ref-priority')?.addEventListener('input', (e) => {
+            ref.priority = parseInt(e.target.value, 10) || 0;
+            saveSettings();
+        });
+
+        // Always/match toggle
+        row.querySelector('.iig-lb-ref-always')?.addEventListener('change', (e) => {
+            ref.matchMode = e.target.checked ? 'always' : 'match';
+            const label = e.target.closest('label')?.querySelector('span');
+            if (label) label.textContent = e.target.checked ? 'Всегда' : 'По совпадению';
+            saveSettings();
+            updateLorebookStatus();
+        });
+
+        // Regex toggle
+        row.querySelector('.iig-lb-ref-regex')?.addEventListener('change', (e) => {
+            ref.useRegex = e.target.checked;
+            saveSettings();
+        });
+
+        // File upload
+        row.querySelector('.iig-lb-ref-file')?.addEventListener('change', async (e) => {
             const file = e.target.files?.[0];
             if (!file) return;
             try {
@@ -5209,100 +7415,141 @@ function bindRefSlotEvents() {
                     reader.readAsDataURL(file);
                 });
                 const compressed = await compressBase64Image(rawBase64, 768, 0.8);
-                const savedPath = await saveRefImageToFile(compressed, refType);
-                const s = getCurrentCharacterRefs();
-                if (refType === 'char') { s.charRef.imageBase64 = ''; s.charRef.imagePath = savedPath; }
-                else if (refType === 'user') { s.userRef.imageBase64 = ''; s.userRef.imagePath = savedPath; }
+                ref.imagePath = await saveRefImageToFile(compressed, `lorebook_ref_${index}`);
+                if (!ref.name) ref.name = file.name.replace(/\.[^.]+$/, '');
                 saveSettings();
-                const thumb = slot.querySelector('.iig-ref-thumb');
-                if (thumb) thumb.src = savedPath;
-                // Show delete button (was hidden when no image)
-                const delBtn = slot.querySelector('.iig-ref-delete-btn');
-                if (delBtn) delBtn.style.visibility = 'visible';
-                // Add green dot to toggle
-                const toggleId = refType === 'char' ? 'iig_char_photo_toggle' : 'iig_user_photo_toggle';
-                const toggle = document.getElementById(toggleId);
-                if (toggle && !toggle.querySelector('.fa-circle')) {
-                    const dot = document.createElement('i');
-                    dot.className = 'fa-solid fa-circle';
-                    dot.style.cssText = 'color:#7cb87c;font-size:8px;margin-left:4px;';
-                    dot.title = 'Загружено';
-                    toggle.appendChild(dot);
-                }
-                toastr.success('Фото сохранено', 'Генерация картинок', { timeOut: 2000 });
+                renderLorebookUI();
+                bindLorebookRefCardEvents();
+                toastr.success('Изображение загружено', 'Генерация картинок');
             } catch (err) {
-                toastr.error('Ошибка загрузки фото', 'Генерация картинок');
+                toastr.error('Ошибка загрузки: ' + err.message, 'Генерация картинок');
             }
             e.target.value = '';
         });
 
-        slot.querySelector('.iig-ref-delete-btn')?.addEventListener('click', () => {
-            const s = getCurrentCharacterRefs();
-            if (refType === 'char') s.charRef = { name: '', imageBase64: '', imagePath: '' };
-            else if (refType === 'user') s.userRef = { name: '', imageBase64: '', imagePath: '' };
+        // Upload by URL
+        row.querySelector('.iig-lb-ref-upload-url')?.addEventListener('click', async () => {
+            const url = (prompt('URL изображения:') || '').trim();
+            if (!url) return;
+            try {
+                const dataUrl = await imageUrlToDataUrl(url);
+                if (!dataUrl) throw new Error('Не удалось загрузить');
+                const b64 = dataUrl.split(',')[1];
+                const compressed = await compressBase64Image(b64, 768, 0.8);
+                ref.imagePath = await saveRefImageToFile(compressed, `lorebook_ref_${index}`);
+                if (!ref.name) {
+                    try { ref.name = decodeURIComponent(new URL(url).pathname.split('/').pop() || '').replace(/\.[^.]+$/, ''); } catch (_) {}
+                }
+                saveSettings();
+                renderLorebookUI();
+                bindLorebookRefCardEvents();
+                toastr.success('Изображение загружено по URL', 'Генерация картинок');
+            } catch (err) {
+                toastr.error('Ошибка загрузки: ' + err.message, 'Генерация картинок');
+            }
+        });
+
+        // Delete
+        row.querySelector('.iig-lb-ref-remove')?.addEventListener('click', () => {
+            active.refs.splice(index, 1);
             saveSettings();
-            const thumb = slot.querySelector('.iig-ref-thumb');
-            if (thumb) thumb.src = '';
-            // Hide delete button (don't remove — we always render it now)
-            const delBtn = slot.querySelector('.iig-ref-delete-btn');
-            if (delBtn) delBtn.style.visibility = 'hidden';
-            const toggleId = refType === 'char' ? 'iig_char_photo_toggle' : 'iig_user_photo_toggle';
-            document.querySelector(`#${toggleId} .fa-circle`)?.remove();
-            toastr.info('Фото удалено', 'Генерация картинок');
+            renderLorebookUI();
+            bindLorebookRefCardEvents();
+        });
+
+        // Vision AI description
+        row.querySelector('.iig-lb-ref-vision')?.addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            btn.classList.add('loading');
+            try {
+                const description = await generateReferenceDescription(ref.id);
+                const descInput = row.querySelector('.iig-lb-ref-description');
+                if (descInput) descInput.value = description;
+                toastr.success('Описание сгенерировано', 'Vision AI');
+            } catch (err) {
+                toastr.error('Vision: ' + err.message, 'Генерация картинок');
+            } finally {
+                btn.classList.remove('loading');
+            }
+        });
+
+        // Move up
+        row.querySelector('.iig-lb-ref-move-up')?.addEventListener('click', () => {
+            if (index <= 0) return;
+            [active.refs[index - 1], active.refs[index]] = [active.refs[index], active.refs[index - 1]];
+            saveSettings();
+            renderLorebookUI();
+            bindLorebookRefCardEvents();
+        });
+
+        // Move down
+        row.querySelector('.iig-lb-ref-move-down')?.addEventListener('click', () => {
+            if (index >= active.refs.length - 1) return;
+            [active.refs[index], active.refs[index + 1]] = [active.refs[index + 1], active.refs[index]];
+            saveSettings();
+            renderLorebookUI();
+            bindLorebookRefCardEvents();
         });
     }
+}
 
-    // ── NPC slot click (upload thumbnail) ──
-    container.addEventListener('click', async (e) => {
-        const thumb = e.target.closest('.iig-ref-slot-thumb');
-        if (thumb) {
-            const key = thumb.dataset.slotKey;
-            const inp = document.createElement('input');
-            inp.type = 'file'; inp.accept = 'image/*';
-            inp.addEventListener('change', async () => {
-                const f = inp.files?.[0];
-                if (!f) return;
-                try {
-                    const reader = new FileReader();
-                    reader.onload = async (ev) => {
-                        const rawBase64 = ev.target.result.split(',')[1];
-                        const compressed = await compressBase64Image(rawBase64);
-                        const ref = getRefByKey(key, settings);
-                        ref.imageBase64 = compressed;
-                        try {
-                            ref.imagePath = await saveRefImageToFile(compressed, key);
-                            ref.imageBase64 = ''; // файл сохранён → base64 в settings.json не нужен
-                        }
-                        catch (saveErr) { iigLog('WARN', `Could not save ref to file: ${saveErr.message}`); }
-                        if (!ref.name) ref.name = f.name.replace(/\.[^.]+$/, '');
-                        saveSettings();
-                        renderRefSlots(); bindRefSlotEvents();
-                        toastr.success('Референс загружен', 'Генерация картинок');
-                    };
-                    reader.readAsDataURL(f);
-                } catch (err) { toastr.error('Ошибка: ' + err.message, 'Генерация картинок'); }
-            });
-            inp.click(); return;
-        }
+function bindVisionSettingsEvents() {
+    const settings = getSettings();
 
-        const del = e.target.closest('.iig-ref-slot-delete');
-        if (del) {
-            const key = del.dataset.slotKey;
-            const ref = getRefByKey(key, settings);
-            ref.imageBase64 = ''; ref.imagePath = ''; ref.name = '';
-            saveSettings(); renderRefSlots(); bindRefSlotEvents();
-            toastr.info('Референс удалён', 'Генерация картинок');
+    document.getElementById('iig_vision_endpoint')?.addEventListener('input', (e) => {
+        settings.visionEndpoint = e.target.value;
+        saveSettings();
+    });
+
+    document.getElementById('iig_vision_api_key')?.addEventListener('input', (e) => {
+        settings.visionApiKey = e.target.value;
+        saveSettings();
+    });
+
+    document.getElementById('iig_vision_key_toggle')?.addEventListener('click', () => {
+        const input = document.getElementById('iig_vision_api_key');
+        const icon = document.querySelector('#iig_vision_key_toggle i');
+        if (input.type === 'password') {
+            input.type = 'text';
+            icon.classList.replace('fa-eye', 'fa-eye-slash');
+        } else {
+            input.type = 'password';
+            icon.classList.replace('fa-eye-slash', 'fa-eye');
         }
     });
 
-    // Name input for NPC slots
-    container.querySelectorAll('.iig-ref-name-input').forEach(input => {
-        input.addEventListener('input', (e) => {
-            const key = e.target.dataset.slotKey;
-            const ref = getRefByKey(key, settings);
-            ref.name = e.target.value;
-            saveSettings();
-        });
+    document.getElementById('iig_vision_model')?.addEventListener('change', (e) => {
+        settings.visionModel = e.target.value;
+        saveSettings();
+    });
+
+    document.getElementById('iig_vision_refresh_models')?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        btn.classList.add('loading');
+        try {
+            const models = await fetchVisionModels();
+            const select = document.getElementById('iig_vision_model');
+            if (!select) return;
+            const currentModel = settings.visionModel;
+            select.innerHTML = '<option value="">-- Выберите модель --</option>';
+            for (const model of models) {
+                const option = document.createElement('option');
+                option.value = model;
+                option.textContent = model;
+                option.selected = model === currentModel;
+                select.appendChild(option);
+            }
+            toastr.success(`Vision: найдено моделей: ${models.length}`, 'Генерация картинок');
+        } catch (error) {
+            toastr.error('Ошибка загрузки vision-моделей', 'Генерация картинок');
+        } finally {
+            btn.classList.remove('loading');
+        }
+    });
+
+    document.getElementById('iig_vision_prompt')?.addEventListener('input', (e) => {
+        settings.visionPrompt = e.target.value;
+        saveSettings();
     });
 }
 
@@ -5322,6 +7569,241 @@ function getRefByKey(key, settings) {
         return settings.npcReferences[idx];
     }
     return { name: '', imageBase64: '', imagePath: '' };
+}
+
+// ════════════════════════════════════════════
+//  Глобальные профили (именованные снимки настроек)
+// ════════════════════════════════════════════
+
+// Реестр секций. Каждая секция = группа ключей settings, которую можно
+// положить в профиль галкой. `secret` — ключи, вырезаемые при экспорте.
+// `images` — секция тянет картинки (base64/пути), профиль может быть тяжёлым.
+// Гардероб (отдельный extensionSettings-ключ) пока НЕ включён — кросс-модульно.
+// Секции бывают двух родов:
+//  • snapshot (keys[]) — профиль хранит копию значений настроек, загрузка их перезаписывает.
+//  • activation (mode:'activation') — профиль хранит ССЫЛКИ на активные элементы общей
+//    библиотеки (id аватаров, имена NPC, id лорбуков). Загрузка лишь переключает флаги
+//    active/enabled, ничего не копируя и не удаляя. note — подсказка для тултипа чеклиста.
+const PROFILE_SECTIONS = [
+    { id: 'connection',    label: 'Подключение',              keys: ['apiType', 'endpoint', 'apiKey', 'model', 'customRequestFormat', 'customFullUrl', 'showAllModels'], secret: ['apiKey'] },
+    { id: 'generation',    label: 'Параметры генерации',      keys: ['size', 'quality', 'aspectRatio', 'imageSize', 'maxRetries', 'retryDelay', 'naisteraModel', 'naisteraAspectRatio', 'naisteraVideoTest', 'naisteraVideoEveryN', 'electronhubStyle', 'electronhubNegativePrompt', 'electronhubGuidanceScale', 'electronhubSteps', 'electronhubEnableReferences'] },
+    { id: 'imageContext',  label: 'Контекст изображений',     keys: ['imageContextEnabled', 'imageContextCount'] },
+    { id: 'avatars',       label: 'Активные авы (char/user)',  mode: 'activation', note: 'какой аватар активен для {{char}} и {{user}}' },
+    { id: 'autoAvatar',    label: 'Аватары: отправка/инъекция', keys: ['sendCharAvatar', 'sendUserAvatar', 'userAvatarFile', 'injectAvatarAppearanceToGeneration', 'injectAvatarAppearanceToChatEnabled', 'avatarAppearanceInjectionDepth'] },
+    { id: 'npc',           label: 'Активные NPC',             mode: 'activation', note: 'какие NPC включены (по имени)' },
+    { id: 'lorebooks',     label: 'Активные лорбуки',          mode: 'activation', note: 'какие лорбуки включены + активный' },
+    { id: 'descriptions',  label: 'Описания {{char}}/{{user}}', keys: ['charDescription', 'userDescription', 'injectDescriptions'] },
+    { id: 'styles',        label: 'Стили',                    keys: ['styles', 'activeStyleId'] },
+    { id: 'vision',        label: 'Vision',                   keys: ['visionEndpoint', 'visionApiKey', 'visionModel', 'visionPrompt'], secret: ['visionApiKey'] },
+    { id: 'flags',         label: 'Общие флаги',              keys: ['enabled', 'externalBlocks'] },
+];
+const PROFILE_SECTION_BY_ID = Object.fromEntries(PROFILE_SECTIONS.map(s => [s.id, s]));
+
+function makeProfileId() {
+    return 'iig-prof-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+// Нормализованный объект scope {sectionId: bool} из settings.profileSaveScope.
+function getProfileSaveScope(settings = getSettings()) {
+    const raw = settings.profileSaveScope && typeof settings.profileSaveScope === 'object' ? settings.profileSaveScope : {};
+    const out = {};
+    for (const s of PROFILE_SECTIONS) out[s.id] = raw[s.id] === true;
+    return out;
+}
+
+// Снимок секции-активации: только ССЫЛКИ на активные элементы (не копии данных).
+function snapshotActivationSection(sectionId, settings) {
+    if (sectionId === 'avatars') {
+        return { activeChar: settings.activeAvatarChar ?? null, activeUser: settings.activeAvatarUser ?? null };
+    }
+    if (sectionId === 'npc') {
+        const names = (Array.isArray(settings.npcReferences) ? settings.npcReferences : [])
+            .filter(n => n && n.enabled !== false && String(n.name || '').trim())
+            .map(n => String(n.name).trim());
+        return { enabledNames: names };
+    }
+    if (sectionId === 'lorebooks') {
+        const ids = (Array.isArray(settings.lorebooks) ? settings.lorebooks : [])
+            .filter(l => l && l.enabled !== false)
+            .map(l => l.id);
+        return { enabledIds: ids, activeId: settings.activeLorebookId || '', sendRefDescriptions: settings.sendRefDescriptions !== false };
+    }
+    return {};
+}
+
+// Применяет секцию-активацию: переключает флаги active/enabled общей библиотеки (ничего не удаляя).
+function applyActivationSection(sectionId, bucket, settings) {
+    if (!bucket || typeof bucket !== 'object') return;
+    if (sectionId === 'avatars') {
+        const items = Array.isArray(settings.avatarItems) ? settings.avatarItems : [];
+        const exists = id => id && items.some(a => a.id === id);
+        settings.activeAvatarChar = exists(bucket.activeChar) ? bucket.activeChar : null;
+        settings.activeAvatarUser = exists(bucket.activeUser) ? bucket.activeUser : null;
+        return;
+    }
+    if (sectionId === 'npc') {
+        const set = new Set((bucket.enabledNames || []).map(s => String(s).trim()));
+        for (const n of (Array.isArray(settings.npcReferences) ? settings.npcReferences : [])) {
+            if (n) n.enabled = set.has(String(n.name || '').trim());
+        }
+        return;
+    }
+    if (sectionId === 'lorebooks') {
+        const set = new Set(bucket.enabledIds || []);
+        const lbs = Array.isArray(settings.lorebooks) ? settings.lorebooks : [];
+        for (const l of lbs) { if (l) l.enabled = set.has(l.id); }
+        if (bucket.activeId && lbs.some(l => l.id === bucket.activeId)) settings.activeLorebookId = bucket.activeId;
+        if (typeof bucket.sendRefDescriptions === 'boolean') settings.sendRefDescriptions = bucket.sendRefDescriptions;
+        return;
+    }
+}
+
+// Снимок текущих настроек по выбранным секциям → { sections:[ids], data:{id:{...}} }.
+function snapshotProfileSections(scope, settings = getSettings()) {
+    const sections = [];
+    const data = {};
+    for (const section of PROFILE_SECTIONS) {
+        if (!scope[section.id]) continue;
+        sections.push(section.id);
+        if (section.mode === 'activation') {
+            data[section.id] = snapshotActivationSection(section.id, settings);
+        } else {
+            const bucket = {};
+            for (const key of section.keys) bucket[key] = structuredClone(settings[key]);
+            data[section.id] = bucket;
+        }
+    }
+    return { sections, data };
+}
+
+// Применяет данные профиля в settings (только присутствующие секции). Возвращает список применённых id.
+function applyProfileToSettings(profile, settings = getSettings()) {
+    if (!profile || !profile.data) return [];
+    const applied = [];
+    for (const sectionId of (profile.sections || [])) {
+        const section = PROFILE_SECTION_BY_ID[sectionId];
+        const bucket = profile.data[sectionId];
+        if (!section || !bucket || typeof bucket !== 'object') continue;
+        if (section.mode === 'activation') {
+            applyActivationSection(sectionId, bucket, settings);
+        } else {
+            for (const key of section.keys) {
+                if (Object.hasOwn(bucket, key)) settings[key] = structuredClone(bucket[key]);
+            }
+        }
+        applied.push(sectionId);
+    }
+    return applied;
+}
+
+function profileCreate(name, scope, settings = getSettings()) {
+    if (!Array.isArray(settings.profiles)) settings.profiles = [];
+    const snap = snapshotProfileSections(scope, settings);
+    const profile = {
+        id: makeProfileId(),
+        name: String(name || '').trim() || `Профиль ${settings.profiles.length + 1}`,
+        createdAt: Date.now(),
+        sections: snap.sections,
+        data: snap.data,
+    };
+    settings.profiles.push(profile);
+    settings.activeProfileId = profile.id;
+    return profile;
+}
+
+// JSON для экспорта. stripSecrets (default true) обнуляет секретные ключи (apiKey/visionApiKey).
+function buildProfileExportJson(profile, { stripSecrets = true } = {}) {
+    const data = structuredClone(profile.data || {});
+    if (stripSecrets) {
+        for (const section of PROFILE_SECTIONS) {
+            if (!section.secret || !data[section.id]) continue;
+            for (const k of section.secret) if (Object.hasOwn(data[section.id], k)) data[section.id][k] = '';
+        }
+    }
+    return {
+        kind: 'iig-profile',
+        version: 1,
+        name: String(profile.name || 'Профиль'),
+        sections: [...(profile.sections || [])],
+        data,
+    };
+}
+
+function parseProfileJson(rawText) {
+    let payload;
+    try { payload = JSON.parse(String(rawText || '')); } catch (e) {
+        throw new Error(`Невалидный JSON: ${e.message}`);
+    }
+    if (!payload || typeof payload !== 'object') throw new Error('Невалидный профиль');
+    if (payload.kind !== 'iig-profile') throw new Error('Поле "kind" должно быть "iig-profile"');
+    if (payload.version !== 1) throw new Error(`Неподдерживаемая версия: ${payload.version}`);
+    const sections = Array.isArray(payload.sections) ? payload.sections.filter(id => PROFILE_SECTION_BY_ID[id]) : [];
+    const data = payload.data && typeof payload.data === 'object' ? payload.data : {};
+    return { kind: 'iig-profile', version: 1, name: String(payload.name || 'Импортированный профиль'), sections, data };
+}
+
+function profileImportFromPayload(payload, settings = getSettings()) {
+    if (!Array.isArray(settings.profiles)) settings.profiles = [];
+    // оставляем только ключи известных секций
+    const cleanData = {};
+    const cleanSections = [];
+    for (const id of payload.sections) {
+        const section = PROFILE_SECTION_BY_ID[id];
+        if (!section) continue;
+        const bucket = payload.data[id] || {};
+        if (section.mode === 'activation') {
+            // Структуру активации не фильтруем по keys — applyActivationSection её валидирует.
+            cleanData[id] = structuredClone(bucket);
+        } else {
+            const clean = {};
+            for (const key of section.keys) if (Object.hasOwn(bucket, key)) clean[key] = bucket[key];
+            cleanData[id] = clean;
+        }
+        cleanSections.push(id);
+    }
+    const profile = {
+        id: makeProfileId(),
+        name: payload.name,
+        createdAt: Date.now(),
+        sections: cleanSections,
+        data: cleanData,
+    };
+    settings.profiles.push(profile);
+    settings.activeProfileId = profile.id;
+    return profile;
+}
+
+// HTML карточки «Профили» (вставляется в начало панели настроек).
+function buildProfileCardHtml(settings = getSettings()) {
+    const profiles = Array.isArray(settings.profiles) ? settings.profiles : [];
+    const scope = getProfileSaveScope(settings);
+    const optionsHtml = `<option value="">-- Выберите профиль --</option>` + profiles.map(p =>
+        `<option value="${sanitizeForHtml(p.id)}" ${settings.activeProfileId === p.id ? 'selected' : ''}>${sanitizeForHtml(p.name)}</option>`
+    ).join('');
+    const scopeHtml = PROFILE_SECTIONS.map(s =>
+        `<label class="checkbox_label" title="${sanitizeForHtml(s.note || (s.keys || []).join(', '))}">
+            <input type="checkbox" class="iig-profile-scope-cb" data-section="${s.id}" ${scope[s.id] ? 'checked' : ''}>
+            <span>${sanitizeForHtml(s.label)}</span>
+        </label>`
+    ).join('');
+    return `
+        <div class="iig-settings-card iig-profile-card">
+            <div class="iig-profile-bar">
+                <b class="iig-profile-title"><i class="fa-solid fa-layer-group"></i> Профили</b>
+                <select id="iig_profile_select" class="text_pole flex1">${optionsHtml}</select>
+                <div id="iig_profile_load" class="menu_button" title="Загрузить выбранный профиль"><i class="fa-solid fa-download"></i></div>
+                <div id="iig_profile_save" class="menu_button" title="Сохранить текущие настройки как новый профиль"><i class="fa-solid fa-floppy-disk"></i></div>
+                <div id="iig_profile_update" class="menu_button" title="Обновить выбранный профиль текущими настройками"><i class="fa-solid fa-pen-to-square"></i></div>
+                <div id="iig_profile_export" class="menu_button" title="Экспорт профиля в файл (ключи вырезаются)"><i class="fa-solid fa-file-export"></i></div>
+                <div id="iig_profile_import" class="menu_button" title="Импорт профиля из файла"><i class="fa-solid fa-file-import"></i></div>
+                <div id="iig_profile_delete" class="menu_button" title="Удалить выбранный профиль" style="color:#cc5555;"><i class="fa-solid fa-trash"></i></div>
+            </div>
+            <div class="iig-profile-scope">
+                <span class="hint">Что сохранять в профиль:</span>
+                <div class="iig-profile-scope-grid">${scopeHtml}</div>
+            </div>
+        </div>
+    `;
 }
 
 /**
@@ -5354,9 +7836,11 @@ function createSettingsUI() {
                         <input type="checkbox" id="iig_external_blocks" ${settings.externalBlocks ? 'checked' : ''}>
                         <span>Работа с внешними блоками</span>
                     </label>
-                    
+
+                    ${buildProfileCardHtml(settings)}
+
                     <hr>
-                    
+
                     <h4>Настройки API</h4>
                     
                     <!-- Тип эндпоинта -->
@@ -5508,7 +7992,7 @@ function createSettingsUI() {
                             </select>
                         </div>
 
-                        <div id="iig_avatar_section" class="iig-settings-card-nested ${settings.apiType !== 'gemini' ? 'hidden' : ''}">
+                        <div id="iig_avatar_section" class="iig-settings-card-nested ${settings.apiType === 'gemini' ? '' : 'hidden'}">
                             <div class="flex-row">
                                 <label for="iig_aspect_ratio">Соотношение сторон</label>
                                 <select id="iig_aspect_ratio" class="flex1">
@@ -5535,10 +8019,118 @@ function createSettingsUI() {
                         </div>
                     </div>
 
-                    <div class="iig-settings-card" id="iig_refs_section">
-                        <h4>Референсы персонажей</h4>
-                        <p class="hint">Загрузите изображения персонажей для консистентной генерации. NPC автоматически подбираются по имени в промпте.</p>
-                        <div id="iig_ref_slots"></div>
+                    <div class="iig-settings-card iig-collapse-card">
+                        <h4 class="iig-card-toggle ${settings.stylesOpen ? '' : 'iig-card-collapsed'}" id="iig_styles_toggle" title="Свернуть/развернуть">
+                            <i class="fa-solid fa-chevron-${settings.stylesOpen ? 'down' : 'right'} iig-card-chevron"></i>
+                            <span>Стили</span>
+                            <span class="iig-card-count" id="iig_styles_count"></span>
+                        </h4>
+                        <div class="iig-card-body ${settings.stylesOpen ? '' : 'iig-hidden'}" id="iig_styles_body">
+                            <div class="iig-style-toolbar">
+                                <input type="text" id="iig_new_style_name" class="text_pole flex1" placeholder="Название нового стиля">
+                                <div id="iig_style_add" class="menu_button" title="Создать стиль"><i class="fa-solid fa-plus"></i></div>
+                                <div id="iig_style_pick_site" class="menu_button" title="Выбрать стиль с сайта"><i class="fa-solid fa-palette"></i> Сайт</div>
+                            </div>
+                            <div id="iig_style_presets" class="iig-style-presets"></div>
+                            <div id="iig_style_editor"></div>
+                        </div>
+                    </div>
+
+                    <div class="iig-settings-card" id="iig_refs_mega_section">
+                        <h4>Референсы</h4>
+
+                        <!-- Tabs -->
+                        <div class="iig-ref-tabs">
+                            <div class="iig-ref-tab iig-ref-tab-active" data-tab="avatars" title="Аватары"><i class="fa-solid fa-user-circle"></i><span>Аватары</span></div>
+                            <div class="iig-ref-tab" data-tab="npc" title="NPC"><i class="fa-solid fa-users"></i><span>NPC</span></div>
+                            <div class="iig-ref-tab" data-tab="lorebook" title="Лорбуки"><i class="fa-solid fa-book"></i><span>Лорбуки</span></div>
+                            <div class="iig-ref-tab" data-tab="wardrobe" title="Гардероб"><i class="fa-solid fa-shirt"></i><span>Гардероб</span></div>
+                            <div class="iig-ref-tab" data-tab="vision" title="Vision"><i class="fa-solid fa-eye"></i><span>Vision</span></div>
+                        </div>
+
+                        <!-- ═══ Tab: Аватары ═══ -->
+                        <div class="iig-ref-tab-content iig-ref-tab-content-active" data-tab-content="avatars" id="iig_refs_section">
+                            <div id="iig_ref_slots"></div>
+                        </div>
+
+                        <!-- ═══ Tab: NPC ═══ -->
+                        <div class="iig-ref-tab-content" data-tab-content="npc" id="iig_npc_tab_content">
+                            <p class="hint" style="margin-bottom:6px;">NPC автоматически подбираются по имени в промпте генерации.</p>
+                            <div id="iig_npc_slots"></div>
+                        </div>
+
+                        <!-- ═══ Tab: Лорбуки ═══ -->
+                        <div class="iig-ref-tab-content" data-tab-content="lorebook" id="iig_lorebook_section">
+                            <p class="hint" style="margin-bottom:6px;">Референсы с триггерами — regex, группы, приоритеты, вторичные ключи.</p>
+                            <div class="iig-lorebook-toolbar">
+                                <select id="iig_lorebook_select" class="text_pole flex1"></select>
+                                <label class="checkbox_label iig-lorebook-enabled-label" title="Учитывать этот лорбук при совпадениях">
+                                    <input type="checkbox" id="iig_lorebook_enabled"><span>Вкл</span>
+                                </label>
+                                <div id="iig_lorebook_add" class="menu_button" title="Создать лорбук"><i class="fa-solid fa-plus"></i></div>
+                                <div id="iig_lorebook_rename" class="menu_button" title="Переименовать лорбук"><i class="fa-solid fa-pen"></i></div>
+                                <div id="iig_lorebook_import_url" class="menu_button" title="Импорт лорбука по URL"><i class="fa-solid fa-link"></i></div>
+                                <div id="iig_lorebook_import_file" class="menu_button" title="Импорт лорбука из файла"><i class="fa-solid fa-file-arrow-down"></i></div>
+                                <div id="iig_lorebook_export" class="menu_button" title="Экспорт лорбука в JSON"><i class="fa-solid fa-file-arrow-up"></i></div>
+                                <div id="iig_lorebook_delete" class="menu_button" title="Удалить лорбук" style="color:#cc5555;"><i class="fa-solid fa-trash"></i></div>
+                            </div>
+                            <div class="iig-lorebook-actions">
+                                <div id="iig_lorebook_add_ref" class="menu_button"><i class="fa-solid fa-plus"></i> Добавить референс</div>
+                                <div id="iig_lorebook_load_ref" class="menu_button" title="Загрузить референсы по URL (по одному на строку)"><i class="fa-solid fa-link"></i> Загрузить референс</div>
+                            </div>
+                            <p id="iig_lorebook_status" class="hint" style="margin:6px 0;"></p>
+                            <div id="iig_lorebook_refs_list"></div>
+                            <label class="checkbox_label iig-lorebook-send-desc" title="Добавлять текстовые описания совпавших референсов в промпт картинки">
+                                <input type="checkbox" id="iig_lorebook_send_descriptions"><span>Отправлять описания референсов из лорбука</span>
+                            </label>
+                        </div>
+
+                        <!-- ═══ Tab: Гардероб ═══ -->
+                        <div class="iig-ref-tab-content" data-tab-content="wardrobe" id="iig_wardrobe_tab_content">
+                            <p class="hint" style="margin-bottom:8px;">Активный аутфит отправляется как reference при генерации.</p>
+                            <div class="flex-row">
+                                <div id="sw_open_wardrobe" class="menu_button" style="width: 100%;">
+                                    <i class="fa-solid fa-shirt"></i> Открыть гардероб
+                                </div>
+                            </div>
+                            <div class="flex-row" style="margin-top:8px;align-items:center;">
+                                <label for="sw_btn_placement" style="white-space:nowrap;">Кнопка гардероба</label>
+                                <select id="sw_btn_placement" class="text_pole flex1">
+                                    <option value="bar">В строке ввода</option>
+                                    <option value="float">Плавающая в чате</option>
+                                    <option value="wand">В «волшебной палочке»</option>
+                                </select>
+                            </div>
+                            <div class="flex-row" style="margin-top:6px;">
+                                <label for="sw_max_dim">Макс. размер (px)</label>
+                                <input type="number" id="sw_max_dim" class="text_pole flex1" value="512" min="128" max="1024" step="64">
+                            </div>
+                        </div>
+
+                        <!-- ═══ Tab: Vision ═══ -->
+                        <div class="iig-ref-tab-content" data-tab-content="vision" id="iig_vision_section">
+                            <p class="hint" style="margin-bottom:6px;">Отдельный эндпоинт для авто-описания референсов через vision-модель. Если не задан — фолбэк на основные настройки.</p>
+                            <div class="flex-row">
+                                <label for="iig_vision_endpoint">Эндпоинт</label>
+                                <input type="text" id="iig_vision_endpoint" class="text_pole flex1" placeholder="(основной эндпоинт)" value="${sanitizeForHtml(settings.visionEndpoint || '')}">
+                            </div>
+                            <div class="flex-row">
+                                <label for="iig_vision_api_key">API ключ</label>
+                                <input type="password" id="iig_vision_api_key" class="text_pole flex1" placeholder="(основной ключ)" value="${sanitizeForHtml(settings.visionApiKey || '')}">
+                                <div id="iig_vision_key_toggle" class="menu_button iig-key-toggle" title="Показать/Скрыть"><i class="fa-solid fa-eye"></i></div>
+                            </div>
+                            <div class="flex-row">
+                                <label for="iig_vision_model">Модель</label>
+                                <select id="iig_vision_model" class="flex1">
+                                    ${settings.visionModel ? `<option value="${sanitizeForHtml(settings.visionModel)}" selected>${sanitizeForHtml(settings.visionModel)}</option>` : '<option value="">-- Выберите --</option>'}
+                                </select>
+                                <div id="iig_vision_refresh_models" class="menu_button iig-refresh-btn" title="Обновить"><i class="fa-solid fa-sync"></i></div>
+                            </div>
+                            <div class="flex-row" style="flex-direction:column;align-items:stretch;">
+                                <label for="iig_vision_prompt">Промпт</label>
+                                <textarea id="iig_vision_prompt" class="text_pole" rows="2" placeholder="Describe this image...">${sanitizeForHtml(settings.visionPrompt || '')}</textarea>
+                            </div>
+                        </div>
                     </div>
 
                     <div class="iig-settings-card ${settings.apiType === 'electronhub' ? '' : 'iig-hidden'}" id="iig_electronhub_section">
@@ -5613,31 +8205,15 @@ function createSettingsUI() {
                     </div>
 
                     <div class="iig-settings-card">
-                        <h4>Гардероб</h4>
-                        <p class="hint" style="margin-bottom:8px;">Загрузите аутфиты для бота и юзера. Активный аутфит отправляется как reference-изображение при генерации.</p>
-                        <div class="flex-row">
-                            <div id="sw_open_wardrobe" class="menu_button" style="width: 100%;">
-                                <i class="fa-solid fa-shirt"></i> Открыть гардероб
-                            </div>
-                        </div>
-                        <label class="checkbox_label" style="margin-top:8px;">
-                            <input type="checkbox" id="sw_show_float">
-                            <span>Плавающая кнопка в чате</span>
-                        </label>
-                        <div class="flex-row" style="margin-top:6px;">
-                            <label for="sw_max_dim">Макс. размер (px)</label>
-                            <input type="number" id="sw_max_dim" class="text_pole flex1" value="512" min="128" max="1024" step="64">
-                        </div>
-                    </div>
-
-                    <div class="iig-settings-card">
                         <h4>Отладка</h4>
-                        <div class="flex-row">
-                            <div id="iig_export_logs" class="menu_button" style="width: 100%;">
+                        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                            <div id="iig_export_logs" class="menu_button" style="flex:1;">
                                 <i class="fa-solid fa-download"></i> Экспорт логов
                             </div>
+                            <div id="iig_show_last_gen" class="menu_button" style="flex:1;">
+                                <i class="fa-solid fa-magnifying-glass"></i> Последняя генерация
+                            </div>
                         </div>
-                        <p class="hint">Экспортировать логи расширения для отладки проблем.</p>
                     </div>
                 </div>
             </div>
@@ -5653,6 +8229,242 @@ function createSettingsUI() {
 /**
  * Bind settings event handlers
  */
+// ── Style presets UI ──
+
+function renderStylePresets() {
+    const settings = getSettings();
+    const styles = ensureStyles(settings);
+    const activeId = settings.activeStyleId;
+
+    const countEl = document.getElementById('iig_styles_count');
+    if (countEl) countEl.textContent = styles.length ? `(${styles.length})` : '';
+
+    const listEl = document.getElementById('iig_style_presets');
+    if (listEl) {
+        if (styles.length === 0) {
+            listEl.innerHTML = '<p class="hint">Нет стилей. Создайте новый или выберите с сайта.</p>';
+        } else {
+            listEl.innerHTML = styles.map(s => `
+                <div class="iig-style-chip ${s.id === activeId ? 'iig-style-chip-active' : ''}" data-style-id="${sanitizeForHtml(s.id)}">
+                    <span class="iig-style-chip-name" data-style-activate="${sanitizeForHtml(s.id)}" title="${sanitizeForHtml(s.name)}">
+                        <i class="fa-solid ${s.id === activeId ? 'fa-check' : 'fa-palette'}"></i><span class="iig-style-chip-label">${sanitizeForHtml(s.name)}</span>
+                    </span>
+                    <i class="fa-solid fa-xmark iig-style-chip-del" data-style-remove="${sanitizeForHtml(s.id)}" title="Удалить"></i>
+                </div>
+            `).join('');
+        }
+    }
+
+    const editorEl = document.getElementById('iig_style_editor');
+    if (editorEl) {
+        const active = getActiveStylePreset(settings);
+        if (!active) {
+            editorEl.innerHTML = '';
+        } else {
+            editorEl.innerHTML = `
+                <div class="iig-settings-card iig-style-editor-card">
+                    <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+                        <b style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Активный: ${sanitizeForHtml(active.name)}</b>
+                        <div id="iig_style_disable" class="menu_button" title="Деактивировать стиль" style="padding:2px 8px;font-size:0.85em;">
+                            <i class="fa-solid fa-power-off"></i>
+                        </div>
+                    </div>
+                    <div class="flex-row">
+                        <label for="iig_style_name">Имя</label>
+                        <input type="text" id="iig_style_name" class="text_pole flex1" value="${sanitizeForHtml(active.name)}">
+                        <div></div>
+                    </div>
+                    <div class="flex-row" style="grid-template-columns:minmax(140px,180px) 1fr;">
+                        <label for="iig_style_value">Промпт</label>
+                        <textarea id="iig_style_value" class="text_pole flex1" rows="3" placeholder="masterpiece, cinematic lighting, painterly">${sanitizeForHtml(active.value)}</textarea>
+                    </div>
+                </div>
+            `;
+        }
+    }
+
+    bindStyleEditorEvents();
+}
+
+function bindStyleEditorEvents() {
+    const settings = getSettings();
+    const active = getActiveStylePreset(settings);
+
+    document.querySelectorAll('.iig-style-chip-name').forEach(btn => {
+        btn.addEventListener('click', () => {
+            settings.activeStyleId = btn.dataset.styleActivate || '';
+            saveSettings();
+            renderStylePresets();
+        });
+    });
+
+    document.querySelectorAll('.iig-style-chip-del').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const id = btn.dataset.styleRemove;
+            if (!id) return;
+            removeStylePreset(id);
+            saveSettings();
+            renderStylePresets();
+        });
+    });
+
+    if (active) {
+        document.getElementById('iig_style_name')?.addEventListener('input', (e) => {
+            updateStylePreset(active.id, { name: e.target.value });
+            saveSettings();
+            const span = document.querySelector(`[data-style-activate="${active.id}"] .iig-style-chip-label`);
+            if (span) span.textContent = e.target.value.trim() || active.name;
+        });
+
+        document.getElementById('iig_style_value')?.addEventListener('input', (e) => {
+            updateStylePreset(active.id, { value: e.target.value });
+            saveSettings();
+        });
+
+        document.getElementById('iig_style_disable')?.addEventListener('click', () => {
+            settings.activeStyleId = '';
+            saveSettings();
+            renderStylePresets();
+        });
+    }
+}
+
+function openStylePickerModal() {
+    if (document.querySelector('.iig-style-overlay')) return;
+    const settings = getSettings();
+    const activeStyle = getActiveStylePreset(settings);
+
+    const overlay = document.createElement('div');
+    overlay.className = 'iig-style-overlay';
+    overlay.innerHTML = `
+        <div class="iig-style-modal">
+            <div class="iig-style-modal-head">
+                <span class="iig-style-modal-title"><i class="fa-solid fa-palette"></i> Выбрать стиль</span>
+                <a class="iig-style-source-link" href="${IIG_STYLE_SOURCE_URL}" target="_blank" rel="noopener" title="Открыть сайт">
+                    <i class="fa-solid fa-arrow-up-right-from-square"></i> Сайт
+                </a>
+                <div class="iig-style-refresh menu_button" title="Обновить"><i class="fa-solid fa-rotate"></i></div>
+                <div class="iig-style-modal-close menu_button" title="Закрыть"><i class="fa-solid fa-xmark"></i></div>
+            </div>
+            <div class="iig-style-filters"></div>
+            <div class="iig-style-body"><div class="iig-style-loading">Загрузка стилей...</div></div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+
+    const bodyEl = overlay.querySelector('.iig-style-body');
+    const filtersEl = overlay.querySelector('.iig-style-filters');
+    const close = () => overlay.remove();
+
+    overlay.querySelector('.iig-style-modal-close').addEventListener('click', close);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+    let siteStyles = [];
+    let activeTag = '';
+
+    const tagLabels = { painting: 'Живопись', illustration: 'Иллюстрация', film: 'Фото/фильм', game: 'Игры', cartoon: 'Мультфильмы', anime: 'Аниме', print: 'Принт', '3d': '3D' };
+
+    const renderFilters = () => {
+        const tags = Array.from(new Set(siteStyles.flatMap(s => s.tags))).sort();
+        filtersEl.innerHTML = ['', ...tags].map(tag =>
+            `<button class="iig-style-chip ${activeTag === tag ? 'active' : ''}" data-tag="${sanitizeForHtml(tag)}">${tag ? sanitizeForHtml(tagLabels[tag] || tag) : 'Все'}</button>`
+        ).join('');
+        filtersEl.querySelectorAll('.iig-style-chip').forEach(btn => {
+            btn.addEventListener('click', () => { activeTag = btn.dataset.tag || ''; renderFilters(); renderGrid(); });
+        });
+    };
+
+    const makeCard = (s, selected, noReplace = false) => {
+        if (noReplace) {
+            return `<article class="iig-site-style-card ${selected ? 'selected' : ''}">
+                <div class="iig-site-style-preview iig-site-style-empty"><i class="fa-solid fa-ban"></i></div>
+                <button class="iig-site-style-body" data-style-prompt="" data-style-name="" type="button">
+                    <span class="iig-site-style-name">Не заменять</span>
+                    <span class="iig-site-style-desc">Использовать стиль из промпта или без стиля.</span>
+                </button>
+            </article>`;
+        }
+        const img = s.images?.[0] || '';
+        return `<article class="iig-site-style-card ${selected ? 'selected' : ''}">
+            <div class="iig-site-style-preview">
+                ${img ? `<img src="${sanitizeForHtml(img)}" alt="" loading="lazy">` : '<i class="fa-solid fa-image"></i>'}
+            </div>
+            <button class="iig-site-style-body" data-style-prompt="${encodeURIComponent(s.prompt)}" data-style-name="${encodeURIComponent(s.name)}" type="button">
+                <span class="iig-site-style-head">
+                    <span class="iig-site-style-name">${sanitizeForHtml(s.name)}</span>
+                    ${s.badge ? `<span class="iig-site-style-badge">${sanitizeForHtml(s.badge)}</span>` : ''}
+                </span>
+                ${s.description ? `<span class="iig-site-style-desc">${sanitizeForHtml(s.description)}</span>` : ''}
+            </button>
+        </article>`;
+    };
+
+    const renderGrid = () => {
+        const visible = activeTag ? siteStyles.filter(s => s.tags.includes(activeTag)) : siteStyles;
+        bodyEl.innerHTML = `<div class="iig-style-grid">
+            ${makeCard(null, !activeStyle, true)}
+            ${visible.map(s => makeCard(s, activeStyle?.value === s.prompt)).join('')}
+        </div>`;
+        bodyEl.querySelectorAll('.iig-site-style-body').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const prompt = btn.dataset.stylePrompt ? decodeURIComponent(btn.dataset.stylePrompt) : '';
+                const name = btn.dataset.styleName ? decodeURIComponent(btn.dataset.styleName) : '';
+                if (!prompt) {
+                    settings.activeStyleId = '';
+                    saveSettings();
+                    renderStylePresets();
+                } else {
+                    const styles = ensureStyles(settings);
+                    let style = styles.find(s => s.value === prompt) || styles.find(s => s.name === name);
+                    if (!style) style = createStylePreset(name);
+                    updateStylePreset(style.id, { name: name || style.name, value: prompt });
+                    settings.activeStyleId = style.id;
+                    saveSettings();
+                    renderStylePresets();
+                }
+                close();
+            });
+        });
+    };
+
+    const showStyles = (list) => { siteStyles = list; renderFilters(); renderGrid(); };
+
+    (async () => {
+        const cached = readSiteStyleCache();
+        const age = cached ? Date.now() - (cached.ts || 0) : Infinity;
+        if (cached?.styles?.length) {
+            showStyles(cached.styles);
+            fetchSiteStyles(cached, age > IIG_STYLE_CACHE_TTL).then(r => {
+                if (overlay.isConnected && !r.notModified) showStyles(r.styles);
+            }).catch(() => {});
+        } else {
+            try { showStyles((await fetchSiteStyles(null, true)).styles); }
+            catch (err) { bodyEl.innerHTML = `<p class="hint" style="padding:16px;">Ошибка загрузки: ${sanitizeForHtml(err.message)}</p>`; }
+        }
+    })();
+
+    overlay.querySelector('.iig-style-refresh')?.addEventListener('click', async (e) => {
+        e.preventDefault();
+        const btn = e.currentTarget;
+        if (btn.classList.contains('is-loading')) return;
+        btn.classList.add('is-loading');
+        const icon = btn.querySelector('i');
+        const origClass = icon?.className || '';
+        if (icon) icon.className = 'fa-solid fa-spinner iig-spin-anim';
+        try {
+            showStyles((await fetchSiteStyles(null, true)).styles);
+            toastr.success('Стили обновлены', 'Генерация картинок', { timeOut: 2000 });
+        } catch (err) {
+            toastr.error(`Ошибка: ${err.message}`, 'Генерация картинок');
+        } finally {
+            if (icon) icon.className = origClass;
+            btn.classList.remove('is-loading');
+        }
+    });
+}
+
 function bindSettingsEvents() {
     const settings = getSettings();
 
@@ -5801,13 +8613,13 @@ function bindSettingsEvents() {
     document.getElementById('iig_model')?.addEventListener('change', (e) => {
         settings.model = e.target.value;
         saveSettings();
-        
-        // Auto-switch API type based on model
-        if (isGeminiModel(e.target.value)) {
+
+        // Auto-switch to native Gemini when a gemini-family model is picked from another type.
+        if (isGeminiModel(e.target.value) && settings.apiType !== 'gemini') {
             document.getElementById('iig_api_type').value = 'gemini';
             settings.apiType = 'gemini';
-            updateVisibility();
         }
+        updateVisibility();
     });
     
     // Refresh models
@@ -5926,6 +8738,58 @@ function bindSettingsEvents() {
     // Export logs
     document.getElementById('iig_export_logs')?.addEventListener('click', () => {
         exportLogs();
+    });
+
+    document.getElementById('iig_show_last_gen')?.addEventListener('click', () => {
+        if (document.getElementById('iig-debug-overlay')) return;
+        const d = _lastGenDebug;
+        const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+        let bodyHTML;
+        if (!d) {
+            bodyHTML = '<p style="text-align:center;padding:40px 20px;color:var(--SmartThemeQuoteColor);">Нет данных — сгенерируйте картинку</p>';
+        } else {
+            const labelMap = { char_ref: 'Персонаж', user_ref: 'Юзер', npc_ref: 'NPC', char_outfit: 'Аутфит бота', user_outfit: 'Аутфит юзера', context: 'Контекст' };
+            const refCardsHTML = (d.previewRefs || []).map(r => `
+                <div class="iig-dbg-ref-card">
+                    <img src="${r.dataUrl}" alt="" class="iig-dbg-ref-img" onerror="this.style.display='none'">
+                    <span class="iig-dbg-ref-label">${esc(labelMap[r.label] || r.label)}</span>
+                </div>`).join('');
+
+            const infoLines = [
+                `<b>Время:</b> ${esc(d.timestamp)}`,
+                `<b>API:</b> ${esc(d.apiType)}`,
+                `<b>Модель:</b> ${esc(d.model)}`,
+                `<b>Размер:</b> ${esc(d.size)}`,
+                `<b>Стиль:</b> ${esc(d.style)}`,
+                `<b>NPC (сматчены):</b> ${d.matchedNpcs.length ? d.matchedNpcs.map(esc).join(', ') : '—'}`,
+                `<b>Лорбуки (сматчены):</b> ${d.matchedLorebook.length ? d.matchedLorebook.map(esc).join(', ') : '—'}`,
+            ];
+
+            bodyHTML = `
+                <div class="iig-dbg-info">${infoLines.map(l => `<div>${l}</div>`).join('')}</div>
+                ${refCardsHTML ? `<div class="iig-dbg-section-title">Референсы (${d.refCount})</div><div class="iig-dbg-refs-grid">${refCardsHTML}</div>` : ''}
+                <div class="iig-dbg-section-title">Итоговый промпт</div>
+                <div class="iig-dbg-prompt">${esc(d.prompt)}</div>
+            `;
+        }
+
+        const overlay = document.createElement('div');
+        overlay.id = 'iig-debug-overlay';
+        overlay.innerHTML = `
+            <div class="iig-dbg-panel">
+                <div class="iig-dbg-header">
+                    <span><i class="fa-solid fa-bug"></i> Последняя генерация</span>
+                    <div class="iig-dbg-close" title="Закрыть"><i class="fa-solid fa-times"></i></div>
+                </div>
+                <div class="iig-dbg-body">${bodyHTML}</div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+
+        const close = () => overlay.remove();
+        overlay.querySelector('.iig-dbg-close').addEventListener('click', close);
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
     });
 
     // Custom format / full URL handlers
@@ -6072,9 +8936,180 @@ function bindSettingsEvents() {
         toastr.info(`Пресет «${preset.name}» удалён`, 'Пресеты', { timeOut: 2000 });
     });
 
+    // ── Профили (глобальные снимки настроек) ──
+    // Карта «ключ настройки → [id поля, способ записи]» для отражения скаляров после загрузки профиля.
+    const PROFILE_INPUT_MAP = {
+        apiType: ['iig_api_type', 'value'], endpoint: ['iig_endpoint', 'value'], apiKey: ['iig_api_key', 'value'],
+        model: ['iig_model', 'value'], customRequestFormat: ['iig_custom_request_format', 'value'], customFullUrl: ['iig_custom_full_url', 'value'],
+        showAllModels: ['iig_show_all_models', 'checked'],
+        size: ['iig_size', 'value'], quality: ['iig_quality', 'value'], aspectRatio: ['iig_aspect_ratio', 'value'], imageSize: ['iig_image_size', 'value'],
+        maxRetries: ['iig_max_retries', 'value'], retryDelay: ['iig_retry_delay', 'value'],
+        naisteraModel: ['iig_naistera_model', 'value'], naisteraAspectRatio: ['iig_naistera_aspect_ratio', 'value'],
+        naisteraVideoTest: ['iig_naistera_video_test', 'checked'], naisteraVideoEveryN: ['iig_naistera_video_every_n', 'value'],
+        electronhubStyle: ['iig_electronhub_style', 'value'], electronhubNegativePrompt: ['iig_electronhub_negative', 'value'],
+        electronhubGuidanceScale: ['iig_electronhub_guidance', 'value'], electronhubSteps: ['iig_electronhub_steps', 'value'],
+        electronhubEnableReferences: ['iig_electronhub_refs', 'checked'],
+        imageContextEnabled: ['iig_image_context_enabled', 'checked'], imageContextCount: ['iig_image_context_count', 'value'],
+        enabled: ['iig_enabled', 'checked'], externalBlocks: ['iig_external_blocks', 'checked'],
+        visionEndpoint: ['iig_vision_endpoint', 'value'], visionApiKey: ['iig_vision_api_key', 'value'],
+        visionModel: ['iig_vision_model', 'value'], visionPrompt: ['iig_vision_prompt', 'value'],
+    };
+
+    function renderProfileSelect() {
+        const sel = document.getElementById('iig_profile_select');
+        if (!sel) return;
+        const list = settings.profiles || [];
+        sel.innerHTML = `<option value="">-- Выберите профиль --</option>`
+            + list.map(p => `<option value="${sanitizeForHtml(p.id)}" ${settings.activeProfileId === p.id ? 'selected' : ''}>${sanitizeForHtml(p.name)}</option>`).join('');
+    }
+
+    function ensureSelectOption(id, val) {
+        const sel = document.getElementById(id);
+        if (!sel || !val) return;
+        if (!Array.from(sel.options).some(o => o.value === val)) {
+            const o = document.createElement('option');
+            o.value = val; o.textContent = val;
+            sel.appendChild(o);
+        }
+    }
+
+    function applyProfileAndRefresh(profile) {
+        const applied = applyProfileToSettings(profile, settings);
+        ensureSelectOption('iig_model', settings.model);
+        ensureSelectOption('iig_vision_model', settings.visionModel);
+        for (const [key, [id, prop]] of Object.entries(PROFILE_INPUT_MAP)) {
+            const el = document.getElementById(id);
+            if (!el) continue;
+            if (prop === 'checked') el.checked = Boolean(settings[key]);
+            else el.value = settings[key] ?? '';
+        }
+        // Коллекции перерисовываем безопасно (секция могла не входить в профиль — тогда покажет текущее).
+        try { renderRefSlots(); bindRefSlotEvents(); } catch (_) {}
+        try { renderAvatarGrid('char'); renderAvatarGrid('user'); } catch (_) {}
+        try { renderLorebookUI(); bindLorebookRefCardEvents(); } catch (_) {}
+        try { renderStylePresets(); } catch (_) {}
+        updateVisibility();
+        return applied;
+    }
+
+    document.getElementById('iig_profile_select')?.addEventListener('change', (e) => {
+        settings.activeProfileId = e.target.value || '';
+        saveSettings();
+    });
+
+    document.getElementById('iig_profile_load')?.addEventListener('click', () => {
+        const id = document.getElementById('iig_profile_select')?.value || '';
+        if (!id) { toastr.warning('Выберите профиль для загрузки', 'Профили'); return; }
+        const profile = (settings.profiles || []).find(p => p.id === id);
+        if (!profile) { toastr.error('Профиль не найден', 'Профили'); return; }
+        const applied = applyProfileAndRefresh(profile);
+        settings.activeProfileId = id;
+        saveSettings();
+        const labels = applied.map(sid => PROFILE_SECTION_BY_ID[sid]?.label || sid).join(', ');
+        toastr.success(`Загружен профиль «${profile.name}». Секции: ${labels || '—'}`, 'Профили', { timeOut: 3000 });
+    });
+
+    document.getElementById('iig_profile_save')?.addEventListener('click', () => {
+        const scope = getProfileSaveScope(settings);
+        if (!Object.values(scope).some(Boolean)) { toastr.warning('Отметьте хотя бы одну секцию в «Что сохранять»', 'Профили'); return; }
+        const name = (prompt('Название профиля:') || '').trim();
+        if (!name) return;
+        const profile = profileCreate(name, scope, settings);
+        saveSettings();
+        renderProfileSelect();
+        toastr.success(`Профиль «${profile.name}» сохранён (${profile.sections.length} секц.)`, 'Профили', { timeOut: 2500 });
+    });
+
+    document.getElementById('iig_profile_update')?.addEventListener('click', () => {
+        const id = document.getElementById('iig_profile_select')?.value || '';
+        if (!id) { toastr.warning('Выберите профиль для обновления', 'Профили'); return; }
+        const list = settings.profiles || [];
+        const idx = list.findIndex(p => p.id === id);
+        if (idx < 0) { toastr.error('Профиль не найден', 'Профили'); return; }
+        const scope = getProfileSaveScope(settings);
+        if (!Object.values(scope).some(Boolean)) { toastr.warning('Отметьте хотя бы одну секцию', 'Профили'); return; }
+        const snap = snapshotProfileSections(scope, settings);
+        list[idx] = { ...list[idx], sections: snap.sections, data: snap.data };
+        saveSettings();
+        toastr.success(`Профиль «${list[idx].name}» обновлён (${snap.sections.length} секц.)`, 'Профили', { timeOut: 2500 });
+    });
+
+    document.getElementById('iig_profile_delete')?.addEventListener('click', () => {
+        const id = document.getElementById('iig_profile_select')?.value || '';
+        if (!id) { toastr.warning('Выберите профиль для удаления', 'Профили'); return; }
+        const list = settings.profiles || [];
+        const profile = list.find(p => p.id === id);
+        if (!profile) return;
+        if (!confirm(`Удалить профиль «${profile.name}»?`)) return;
+        settings.profiles = list.filter(p => p.id !== id);
+        if (settings.activeProfileId === id) settings.activeProfileId = '';
+        saveSettings();
+        renderProfileSelect();
+        toastr.info(`Профиль «${profile.name}» удалён`, 'Профили', { timeOut: 2000 });
+    });
+
+    document.getElementById('iig_profile_export')?.addEventListener('click', () => {
+        const id = document.getElementById('iig_profile_select')?.value || '';
+        if (!id) { toastr.warning('Выберите профиль для экспорта', 'Профили'); return; }
+        const profile = (settings.profiles || []).find(p => p.id === id);
+        if (!profile) return;
+        const hasSecret = (profile.sections || []).some(sid => PROFILE_SECTION_BY_ID[sid]?.secret?.length);
+        const json = buildProfileExportJson(profile, { stripSecrets: true });
+        const safe = (profile.name || 'profile').replace(/[^\w\s.-]+/g, '').trim().replace(/\s+/g, '_').slice(0, 64) || 'profile';
+        triggerBrowserDownload(`${safe}.iig-profile.json`, JSON.stringify(json, null, 2));
+        toastr.success(`Экспорт: ${safe}.iig-profile.json${hasSecret ? ' (ключи вырезаны)' : ''}`, 'Профили', { timeOut: 3000 });
+    });
+
+    document.getElementById('iig_profile_import')?.addEventListener('click', () => {
+        const inp = document.createElement('input');
+        inp.type = 'file';
+        inp.accept = '.json,.iig-profile.json';
+        inp.addEventListener('change', async () => {
+            const file = inp.files?.[0];
+            if (!file) return;
+            try {
+                const text = await file.text();
+                const payload = parseProfileJson(text);
+                const profile = profileImportFromPayload(payload, settings);
+                saveSettings();
+                renderProfileSelect();
+                toastr.success(`Импортирован «${profile.name}» (${profile.sections.length} секц.). Нажмите «Загрузить», чтобы применить.`, 'Профили', { timeOut: 4000 });
+            } catch (err) {
+                toastr.error(`Ошибка импорта: ${err.message}`, 'Профили');
+            }
+        });
+        inp.click();
+    });
+
+    document.querySelectorAll('.iig-profile-scope-cb').forEach(cb => {
+        cb.addEventListener('change', (e) => {
+            const section = e.target.dataset.section;
+            if (!section) return;
+            // Клон-на-запись: settings.profileSaveScope может быть общей ссылкой на (shallow-frozen) дефолт.
+            settings.profileSaveScope = { ...getProfileSaveScope(settings), [section]: e.target.checked };
+            saveSettings();
+        });
+    });
+
+    // ── Tab switching for refs mega-section ──
+    document.querySelectorAll('#iig_refs_mega_section .iig-ref-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            const target = tab.dataset.tab;
+            document.querySelectorAll('#iig_refs_mega_section .iig-ref-tab').forEach(t => t.classList.toggle('iig-ref-tab-active', t.dataset.tab === target));
+            document.querySelectorAll('#iig_refs_mega_section .iig-ref-tab-content').forEach(p => p.classList.toggle('iig-ref-tab-content-active', p.dataset.tabContent === target));
+        });
+    });
+
     // ── Unified ref slots ──
     renderRefSlots();
     bindRefSlotEvents();
+
+    // ── Lorebook refs ──
+    renderLorebookUI();
+    bindLorebookEvents();
+
+    // ── Vision API settings ──
+    bindVisionSettingsEvents();
 
     // ── Wardrobe handlers ──
     document.getElementById('sw_open_wardrobe')?.addEventListener('click', () => {
@@ -6084,15 +9119,12 @@ function bindSettingsEvents() {
             toastr.error('Гардероб не загружен', 'Гардероб');
         }
     });
-    const swFloatCheck = document.getElementById('sw_show_float');
-    if (swFloatCheck) {
-        const swS = SillyTavern.getContext().extensionSettings.silly_wardrobe;
-        if (swS) swFloatCheck.checked = !!swS.showFloatingBtn;
-        swFloatCheck.addEventListener('change', () => {
-            const s = SillyTavern.getContext().extensionSettings.silly_wardrobe;
-            if (s) { s.showFloatingBtn = swFloatCheck.checked; SillyTavern.getContext().saveSettingsDebounced(); }
-            // Реально создаём/удаляем плавающую кнопку (раньше тут дёргался несуществующий #sw-float-btn).
-            window.sillyWardrobe?.refreshFloatBtn?.();
+    const swPlacementSel = document.getElementById('sw_btn_placement');
+    if (swPlacementSel) {
+        swPlacementSel.value = window.sillyWardrobe?.getPlacement?.() || 'bar';
+        swPlacementSel.addEventListener('change', () => {
+            // setPlacement сам сохраняет настройку и перерисовывает кнопку (строка ввода / плавающая / палочка).
+            window.sillyWardrobe?.setPlacement?.(swPlacementSel.value);
         });
     }
     document.getElementById('sw_max_dim')?.addEventListener('change', (e) => {
@@ -6102,6 +9134,36 @@ function bindSettingsEvents() {
             ctx.saveSettingsDebounced();
         }
     });
+
+    // ── Style presets ──
+    // Сворачивание карточки «Стили» (состояние запоминается в settings.stylesOpen).
+    document.getElementById('iig_styles_toggle')?.addEventListener('click', () => {
+        const s = getSettings();
+        s.stylesOpen = !s.stylesOpen;
+        saveSettings();
+        document.getElementById('iig_styles_body')?.classList.toggle('iig-hidden', !s.stylesOpen);
+        const toggle = document.getElementById('iig_styles_toggle');
+        toggle?.classList.toggle('iig-card-collapsed', !s.stylesOpen);
+        const chevron = toggle?.querySelector('.iig-card-chevron');
+        if (chevron) {
+            chevron.classList.toggle('fa-chevron-right', !s.stylesOpen);
+            chevron.classList.toggle('fa-chevron-down', s.stylesOpen);
+        }
+    });
+
+    document.getElementById('iig_style_add')?.addEventListener('click', () => {
+        const inp = document.getElementById('iig_new_style_name');
+        const name = (inp?.value || '').trim();
+        if (!name) { toastr.warning('Введите название стиля', 'Стили'); return; }
+        createStylePreset(name);
+        saveSettings();
+        if (inp) inp.value = '';
+        renderStylePresets();
+    });
+
+    document.getElementById('iig_style_pick_site')?.addEventListener('click', () => openStylePickerModal());
+
+    renderStylePresets();
 
     // Apply initial state
     updateVisibility();
@@ -6416,7 +9478,7 @@ async function regenerateSingleImage(messageId, targetTagIndex) {
 
         const generated = await generateImageWithRetry(
             tag.prompt,
-            tag.style,
+            resolveEffectiveStyle(tag.style),
             (status) => { statusEl.textContent = status; },
             { aspectRatio: tag.aspectRatio, imageSize: tag.imageSize, quality: tag.quality, preset: tag.preset, messageId }
         );
@@ -6530,8 +9592,10 @@ function enhanceRenderedImages(mesTextEl, messageId) {
 (function init() {
     const context = SillyTavern.getContext();
 
-    // Load settings and restore refs
+    // Load settings, init lorebooks, and restore refs
     getSettings();
+    ensureLorebooks();
+    registerIigBookMacro();
     restoreRefsFromLocalStorage();
     initMobileSaveListeners();
     
@@ -6543,6 +9607,7 @@ function enhanceRenderedImages(mesTextEl, messageId) {
         createSettingsUI();
         // Add buttons to any messages already in chat
         addButtonsToExistingMessages();
+        try { updateAvatarAppearanceInjection(); } catch (e) {}
     });
     
     // When chat is loaded/changed, add buttons to all existing messages
@@ -6550,6 +9615,12 @@ function enhanceRenderedImages(mesTextEl, messageId) {
         // Small delay to ensure DOM is ready
         setTimeout(() => {
             addButtonsToExistingMessages();
+            // Сменился чат → редактор внешности {{user}} снова показывает АКТИВНУЮ персону.
+            iigUserDescPersona = null;
+            // Перечитываем внешность/фото под нового персонажа/персону (если панель настроек открыта).
+            try { renderRefSlots(); bindRefSlotEvents(); } catch (e) { iigLog('WARN', 'per-char UI refresh failed:', e.message); }
+            // Обновляем инъекцию внешности аватаров в LLM-контекст под новый чат.
+            try { updateAvatarAppearanceInjection(); } catch (e) {}
         }, 100);
     });
 
