@@ -662,7 +662,10 @@
     }
 
     /**
-     * Analyze outfit image via vision model using ST's main API (generateQuietPrompt).
+     * Analyze outfit image via vision model.
+     * Приоритет: Vision API из настроек SillyImages (таб Vision — тот же конфиг,
+     * что для описаний референсов/аватаров). Если модель там не выбрана или
+     * запрос упал — фолбэк на основную чат-модель ST (generateQuietPrompt).
      */
     async function swAnalyzeOutfit(base64) {
         const ctx = SillyTavern.getContext();
@@ -692,7 +695,25 @@
                 .trim();
         }
 
-        // generateQuietPrompt with quietImage (proper ST vision pipeline)
+        // 1) Vision API из настроек SillyImages — промпт берётся из поля «Промпт» таба Vision.
+        const vc = getEffectiveVisionConfig();
+        if (vc.endpoint && vc.apiKey && vc.model) {
+            try {
+                toastr.info('Анализ образа (Vision API)…', 'Гардероб', { timeOut: 15000 });
+                const result = await callVisionApi(visionB64, vc.promptText, visionMime);
+                const desc = cleanDesc(result);
+                if (desc && desc.length > 10) {
+                    swLog('INFO', 'Auto-described via Vision API:', desc.substring(0, 100));
+                    return desc;
+                }
+                swLog('WARN', `Vision API response rejected (len=${desc.length}): "${desc.substring(0, 100)}"`);
+            } catch (e) {
+                swLog('WARN', 'Vision API failed, falling back to main chat model:', e.message);
+                toastr.warning('Vision API не ответил, пробуем основную модель чата…', 'Гардероб', { timeOut: 3000 });
+            }
+        }
+
+        // 2) Фолбэк: generateQuietPrompt with quietImage (proper ST vision pipeline)
         if (typeof ctx.generateQuietPrompt === 'function') {
             try {
                 toastr.info('Анализ образа...', 'Гардероб', { timeOut: 15000 });
@@ -2691,7 +2712,7 @@ function getEffectiveVisionConfig(settings = getSettings()) {
     return { endpoint, apiKey, model, promptText };
 }
 
-async function callVisionApi(imageBase64, promptText) {
+async function callVisionApi(imageBase64, promptText, mime = 'image/png') {
     const { endpoint, apiKey, model } = getEffectiveVisionConfig();
     if (!endpoint) throw new Error('Vision: эндпоинт не настроен');
     if (!apiKey) throw new Error('Vision: API ключ не настроен');
@@ -2708,7 +2729,7 @@ async function callVisionApi(imageBase64, promptText) {
             messages: [{
                 role: 'user',
                 content: [
-                    { type: 'image_url', image_url: { url: `data:image/png;base64,${imageBase64}` } },
+                    { type: 'image_url', image_url: { url: `data:${mime};base64,${imageBase64}` } },
                     { type: 'text', text: promptText },
                 ],
             }],
@@ -8109,7 +8130,7 @@ function createSettingsUI() {
 
                         <!-- ═══ Tab: Vision ═══ -->
                         <div class="iig-ref-tab-content" data-tab-content="vision" id="iig_vision_section">
-                            <p class="hint" style="margin-bottom:6px;">Отдельный эндпоинт для авто-описания референсов через vision-модель. Если не задан — фолбэк на основные настройки.</p>
+                            <p class="hint" style="margin-bottom:6px;">Vision-модель для авто-описаний: референсы, аватары, NPC и наряды гардероба. Эндпоинт/ключ не заданы — фолбэк на основные настройки. Модель не выбрана — гардероб описывает наряды через основную чат-модель ST.</p>
                             <div class="flex-row">
                                 <label for="iig_vision_endpoint">Эндпоинт</label>
                                 <input type="text" id="iig_vision_endpoint" class="text_pole flex1" placeholder="(основной эндпоинт)" value="${sanitizeForHtml(settings.visionEndpoint || '')}">
@@ -8127,8 +8148,8 @@ function createSettingsUI() {
                                 <div id="iig_vision_refresh_models" class="menu_button iig-refresh-btn" title="Обновить"><i class="fa-solid fa-sync"></i></div>
                             </div>
                             <div class="flex-row" style="flex-direction:column;align-items:stretch;">
-                                <label for="iig_vision_prompt">Промпт</label>
-                                <textarea id="iig_vision_prompt" class="text_pole" rows="2" placeholder="Describe this image...">${sanitizeForHtml(settings.visionPrompt || '')}</textarea>
+                                <label for="iig_vision_prompt" title="Используется для описания нарядов в гардеробе. У референсов, аватаров и NPC — свои специализированные промпты.">Промпт</label>
+                                <textarea id="iig_vision_prompt" class="text_pole" rows="2" placeholder="(дефолт: описание одежды/наряда на картинке)">${sanitizeForHtml(settings.visionPrompt || '')}</textarea>
                             </div>
                         </div>
                     </div>
