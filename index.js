@@ -2515,26 +2515,51 @@ function normalizeReferenceEntry(raw) {
     };
 }
 
+// Нормализует ссылку НА МЕСТЕ (не создаёт новый объект), сохраняя идентичность:
+// UI-обработчики тумблеров держат ref по ссылке (bindLorebookRefCardEvents), а
+// пересборка объектов орфанила эту ссылку → правки терялись (тумблер «сам включался»).
+function normalizeReferenceEntryInPlace(ref) {
+    if (!ref || typeof ref !== 'object') return normalizeReferenceEntry(ref);
+    ref.id = String(ref.id || '').trim() || makeLorebookId();
+    ref.name = String(ref.name || '').trim();
+    ref.description = String(ref.description || '').trim();
+    ref.imagePath = String(ref.imagePath || '').trim();
+    ref.matchMode = ref.matchMode === 'always' ? 'always' : 'match';
+    ref.enabled = ref.enabled !== false;
+    ref.group = normalizeGroupName(ref.group);
+    ref.priority = Number.isFinite(ref.priority) ? ref.priority : 0;
+    ref.useRegex = ref.useRegex === true;
+    ref.secondaryKeys = normalizeSecondaryKeysString(ref.secondaryKeys);
+    return ref;
+}
+
 function normalizeReferencesArrayInternal(raw) {
-    const arr = Array.isArray(raw) ? raw : [];
-    return arr.slice(0, MAX_LOREBOOK_REFS).map(normalizeReferenceEntry);
+    if (!Array.isArray(raw)) return [];
+    if (raw.length > MAX_LOREBOOK_REFS) raw.length = MAX_LOREBOOK_REFS;
+    for (let i = 0; i < raw.length; i++) {
+        raw[i] = normalizeReferenceEntryInPlace(raw[i]);
+    }
+    return raw;
 }
 
 function ensureLorebooks(settings = getSettings()) {
     if (!Array.isArray(settings.lorebooks)) {
         settings.lorebooks = [];
     }
-    settings.lorebooks = settings.lorebooks.map(raw => ({
-        id: String(raw?.id || '').trim() || makeLorebookId(),
-        name: String(raw?.name || '').trim() || 'Untitled',
-        enabled: raw?.enabled !== false,
-        refs: normalizeReferencesArrayInternal(raw?.refs),
-        meta: {
-            sourceUrl: String(raw?.meta?.sourceUrl || '').trim(),
-            importedAt: Number.isFinite(raw?.meta?.importedAt) ? raw.meta.importedAt : null,
-            version: Number.isFinite(raw?.meta?.version) ? raw.meta.version : null,
-        },
-    }));
+    // Нормализуем НА МЕСТЕ, сохраняя идентичность объектов лорбуков и рефов:
+    // UI держит их по ссылке, а пересборка новыми объектами теряла правки тумблеров.
+    settings.lorebooks = settings.lorebooks.filter(lb => lb && typeof lb === 'object');
+    for (const lb of settings.lorebooks) {
+        lb.id = String(lb.id || '').trim() || makeLorebookId();
+        lb.name = String(lb.name || '').trim() || 'Untitled';
+        lb.enabled = lb.enabled !== false;
+        lb.refs = normalizeReferencesArrayInternal(lb.refs);
+        lb.meta = {
+            sourceUrl: String(lb.meta?.sourceUrl || '').trim(),
+            importedAt: Number.isFinite(lb.meta?.importedAt) ? lb.meta.importedAt : null,
+            version: Number.isFinite(lb.meta?.version) ? lb.meta.version : null,
+        };
+    }
     if (settings.lorebooks.length === 0) {
         settings.lorebooks.push({
             id: makeLorebookId(),
@@ -4389,6 +4414,7 @@ async function generateImageGemini(prompt, style, referenceImages = [], options 
             'char_ref': '⬇️ CHARACTER REFERENCE — copy this character\'s appearance exactly:',
             'user_ref': '⬇️ USER REFERENCE — copy this person\'s appearance exactly:',
             'npc_ref': '⬇️ NPC REFERENCE — copy this character\'s appearance exactly:',
+            'lorebook_ref': '⬇️ LOREBOOK REFERENCE — reproduce this subject/item exactly:',
             'char_outfit': '⬇️ CHARACTER OUTFIT REFERENCE — copy this clothing:',
             'user_outfit': '⬇️ USER OUTFIT REFERENCE — copy this clothing:',
             'context': '⬇️ SCENE CONTEXT (for style/mood consistency):',
@@ -4404,7 +4430,7 @@ async function generateImageGemini(prompt, style, referenceImages = [], options 
     }
     
     // Build detailed instruction based on what references we have
-    const hasCharRefs = refLabels.some(l => l === 'char_ref' || l === 'user_ref' || l === 'npc_ref');
+    const hasCharRefs = refLabels.some(l => l === 'char_ref' || l === 'user_ref' || l === 'npc_ref' || l === 'lorebook_ref');
     const hasOutfits = refLabels.some(l => l.endsWith('_outfit'));
     const hasContext = refLabels.includes('context');
     
@@ -4526,6 +4552,7 @@ async function generateImageViaChatCompletions({ settings, model, fullPrompt, re
         'char_ref': '⬇️ CHARACTER REFERENCE — copy this character\'s appearance exactly:',
         'user_ref': '⬇️ USER REFERENCE — copy this person\'s appearance exactly:',
         'npc_ref': '⬇️ NPC REFERENCE — copy this character\'s appearance exactly:',
+        'lorebook_ref': '⬇️ LOREBOOK REFERENCE — reproduce this subject/item exactly:',
         'char_outfit': '⬇️ CHARACTER OUTFIT REFERENCE — copy this clothing:',
         'user_outfit': '⬇️ USER OUTFIT REFERENCE — copy this clothing:',
         'context': '⬇️ SCENE CONTEXT (for style/mood consistency):',
@@ -4622,6 +4649,7 @@ async function generateImageVoid(prompt, style, referenceImages = [], options = 
         'char_ref': '⬇️ CHARACTER REFERENCE — copy this character\'s appearance exactly:',
         'user_ref': '⬇️ USER REFERENCE — copy this person\'s appearance exactly:',
         'npc_ref': '⬇️ NPC REFERENCE — copy this character\'s appearance exactly:',
+        'lorebook_ref': '⬇️ LOREBOOK REFERENCE — reproduce this subject/item exactly:',
         'char_outfit': '⬇️ CHARACTER OUTFIT REFERENCE — copy this clothing:',
         'user_outfit': '⬇️ USER OUTFIT REFERENCE — copy this clothing:',
         'context': '⬇️ SCENE CONTEXT (for style/mood consistency):',
@@ -4648,7 +4676,7 @@ async function generateImageVoid(prompt, style, referenceImages = [], options = 
                 image_url: { url: `data:${mime};base64,${refsArr[i]}` }
             });
         }
-        const hasCharRefs = refLabels.some(l => l === 'char_ref' || l === 'user_ref' || l === 'npc_ref');
+        const hasCharRefs = refLabels.some(l => l === 'char_ref' || l === 'user_ref' || l === 'npc_ref' || l === 'lorebook_ref');
         const hasOutfits = refLabels.some(l => l === 'char_outfit' || l === 'user_outfit');
         const hasContext = refLabels.includes('context');
         const rules = [];
@@ -5102,7 +5130,7 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
         for (const lbRef of matchedLbRefs) {
             const lbPath = normalizeStoredImagePath(lbRef.imagePath);
             const lbB64 = await loadRefImageAsBase64(lbPath) || await imageUrlToBase64(lbPath);
-            if (lbB64) { referenceImages.push(lbB64); refLabels.push('npc_ref'); }
+            if (lbB64) { referenceImages.push(lbB64); refLabels.push('lorebook_ref'); }
         }
         if (matchedLbRefs.length > 0) iigLog('INFO', `Lorebook refs matched: ${matchedLbRefs.map(r => r.name).join(', ')}`);
         // 4. Wardrobe outfits — только те, что НЕ ушли аватар-референсом (примерки)
@@ -5207,7 +5235,7 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
         for (const lbRef of matchedLbRefsOai) {
             const lbPath = normalizeStoredImagePath(lbRef.imagePath);
             const lbB64 = await loadRefImageAsBase64(lbPath) || await imageUrlToBase64(lbPath);
-            if (lbB64) { referenceImages.push(lbB64); refLabels.push('npc_ref'); }
+            if (lbB64) { referenceImages.push(lbB64); refLabels.push('lorebook_ref'); }
         }
         if (matchedLbRefsOai.length > 0) iigLog('INFO', `Lorebook refs matched: ${matchedLbRefsOai.map(r => r.name).join(', ')}`);
         // 4. Wardrobe outfits — только те, что НЕ ушли аватар-референсом (примерки)
@@ -6552,6 +6580,7 @@ function renderRefSlots() {
         <div class="iig-avatar-lib-block" style="margin-bottom:10px;">
             <div style="font-size:0.85em;color:var(--SmartThemeQuoteColor);margin-bottom:4px;"><i class="fa-solid fa-images"></i> Аватары {{char}} — клик = сделать активным</div>
             <div id="iig_avatar_lib_char" class="iig-extras-grid"></div>
+            <div id="iig_avatar_lib_char_hint" class="iig-avatar-lib-hint" style="display:none;font-size:0.8em;line-height:1.3;margin:4px 0 2px;padding:4px 6px;border-radius:4px;background:rgba(255,180,80,0.08);color:var(--SmartThemeQuoteColor);"></div>
             <div id="iig_avatar_desc_char"></div>
             <div class="iig-extras-add-row" style="display:flex;gap:4px;margin-top:4px;">
                 <input type="text" id="iig_avatar_lib_char_name" class="text_pole flex1" placeholder="Имя аватара (необязательно)" style="font-size:0.82em;">
@@ -6573,6 +6602,7 @@ function renderRefSlots() {
         <div class="iig-avatar-lib-block" style="margin-bottom:6px;">
             <div style="font-size:0.85em;color:var(--SmartThemeQuoteColor);margin-bottom:4px;"><i class="fa-solid fa-images"></i> Аватары {{user}} — клик = сделать активным</div>
             <div id="iig_avatar_lib_user" class="iig-extras-grid"></div>
+            <div id="iig_avatar_lib_user_hint" class="iig-avatar-lib-hint" style="display:none;font-size:0.8em;line-height:1.3;margin:4px 0 2px;padding:4px 6px;border-radius:4px;background:rgba(255,180,80,0.08);color:var(--SmartThemeQuoteColor);"></div>
             <div id="iig_avatar_desc_user"></div>
             <div class="iig-extras-add-row" style="display:flex;gap:4px;margin-top:4px;">
                 <input type="text" id="iig_avatar_lib_user_name" class="text_pole flex1" placeholder="Имя аватара (необязательно)" style="font-size:0.82em;">
@@ -6604,6 +6634,24 @@ function renderAvatarGrid(target) {
     const settings = getSettings();
     const items = ensureAvatarItems(settings).filter(a => a.target === target);
     const activeId = target === 'user' ? settings.activeAvatarUser : settings.activeAvatarChar;
+
+    // Подсказка: активный аватар — это ГЛОБАЛЬНЫЙ пин; он перекрывает активную персону/
+    // персонажа во всех генерациях (см. getUserAvatarBase64/getCharacterAvatarBase64).
+    // Юзеры путаются: «регенерит одну персону, не активную» — это как раз закреплённый пин.
+    const hintEl = document.getElementById(target === 'user' ? 'iig_avatar_lib_user_hint' : 'iig_avatar_lib_char_hint');
+    if (hintEl) {
+        const activeItem = activeId ? items.find(a => a.id === activeId) : null;
+        if (activeItem) {
+            const nm = sanitizeForHtml(activeItem.name || 'аватар');
+            hintEl.innerHTML = target === 'user'
+                ? `<i class="fa-solid fa-thumbtack"></i> Закреплён «${nm}» — он перекрывает активную персону ST во <b>всех</b> генерациях. Повторный клик по плитке снимает закрепление → фото пойдёт по активной персоне.`
+                : `<i class="fa-solid fa-thumbtack"></i> Закреплён «${nm}» — он перекрывает дефолтный аватар персонажа. Повторный клик по плитке снимает закрепление.`;
+            hintEl.style.display = '';
+        } else {
+            hintEl.innerHTML = '';
+            hintEl.style.display = 'none';
+        }
+    }
 
     if (items.length === 0) {
         container.innerHTML = `<div class="iig-extras-empty">Пока нет аватаров. Добавьте, чтобы заменить дефолтный.</div>`;
@@ -8770,7 +8818,7 @@ function bindSettingsEvents() {
         if (!d) {
             bodyHTML = '<p style="text-align:center;padding:40px 20px;color:var(--SmartThemeQuoteColor);">Нет данных — сгенерируйте картинку</p>';
         } else {
-            const labelMap = { char_ref: 'Персонаж', user_ref: 'Юзер', npc_ref: 'NPC', char_outfit: 'Аутфит бота', user_outfit: 'Аутфит юзера', context: 'Контекст' };
+            const labelMap = { char_ref: 'Персонаж', user_ref: 'Юзер', npc_ref: 'NPC', lorebook_ref: 'Лорбук', char_outfit: 'Аутфит бота', user_outfit: 'Аутфит юзера', context: 'Контекст' };
             const refCardsHTML = (d.previewRefs || []).map(r => `
                 <div class="iig-dbg-ref-card">
                     <img src="${r.dataUrl}" alt="" class="iig-dbg-ref-img" onerror="this.style.display='none'">
