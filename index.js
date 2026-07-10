@@ -40,6 +40,9 @@
         // Шаблон промта примерки (try-on). Пусто = использовать SW_DEFAULT_TRYON_PROMPT.
         // Редактируется юзером в «Быстрых настройках». Плейсхолдеры см. в swBuildTryOnPrompt.
         tryOnPrompt: '',
+        // Шаблон промта генерации образа ПО ОПИСАНИЮ (без картинки наряда, референс — только аватар).
+        // Пусто = использовать SW_DEFAULT_GENLOOK_PROMPT.
+        genLookPrompt: '',
         // Образ-примерка (картинка = человек уже В наряде) при генерации уходит как
         // аватар-референс вместо пары «аватар + наряд»: ИИ не путает чужую одежду,
         // и тратится один слот референсов вместо двух.
@@ -195,9 +198,9 @@
     let swFilter = 'all';
     // Сортировка карточек: 'added' (сначала новые) | 'worn' (недавно надетые) | 'name' (по имени).
     let swSort = 'added';
-    // Пагинация: сколько НАРЯДОВ на странице. 11 + карточка «Загрузить» = 12 ячеек —
+    // Пагинация: сколько НАРЯДОВ на странице. 10 + карточки «Загрузить» и «Сгенерировать» = 12 ячеек —
     // ровно делится на 2/3/4/6 столбцов, поэтому сетка не оставляет дыр в последнем ряду.
-    const SW_PAGE_SIZE = 11;
+    const SW_PAGE_SIZE = 10;
     let swPage = 0;
 
     // Сортировка списка нарядов (возвращает новый отсортированный массив, исходный не мутируем).
@@ -517,7 +520,8 @@
         if (swPage < 0) swPage = 0;
         const pageItems = shown.slice(swPage * SW_PAGE_SIZE, (swPage + 1) * SW_PAGE_SIZE);
 
-        h += '<div class="sw-outfit-grid"><div class="sw-outfit-card sw-upload-card" id="sw-upload-trigger"><div class="sw-upload-icon"><i class="fa-solid fa-plus"></i></div><span>Загрузить</span></div>';
+        h += '<div class="sw-outfit-grid"><div class="sw-outfit-card sw-upload-card" id="sw-upload-trigger"><div class="sw-upload-icon"><i class="fa-solid fa-plus"></i></div><span>Загрузить</span></div>'
+           + '<div class="sw-outfit-card sw-upload-card" id="sw-gen-trigger" title="Сгенерировать образ по текстовому описанию (ИИ): референсом уходит только аватар, результат сохраняется как примерка"><div class="sw-upload-icon"><i class="fa-solid fa-wand-magic-sparkles"></i></div><span>Сгенерировать</span></div>';
         for (const o of pageItems) {
             const a = o.id === aid;
             const oDesc = swSanitizeDesc(o.description);
@@ -589,6 +593,7 @@
         });
 
         document.getElementById('sw-upload-trigger')?.addEventListener('click', swUpload);
+        document.getElementById('sw-gen-trigger')?.addEventListener('click', () => swOpenOutfitForm({ mode: 'gen', view: swCurrentView() }));
         for (const card of c.querySelectorAll('.sw-outfit-card[data-id]')) {
             const id = card.dataset.id;
             card.querySelector('.sw-outfit-img')?.addEventListener('click', (e) => { e.preventDefault(); e.stopImmediatePropagation(); swToggle(id); });
@@ -774,14 +779,27 @@
         + ' Natural relaxed standing pose facing the viewer, the entire figure visible from head to shoes, simple uncluttered background that does not distract from the character.'
         + ' {{outfit}}';
 
-    function swBuildTryOnPrompt(side, outfitDesc) {
+    // Дефолтный шаблон генерации образа ПО ОПИСАНИЮ: картинки наряда нет, референсом уходит
+    // только аватар, весь наряд задаётся текстом ({{outfit}}). Требования к стилю/позе — как у примерки.
+    const SW_DEFAULT_GENLOOK_PROMPT =
+        'Virtual outfit design. Generate a FULL-BODY, head-to-toe image of {{name}} — the exact person from the {{personRef}} image — wearing a NEW outfit that matches the text description below.'
+        + ' Keep the face, hairstyle, hair color, eye color, skin tone and body proportions identical to the person reference.'
+        + ' Replace ALL of their clothing with the described outfit: follow the description for garments, colors, fabrics, patterns, accessories and footwear; tastefully fill in any unspecified details so the outfit looks complete and coherent.'
+        + ' CRITICAL — keep the same art style: render the result in the EXACT SAME art style, medium, line work, shading, color palette and overall aesthetic as the {{personRef}} image, as if drawn by the same artist. Do NOT switch to photography, 3D render or any different illustration style.'
+        + ' Natural relaxed standing pose facing the viewer, the entire figure visible from head to shoes, simple uncluttered background that does not distract from the character.'
+        + ' {{outfit}}';
+
+    function swBuildTryOnPrompt(side, outfitDesc, { fromDescription = false } = {}) {
         const ctx = SillyTavern.getContext();
         const name = side === 'bot' ? (swCharName() || 'the character') : (ctx.name1 || 'the user');
         const personRef = side === 'bot' ? 'CHARACTER REFERENCE' : 'USER REFERENCE';
         const outfitRef = side === 'bot' ? 'CHARACTER OUTFIT REFERENCE' : 'USER OUTFIT REFERENCE';
-        const tpl = (swGetSettings().tryOnPrompt || '').trim() || SW_DEFAULT_TRYON_PROMPT;
+        const s = swGetSettings();
+        const tpl = fromDescription
+            ? ((s.genLookPrompt || '').trim() || SW_DEFAULT_GENLOOK_PROMPT)
+            : ((s.tryOnPrompt || '').trim() || SW_DEFAULT_TRYON_PROMPT);
         const d = swSanitizeDesc(outfitDesc);
-        const outfitClause = d ? `Outfit details: ${d}` : '';
+        const outfitClause = d ? (fromDescription ? `Outfit description: ${d}` : `Outfit details: ${d}`) : '';
         // Функции-заменители, чтобы '$' в имени/описании не трактовался как спецпаттерн ($&, $1…).
         return tpl
             .replaceAll('{{name}}', () => name)
@@ -796,6 +814,8 @@
      * Сгенерировать примерку. side: 'bot' | 'user'. Возвращает PNG base64 (полный размер).
      * Диспетчеризация по провайдерам — как в generateImageWithRetry, но с ЯВНЫМИ
      * референсами (человек + наряд) и без авто-сбора контекста чата.
+     * outfitB64 = null → режим «образ по описанию»: референс только аватар,
+     * наряд целиком задаётся текстом outfitDesc (шаблон SW_DEFAULT_GENLOOK_PROMPT).
      */
     async function swTryOnGenerate(side, outfitB64, outfitDesc) {
         validateSettings(); // бросает понятную ошибку, если API не настроен
@@ -806,9 +826,12 @@
                 ? 'Нет референса персонажа: откройте чат с персонажем или загрузите фото в слот «Персонаж» в настройках SillyImages'
                 : 'Нет референса персоны: выберите аватар персоны в ST или загрузите фото в слот «Юзер» в настройках SillyImages');
         }
-        const refImages = [personB64, outfitB64];
-        const refLabels = side === 'bot' ? ['char_ref', 'char_outfit'] : ['user_ref', 'user_outfit'];
-        const prompt = swBuildTryOnPrompt(side, outfitDesc);
+        const fromDescription = !outfitB64;
+        const refImages = fromDescription ? [personB64] : [personB64, outfitB64];
+        const refLabels = side === 'bot'
+            ? (fromDescription ? ['char_ref'] : ['char_ref', 'char_outfit'])
+            : (fromDescription ? ['user_ref'] : ['user_ref', 'user_outfit']);
+        const prompt = swBuildTryOnPrompt(side, outfitDesc, { fromDescription });
         // Примерка НЕ подмешивает глобальный пресет стиля ([Style: ...]): стиль должен
         // диктовать ТОЛЬКО аватар-референс (см. промт), иначе результат уходит в чужой стиль.
         const style = '';
@@ -873,8 +896,10 @@
     function swOpenOutfitForm({ mode, view, base64 = null, item = null, defaultName = '' }) {
         document.getElementById('sw-form-overlay')?.remove();
         const isEdit = mode === 'edit';
+        // Режим «gen»: образ создаётся ПО ОПИСАНИЮ — картинки на входе нет, она появится после генерации.
+        const isGen = mode === 'gen';
         const curType = isEdit ? swTypeOf(item) : (swTypeIds().includes(swFilter) ? swFilter : 'other');
-        const previewSrc = isEdit ? swImgSrc(item) : ('data:image/png;base64,' + base64);
+        const previewSrc = isEdit ? swImgSrc(item) : (base64 ? 'data:image/png;base64,' + base64 : '');
         const curName = isEdit ? (item.name || '') : (defaultName || '');
         const curDesc = isEdit ? swSanitizeDesc(item.description) : '';
 
@@ -886,15 +911,18 @@
         ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
         const panel = document.createElement('div'); panel.id = 'sw-form';
         panel.innerHTML = `
-            <div class="sw-form-header"><span>${isEdit ? 'Редактировать образ' : 'Новый образ'}</span><div class="sw-form-close" title="Закрыть"><i class="fa-solid fa-xmark"></i></div></div>
+            <div class="sw-form-header"><span>${isEdit ? 'Редактировать образ' : (isGen ? 'Образ по описанию' : 'Новый образ')}</span><div class="sw-form-close" title="Закрыть"><i class="fa-solid fa-xmark"></i></div></div>
             <div class="sw-form-body">
-                <div class="sw-form-preview"><img src="${esc(previewSrc)}" alt="preview"></div>
+                <div class="sw-form-preview">
+                    <img src="${esc(previewSrc)}" alt="preview" ${isGen ? 'hidden' : ''}>
+                    ${isGen ? '<div class="sw-form-preview-empty" id="sw-gen-empty"><i class="fa-solid fa-wand-magic-sparkles"></i><span>Опишите образ в поле «Описание» и нажмите «Сгенерировать»</span></div>' : ''}
+                </div>
                 <div class="sw-tryon-row">
-                    <select class="text_pole sw-tryon-select" id="sw-tryon-target" title="На кого примерить наряд">
+                    <select class="text_pole sw-tryon-select" id="sw-tryon-target" title="${isGen ? 'На кого генерировать образ' : 'На кого примерить наряд'}">
                         <option value="bot" ${view.side === 'bot' ? 'selected' : ''}>На персонажа — ${esc(charNm)}</option>
                         <option value="user" ${view.side === 'user' ? 'selected' : ''}>На персону — ${esc(userNm)}</option>
                     </select>
-                    <div class="sw-tryon-btn" id="sw-tryon-btn" title="Сгенерировать фулбоди-картинку: персонаж в этом наряде (ИИ)"><i class="fa-solid fa-person-rays"></i> Примерить</div>
+                    <div class="sw-tryon-btn" id="sw-tryon-btn" title="${isGen ? 'Сгенерировать фулбоди-картинку по описанию (ИИ): референсом уходит только аватар' : 'Сгенерировать фулбоди-картинку: персонаж в этом наряде (ИИ)'}"><i class="fa-solid ${isGen ? 'fa-wand-magic-sparkles' : 'fa-person-rays'}"></i> ${isGen ? 'Сгенерировать' : 'Примерить'}</div>
                 </div>
                 <div class="sw-tryon-status" id="sw-tryon-status" hidden></div>
                 <div class="sw-tryon-pick" id="sw-tryon-pick" hidden>
@@ -906,7 +934,7 @@
                 <label class="sw-form-label">Тип одежды</label>
                 <select class="text_pole sw-form-input" id="sw-form-type">${swTypes().map(t => `<option value="${t.id}" ${curType === t.id ? 'selected' : ''}>${esc(t.label)}</option>`).join('')}</select>
                 <label class="sw-form-label">Описание <span class="sw-form-ai" id="sw-form-ai" title="Сгенерировать описание по картинке (ИИ)"><i class="fa-solid fa-wand-magic-sparkles"></i> ИИ</span></label>
-                <textarea class="text_pole sw-form-textarea" id="sw-form-desc" rows="4" placeholder="Что на образе: одежда, цвета, ткани, аксессуары…">${esc(curDesc)}</textarea>
+                <textarea class="text_pole sw-form-textarea" id="sw-form-desc" rows="4" placeholder="${isGen ? 'Опишите образ: одежда, цвета, ткани, аксессуары, обувь… — по этому тексту и генерируем' : 'Что на образе: одежда, цвета, ткани, аксессуары…'}">${esc(curDesc)}</textarea>
                 <div class="sw-form-actions">
                     <div class="sw-form-btn sw-form-cancel">Отмена</div>
                     <div class="sw-form-btn sw-form-save">${isEdit ? 'Сохранить' : 'Добавить'}</div>
@@ -934,8 +962,9 @@
             if (aiBtn.classList.contains('sw-form-ai-loading')) return;
             aiBtn.classList.add('sw-form-ai-loading');
             try {
-                const b64 = await getFormImageB64();
-                if (!b64) { toastr.warning('Нет картинки для анализа', 'Гардероб'); return; }
+                // В режиме «по описанию» анализировать можно только уже сгенерированную картинку.
+                const b64 = isGen ? genB64 : await getFormImageB64();
+                if (!b64) { toastr.warning(isGen ? 'Сначала сгенерируйте образ — тогда ИИ сможет описать картинку' : 'Нет картинки для анализа', 'Гардероб'); return; }
                 const desc = await swAnalyzeOutfit(b64);
                 if (desc) panel.querySelector('#sw-form-desc').value = desc;
                 else toastr.warning('Не удалось получить описание', 'Гардероб');
@@ -946,51 +975,66 @@
         // ── Примерка наряда (ИИ): фулбоди-генерация на персонажа/персону ──
         let genB64 = null;     // сгенерированная примерка (PNG, полный размер)
         let genSide = null;    // на кого сгенерирована примерка: 'bot' | 'user' (для флага tryOnSide)
-        let picked = 'orig';   // какая картинка будет сохранена: 'orig' | 'gen'
+        let picked = isGen ? 'gen' : 'orig'; // какая картинка будет сохранена: 'orig' | 'gen' (в gen-режиме оригинала нет)
         const previewImg = panel.querySelector('.sw-form-preview img');
         const tryBtn = panel.querySelector('#sw-tryon-btn');
         const tryStatus = panel.querySelector('#sw-tryon-status');
         const tryPick = panel.querySelector('#sw-tryon-pick');
 
         function refreshTryOnUI() {
-            tryPick.hidden = !genB64;
-            if (genB64) {
+            // В gen-режиме выбирать не из чего (оригинала нет) — пикер не показываем.
+            tryPick.hidden = !genB64 || isGen;
+            if (genB64 && !isGen) {
                 tryPick.querySelector('[data-pick="orig"] img').src = previewSrc;
                 tryPick.querySelector('[data-pick="gen"] img').src = 'data:image/png;base64,' + genB64;
                 for (const o of tryPick.querySelectorAll('.sw-tryon-opt')) o.classList.toggle('sw-tryon-sel', o.dataset.pick === picked);
             }
             previewImg.src = (picked === 'gen' && genB64) ? ('data:image/png;base64,' + genB64) : previewSrc;
+            if (isGen) {
+                previewImg.hidden = !genB64;
+                const empty = panel.querySelector('#sw-gen-empty');
+                if (empty) empty.hidden = !!genB64;
+            }
         }
 
         for (const o of tryPick.querySelectorAll('.sw-tryon-opt')) {
             o.addEventListener('click', () => { picked = o.dataset.pick === 'gen' ? 'gen' : 'orig'; refreshTryOnUI(); });
         }
 
+        const tryBtnIdle = isGen
+            ? '<i class="fa-solid fa-wand-magic-sparkles"></i> Сгенерировать'
+            : '<i class="fa-solid fa-person-rays"></i> Примерить';
         tryBtn.addEventListener('click', async () => {
             if (tryBtn.classList.contains('sw-tryon-busy')) return;
             const side = panel.querySelector('#sw-tryon-target').value === 'user' ? 'user' : 'bot';
+            const descNow = panel.querySelector('#sw-form-desc').value.trim();
+            if (isGen && !descNow) { toastr.warning('Опишите образ в поле «Описание» — по нему и генерируем', 'Гардероб'); return; }
             tryBtn.classList.add('sw-tryon-busy');
             tryBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Генерация…';
             tryStatus.hidden = false; tryStatus.textContent = 'Готовим референсы…';
             try {
-                const srcB64 = await getFormImageB64();
-                if (!srcB64) throw new Error('Не удалось получить картинку наряда');
-                const descNow = panel.querySelector('#sw-form-desc').value.trim();
-                tryStatus.textContent = 'Генерация примерки… (обычно 15–60 секунд)';
+                let srcB64 = null;
+                if (!isGen) {
+                    srcB64 = await getFormImageB64();
+                    if (!srcB64) throw new Error('Не удалось получить картинку наряда');
+                }
+                tryStatus.textContent = `Генерация ${isGen ? 'образа' : 'примерки'}… (обычно 15–60 секунд)`;
                 const out = await swTryOnGenerate(side, srcB64, descNow);
                 if (!document.body.contains(panel)) return; // форму уже закрыли
                 genB64 = out; genSide = side; picked = 'gen';
                 refreshTryOnUI();
                 tryStatus.hidden = true;
-                toastr.success('Примерка готова. Ниже выберите, какую картинку сохранить в гардероб', 'Гардероб', { timeOut: 4000 });
+                toastr.success(isGen
+                    ? 'Образ готов. Не нравится — поправьте описание и сгенерируйте ещё раз'
+                    : 'Примерка готова. Ниже выберите, какую картинку сохранить в гардероб', 'Гардероб', { timeOut: 4000 });
             } catch (e) {
                 swLog('ERROR', 'try-on failed:', e);
                 if (document.body.contains(panel)) { tryStatus.hidden = false; tryStatus.textContent = '⚠ ' + String(e.message || e); }
-                toastr.error(String(e.message || e).slice(0, 300), 'Примерка не удалась', { timeOut: 6000 });
+                toastr.error(String(e.message || e).slice(0, 300), isGen ? 'Генерация образа не удалась' : 'Примерка не удалась', { timeOut: 6000 });
             } finally {
                 if (document.body.contains(panel)) {
                     tryBtn.classList.remove('sw-tryon-busy');
-                    tryBtn.innerHTML = '<i class="fa-solid fa-person-rays"></i> Примерить';
+                    tryBtn.innerHTML = tryBtnIdle;
                 }
             }
         });
@@ -999,6 +1043,7 @@
         panel.querySelector('.sw-form-save').addEventListener('click', async () => {
             const name = panel.querySelector('#sw-form-name').value.trim();
             if (!name) { toastr.warning('Введите название', 'Гардероб'); return; }
+            if (isGen && !genB64) { toastr.warning('Сначала сгенерируйте образ — сохранять пока нечего', 'Гардероб'); return; }
             const type = panel.querySelector('#sw-form-type').value;
             const desc = panel.querySelector('#sw-form-desc').value.trim();
             const saveBtn = panel.querySelector('.sw-form-save');
@@ -1284,6 +1329,16 @@
                         <code>{{outfitRef}}</code> — метка наряда, <code>{{outfit}}</code> — описание наряда.
                         По умолчанию промт велит ИИ повторять арт-стиль аватара, чтобы примерка совпадала с авой.
                     </div>
+                    <label class="sw-quick-tags-title" style="margin-top:10px;">
+                        <i class="fa-solid fa-wand-magic-sparkles"></i> Промт образа по описанию
+                        <span class="sw-tryon-prompt-reset" id="sw-q-genlook-reset" title="Вернуть стандартный промт"><i class="fa-solid fa-rotate-left"></i> Сбросить</span>
+                    </label>
+                    <textarea id="sw-q-genlook-prompt" class="text_pole sw-tryon-prompt-area" rows="7" placeholder="Шаблон промта для генерации образа по описанию">${esc(swGetSettings().genLookPrompt || SW_DEFAULT_GENLOOK_PROMPT)}</textarea>
+                    <div class="sw-quick-hint sw-tryon-prompt-hint">
+                        Для карточки «Сгенерировать» в гардеробе: образ создаётся по тексту описания,
+                        референсом уходит только аватар персонажа/персоны. Плейсхолдеры: <code>{{name}}</code> — имя,
+                        <code>{{personRef}}</code> — метка аватара, <code>{{outfit}}</code> — описание образа.
+                    </div>
                     <label class="sw-quick-check" style="margin-top:8px;">
                         <input type="checkbox" id="sw-q-tryon-avatar" ${swGetSettings().tryOnAsAvatar ? 'checked' : ''}>
                         <span>Примерка → аватар-референс</span>
@@ -1329,6 +1384,21 @@
             swSave();
             if (tryOnArea) tryOnArea.value = SW_DEFAULT_TRYON_PROMPT;
             toastr.info('Промт примерки сброшен на стандартный', 'Гардероб', { timeOut: 2000 });
+        });
+
+        // ── Промт образа по описанию (генерация без картинки наряда) ──
+        const genLookArea = panel.querySelector('#sw-q-genlook-prompt');
+        genLookArea?.addEventListener('input', () => {
+            const v = genLookArea.value;
+            // Совпадение с дефолтом (или пусто) храним как '' → значит «использовать стандартный».
+            swGetSettings().genLookPrompt = (v.trim() && v.trim() !== SW_DEFAULT_GENLOOK_PROMPT.trim()) ? v : '';
+            swSave();
+        });
+        panel.querySelector('#sw-q-genlook-reset')?.addEventListener('click', () => {
+            swGetSettings().genLookPrompt = '';
+            swSave();
+            if (genLookArea) genLookArea.value = SW_DEFAULT_GENLOOK_PROMPT;
+            toastr.info('Промт образа по описанию сброшен на стандартный', 'Гардероб', { timeOut: 2000 });
         });
         panel.querySelector('#sw-q-tryon-avatar')?.addEventListener('change', (e) => {
             swGetSettings().tryOnAsAvatar = e.target.checked;
