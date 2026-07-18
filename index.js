@@ -414,11 +414,10 @@
         return done;
     }
 
-    function swResize(file, maxDim) {
+    // dataURL → resized PNG base64 (файл читается заранее — между чтением и сжатием встаёт кадрирование).
+    function swResize(dataUrl, maxDim) {
         return new Promise((res, rej) => {
-            const r = new FileReader();
-            r.onload = (e) => { const img = new Image(); img.onload = () => { let { width: w, height: h } = img; if (w > maxDim || h > maxDim) { const s = Math.min(maxDim / w, maxDim / h); w = Math.round(w * s); h = Math.round(h * s); } const c = document.createElement('canvas'); c.width = w; c.height = h; c.getContext('2d').drawImage(img, 0, 0, w, h); res({ base64: c.toDataURL('image/png').split(',')[1] }); }; img.onerror = () => rej(new Error('decode')); img.src = e.target.result; };
-            r.onerror = () => rej(new Error('read')); r.readAsDataURL(file);
+            const img = new Image(); img.onload = () => { let { width: w, height: h } = img; if (w > maxDim || h > maxDim) { const s = Math.min(maxDim / w, maxDim / h); w = Math.round(w * s); h = Math.round(h * s); } const c = document.createElement('canvas'); c.width = w; c.height = h; c.getContext('2d').drawImage(img, 0, 0, w, h); res({ base64: c.toDataURL('image/png').split(',')[1] }); }; img.onerror = () => rej(new Error('decode')); img.src = dataUrl;
         });
     }
 
@@ -879,7 +878,9 @@
             const f = inp.files?.[0]; if (!f) return;
             const v = swCurrentView(); // читаем актуальный вид на момент добавления
             try {
-                const { base64 } = await swResize(f, swGetSettings().maxDimension);
+                let dataUrl = await iigFileToDataUrl(f);
+                dataUrl = await iigCropImageDialog(dataUrl);
+                const { base64 } = await swResize(dataUrl, swGetSettings().maxDimension);
                 swOpenOutfitForm({ mode: 'add', view: v, base64, defaultName: f.name.replace(/\.[^.]+$/, '') });
             } catch (e) { toastr.error('Ошибка: ' + e.message, 'Гардероб'); }
         });
@@ -899,7 +900,7 @@
         // Режим «gen»: образ создаётся ПО ОПИСАНИЮ — картинки на входе нет, она появится после генерации.
         const isGen = mode === 'gen';
         const curType = isEdit ? swTypeOf(item) : (swTypeIds().includes(swFilter) ? swFilter : 'other');
-        const previewSrc = isEdit ? swImgSrc(item) : (base64 ? 'data:image/png;base64,' + base64 : '');
+        let previewSrc = isEdit ? swImgSrc(item) : (base64 ? 'data:image/png;base64,' + base64 : '');
         const curName = isEdit ? (item.name || '') : (defaultName || '');
         const curDesc = isEdit ? swSanitizeDesc(item.description) : '';
 
@@ -915,6 +916,8 @@
             <div class="sw-form-body">
                 <div class="sw-form-preview">
                     <img src="${esc(previewSrc)}" alt="preview" ${isGen ? 'hidden' : ''}>
+                    <div class="sw-form-crop" id="sw-form-crop" title="Кадрировать картинку" ${isGen ? 'hidden' : ''}><i class="fa-solid fa-crop-simple"></i></div>
+                    <div class="sw-form-download" id="sw-form-download" title="Скачать картинку" ${isGen ? 'hidden' : ''}><i class="fa-solid fa-download"></i></div>
                     ${isGen ? '<div class="sw-form-preview-empty" id="sw-gen-empty"><i class="fa-solid fa-wand-magic-sparkles"></i><span>Опишите образ в поле «Описание» и нажмите «Сгенерировать»</span></div>' : ''}
                 </div>
                 <div class="sw-tryon-row">
@@ -995,7 +998,44 @@
                 const empty = panel.querySelector('#sw-gen-empty');
                 if (empty) empty.hidden = !!genB64;
             }
+            // Кадрировать/скачивать нечего только в gen-режиме до первой генерации.
+            if (cropBtn) cropBtn.hidden = isGen && !genB64;
+            if (dlBtn) dlBtn.hidden = isGen && !genB64;
         }
+
+        // ── Кадрирование картинки прямо из формы (та, что сейчас в превью) ──
+        let imageDirty = false; // исходную картинку кадрировали → при сохранении перезаписать
+        const cropBtn = panel.querySelector('#sw-form-crop');
+        cropBtn?.addEventListener('click', async () => {
+            try {
+                const editingGen = picked === 'gen' && !!genB64;
+                const b64 = editingGen ? genB64 : await getFormImageB64();
+                if (!b64) { toastr.warning('Нет картинки для кадрирования', 'Гардероб'); return; }
+                const srcUrl = 'data:image/png;base64,' + b64;
+                const out = await iigCropImageDialog(srcUrl);
+                if (!out || out === srcUrl) return; // отмена — без изменений
+                const newB64 = out.split(',')[1];
+                if (editingGen) {
+                    genB64 = newB64;
+                } else {
+                    origB64 = newB64;
+                    previewSrc = 'data:image/jpeg;base64,' + newB64;
+                    imageDirty = true;
+                }
+                refreshTryOnUI();
+            } catch (e) { toastr.error('Ошибка кадрирования: ' + e.message, 'Гардероб'); }
+        });
+
+        // ── Скачать картинку, которая сейчас в превью (оригинал или примерка) ──
+        const dlBtn = panel.querySelector('#sw-form-download');
+        dlBtn?.addEventListener('click', async () => {
+            try {
+                const b64 = (picked === 'gen' && genB64) ? genB64 : await getFormImageB64();
+                if (!b64) { toastr.warning('Нет картинки для скачивания', 'Гардероб'); return; }
+                const name = panel.querySelector('#sw-form-name').value.trim() || item?.name || 'outfit';
+                await iigDownloadImage('data:image/png;base64,' + b64, name);
+            } catch (e) { toastr.error('Ошибка: ' + e.message, 'Гардероб'); }
+        });
 
         for (const o of tryPick.querySelectorAll('.sw-tryon-opt')) {
             o.addEventListener('click', () => { picked = o.dataset.pick === 'gen' ? 'gen' : 'orig'; refreshTryOnUI(); });
@@ -1072,6 +1112,22 @@
                         item.tryOnSide = genSide;
                         // Кэш активного образа мог держать старую картинку этого id — сбрасываем.
                         swSharedCache[view.side].b64 = null; swSharedCache[view.side].id = null;
+                    } else if (imageDirty && origB64) {
+                        // Исходную картинку кадрировали в форме — перезаписываем.
+                        let stored = false;
+                        if (view.shared) {
+                            try {
+                                if (typeof compressBase64Image === 'function' && typeof saveRefImageToFile === 'function') {
+                                    const jpeg = await compressBase64Image(origB64, swGetSettings().maxDimension, 0.85);
+                                    const prefix = view.side === 'bot' ? 'sw_bot_' : 'sw_user_';
+                                    item.imagePath = await saveRefImageToFile(jpeg, prefix + name);
+                                    delete item.base64;
+                                    stored = true;
+                                }
+                            } catch (err) { swLog('WARN', 'crop file store failed, fallback to base64:', err.message); }
+                        }
+                        if (!stored) { item.base64 = origB64; delete item.imagePath; }
+                        swSharedCache[view.side].b64 = null; swSharedCache[view.side].id = null;
                     }
                     swSave();
                     if (view.shared) swPreloadSharedActive(view.side);
@@ -1079,7 +1135,8 @@
                     const newItem = { id: uid(), name, type, description: desc, addedAt: Date.now() };
                     // Сохраняем примерку → помечаем, на кого она сгенерирована (уйдёт аватар-референсом).
                     if (useGen && genSide) newItem.tryOnSide = genSide;
-                    const imgB64 = useGen ? genB64 : base64;
+                    // origB64 мог быть кадрирован в форме — он приоритетнее исходного base64.
+                    const imgB64 = useGen ? genB64 : (origB64 || base64);
                     if (view.shared) {
                         // ⚡ ОБЩИЙ гардероб: картинку храним ФАЙЛОМ, в settings — только путь (не раздуваем settings.json).
                         let stored = false;
@@ -1609,6 +1666,10 @@
             if (content && (content.offsetParent === null || getComputedStyle(content).display === 'none')) {
                 content.closest('.inline-drawer')?.querySelector('.inline-drawer-toggle')?.click();
             }
+            // 2.5) Развернуть карточку «Референсы», если свёрнута.
+            if (document.getElementById('iig_refs_body')?.classList.contains('iig-hidden')) {
+                document.getElementById('iig_refs_toggle')?.click();
+            }
             // 3) Переключиться на вкладку NPC и подскроллить к ней.
             mega.querySelector('.iig-ref-tab[data-tab="npc"]')?.click();
             setTimeout(() => mega.scrollIntoView({ behavior: 'smooth', block: 'start' }), 120);
@@ -2060,6 +2121,13 @@ const MODULE_NAME = 'inline_image_gen';
 // Track messages currently being processed to prevent duplicate processing
 const processingMessages = new Set();
 
+// Лок на перегенерацию отдельного тега (messageId:tagIndex) — от двойных кликов
+// и от параллельного запуска «перегенерить всё» поверх одиночной перегенерации.
+const activeSingleTagTasks = new Set();
+function singleTagTaskKey(messageId, tagIndex) {
+    return `${messageId}:${tagIndex}`;
+}
+
 // Log buffer for debugging
 const logBuffer = [];
 const MAX_LOG_ENTRIES = 200;
@@ -2179,12 +2247,35 @@ const defaultSettings = Object.freeze({
     visionApiKey: '',
     visionModel: '',
     visionPrompt: '',
+    // ── Иллюстрация сцены («картинка по истории») ──
+    // Кнопка в wand-меню: вспомогательная LLM читает последний кусок РП и пишет промпт
+    // картинки, дальше — обычный конвейер тегов (референсы/ретраи/перегенерация).
+    historyPicEnabled: true,   // показывать пункт в «волшебной палочке»
+    historyPicLlm: 'chat',     // кто пишет промпт: 'chat' — основная модель ST | 'vision' — эндпоинт из таба Vision
+    historyPicMaxMessages: 20, // сколько сообщений максимум брать (с последней картинки, но не больше)
+    // Промпт собирается из двух блоков: «Задача» (общий, учит LLM читать фрагмент и писать
+    // промпт по железным правилам) + «Образ» (активный пресет: какую картинку делаем).
+    historyPicTaskPrompt: '',  // Блок «Задача»; пусто = DEFAULT_HISTORYPIC_TASK
+    historyPicPresets: [],     // свои пресеты «образа»: { id, name, text, aspectRatio, style, standalone }
+    historyPicPresetId: 'hp-cinematic', // активный пресет (встроенный hp-* или свой iig-hp-*)
+    historyPicPrompt: '',      // legacy: старый полный шаблон; мигрирует в standalone-пресет «Мой промпт»
+    historyPicQuote: true,     // просить у LLM цитату-эпиграф и ставить её над картинкой
+    historyPicHideFromContext: true, // вставлять иллюстрацию скрытым сообщением (is_system): в чате видно, в промпт LLM не уходит
+    historyPicOpen: false,     // развёрнута ли карточка «Иллюстрация сцены» в настройках
     // ── Профили (полные именованные снимки настроек) ──
     // Каждый профиль несёт только выбранные секции (см. PROFILE_SECTIONS). Отдельно
     // от connectionPresets (те — только про подключение). Ключи хранятся локально,
     // при экспорте в файл секреты по умолчанию вырезаются.
     profiles: [],
     activeProfileId: '',
+    profilesOpen: false, // развёрнута ли карточка «Профили» в настройках
+    // Свёрнутость остальных карточек настроек — панель по умолчанию короткая.
+    apiOpen: true,           // «Настройки API» (открыта: нужна при первичной настройке)
+    imageContextOpen: false, // «Контекст картинок»
+    genParamsOpen: false,    // «Параметры генерации»
+    refsOpen: false,         // «Референсы»
+    electronhubOpen: false,  // «Electron Hub»
+    debugOpen: false,        // «Ошибки и отладка» (объединённая карточка)
     // Какие секции отмечены в чеклисте «Что сохранять» при создании/обновлении профиля.
     // По умолчанию профиль про КОНТЕНТ (активные авы/NPC/лорбуки/стиль); провайдер/параметры — по желанию.
     profileSaveScope: {
@@ -2198,6 +2289,7 @@ const defaultSettings = Object.freeze({
         autoAvatar: false,
         descriptions: false,
         vision: false,
+        historyPic: false,
         flags: false,
     },
 });
@@ -3062,6 +3154,68 @@ function compressBase64Image(rawBase64, maxDim = 768, quality = 0.8) {
     });
 }
 
+// ── Кадрирование при загрузке и скачивание оригиналов ──
+
+// Файл → dataURL (без сжатия — сырьё для диалога кадрирования).
+function iigFileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(String(reader.result));
+        reader.onerror = () => reject(new Error('Не удалось прочитать файл'));
+        reader.readAsDataURL(file);
+    });
+}
+
+// Диалог кадрирования на штатном кроппере ST (POPUP_TYPE.CROP, свободные пропорции).
+// «Обрезать» → кадрированный dataURL (JPEG); «Отмена» → исходный dataURL, картинка целиком.
+async function iigCropImageDialog(dataUrl) {
+    try {
+        const ctx = SillyTavern.getContext();
+        if (typeof ctx.callGenericPopup !== 'function' || !ctx.POPUP_TYPE?.CROP) return dataUrl;
+        const cropped = await ctx.callGenericPopup(
+            'Кадрирование: выделите нужную область. «Отмена» — использовать картинку целиком.',
+            ctx.POPUP_TYPE.CROP, '', { cropAspect: NaN, cropImage: dataUrl });
+        return (typeof cropped === 'string' && cropped.startsWith('data:')) ? cropped : dataUrl;
+    } catch (e) {
+        iigLog('WARN', 'Crop dialog failed, using original image:', e.message);
+        return dataUrl;
+    }
+}
+
+// Скачивание картинки В ОРИГИНАЛЬНОМ КАЧЕСТВЕ: fetch → blob → <a download>.
+// Нужен потому, что из вьюеров (фуллскрин, галерея ST) на мобильных картинку
+// по-человечески не вытащить — остаются только скриншоты.
+// suggestedName — человекочитаемое имя файла (например, название образа гардероба).
+async function iigDownloadImage(src, suggestedName = '') {
+    if (!src) return;
+    try {
+        const response = await fetch(src);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const blob = await response.blob();
+        let name = String(suggestedName || '').trim().replace(/[\\/:*?"<>|]/g, '_');
+        if (!name && !src.startsWith('data:') && !src.startsWith('blob:')) {
+            try { name = decodeURIComponent(new URL(src, window.location.href).pathname.split('/').pop() || ''); } catch (_) {}
+        }
+        if (!name) name = `iig_${new Date().toISOString().replace(/[:.]/g, '-')}`;
+        if (!/\.[a-z0-9]{2,5}$/i.test(name)) {
+            const ext = ((blob.type.split('/')[1] || 'png').split('+')[0]).replace('jpeg', 'jpg');
+            name = `${name}.${ext}`;
+        }
+        const objUrl = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = objUrl;
+        anchor.download = name;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        setTimeout(() => URL.revokeObjectURL(objUrl), 60000);
+        toastr.success(name, 'Скачивание начато', { timeOut: 2000 });
+    } catch (e) {
+        iigLog('ERROR', 'Image download failed:', e.message);
+        toastr.error('Не удалось скачать: ' + e.message, 'Генерация картинок');
+    }
+}
+
 /**
  * Save a reference image as a file on the server.
  * Returns the server path string.
@@ -3515,16 +3669,11 @@ function updateAvatarAppearanceInjection() {
     } catch (e) { iigLog('ERROR', 'avatar appearance injection error:', e.message); }
 }
 // Файл → resized base64 (без data: префикса), для добавления аватара в библиотеку.
-function iigFileToResizedBase64(file, maxDim = 512) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = async () => {
-            try { resolve(await compressBase64Image(String(reader.result).split(',')[1], maxDim, 0.85)); }
-            catch (e) { reject(e); }
-        };
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-    });
+// withCrop — сначала предложить кадрирование (отмена диалога = картинка целиком).
+async function iigFileToResizedBase64(file, maxDim = 512, withCrop = false) {
+    let dataUrl = await iigFileToDataUrl(file);
+    if (withCrop) dataUrl = await iigCropImageDialog(dataUrl);
+    return await compressBase64Image(dataUrl.split(',')[1], maxDim, 0.85);
 }
 
 function persistRefsToLocalStorage() {
@@ -3641,6 +3790,19 @@ function replaceTagInMessageSource(message, tag, replacement) {
     message.mes = (message.mes || '').replace(tag.fullMatch, replacement);
     if (message.extra?.display_text) {
         message.extra.display_text = message.extra.display_text.replace(tag.fullMatch, replacement);
+    }
+
+    // Зеркала текущего свайпа — иначе после свайпа туда-обратно возвращается
+    // старый тег ([IMG:GEN]/старый src) и картинка «пропадает».
+    const swipeId = message.swipe_id;
+    if (swipeId !== undefined) {
+        if (Array.isArray(message.swipes) && typeof message.swipes[swipeId] === 'string') {
+            message.swipes[swipeId] = message.swipes[swipeId].replace(tag.fullMatch, replacement);
+        }
+        const swipeExtra = message.swipe_info?.[swipeId]?.extra;
+        if (swipeExtra?.display_text) {
+            swipeExtra.display_text = swipeExtra.display_text.replace(tag.fullMatch, replacement);
+        }
     }
 }
 
@@ -4209,12 +4371,20 @@ async function generateImageElectronHub(prompt, style, referenceImages = [], opt
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), ELECTRONHUB_REQUEST_TIMEOUT_MS);
     init.signal = controller.signal;
+    // Кнопка «Остановить» обрывает запрос через тот же контроллер.
+    if (options.signal) {
+        if (options.signal.aborted) controller.abort(options.signal.reason);
+        else options.signal.addEventListener('abort', () => controller.abort(options.signal.reason), { once: true });
+    }
 
     let response;
     try {
         response = await fetch(url, init);
     } catch (e) {
         clearTimeout(timeoutId);
+        if (isGenerationCancelled(e, options.signal) && options.signal?.aborted) {
+            throw options.signal.reason || e;
+        }
         if (e.name === 'AbortError') {
             throw new Error(`ElectronHub: timeout after ${ELECTRONHUB_REQUEST_TIMEOUT_MS / 1000}s`);
         }
@@ -4334,10 +4504,14 @@ async function generateImageOpenAI(prompt, style, referenceImages = [], options 
         });
     };
 
+    // Кнопка «Остановить» обрывает сетевой запрос.
+    if (options.signal && !init.signal) init.signal = options.signal;
+
     let response;
     try {
         response = await fetch(url, init);
     } catch (e) {
+        if (isGenerationCancelled(e, options.signal)) throw e;
         // CORS/network error on /edits — most proxies (rout.my, openrouter, ...) don't expose /v1/images/edits.
         // Try /v1/chat/completions instead — same proxy almost always supports it WITH references.
         if (wantsEdits && e?.name === 'TypeError') {
@@ -4568,9 +4742,10 @@ async function generateImageGemini(prompt, style, referenceImages = [], options 
             'Authorization': `Bearer ${settings.apiKey}`,
             'Content-Type': 'application/json'
         },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
+        signal: options.signal || undefined
     });
-    
+
     if (!response.ok) {
         const text = await response.text();
         if (response.status === 404) {
@@ -4785,6 +4960,7 @@ async function generateImageVoid(prompt, style, referenceImages = [], options = 
     let bodySize = bodyJson.length;
     const baseFetchOpts = {
         method: 'POST',
+        signal: options.signal || undefined,
         headers: { 'Authorization': `Bearer ${settings.apiKey}`, 'Content-Type': 'application/json' },
         credentials: 'omit',
         cache: 'no-store',
@@ -4821,6 +4997,7 @@ async function generateImageVoid(prompt, style, referenceImages = [], options = 
             lastFetchErr = null;
             break;
         } catch (err) {
+            if (isGenerationCancelled(err, options.signal)) throw err;
             lastFetchErr = err;
             const msg = String(err?.message || err);
             iigLog('WARN', `Void fetch attempt ${netAttempt + 1} failed: ${msg} (~${Math.round(bodySize / 1024)} KB)`);
@@ -5001,9 +5178,11 @@ async function generateImageNaistera(prompt, style, options = {}) {
                 'Authorization': `Bearer ${settings.apiKey}`,
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify(body)
+            body: JSON.stringify(body),
+            signal: options.signal || undefined
         });
     } catch (error) {
+        if (isGenerationCancelled(error, options.signal)) throw error;
         const pageOrigin = window.location.origin;
         let endpointOrigin = endpoint;
         try {
@@ -5440,6 +5619,9 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
+            if (options.signal?.aborted) {
+                throw options.signal.reason || new DOMException('Генерация отменена пользователем', 'AbortError');
+            }
             onStatusUpdate?.(`Генерация${attempt > 0 ? ` (повтор ${attempt}/${maxRetries})` : ''}...`);
             let generated;
             // Choose API based on type or model
@@ -5508,7 +5690,12 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
         } catch (error) {
             lastError = error;
             console.error(`[IIG] Generation attempt ${attempt + 1} failed:`, error?.message || error);
-            
+
+            // Отмена пользователем — не ретраим, пробрасываем сразу.
+            if (isGenerationCancelled(error, options.signal)) {
+                throw options.signal?.reason || error;
+            }
+
             // Check if retryable. 503 "No providers available" is permanent for the model — don't retry.
             const msg = error.message || '';
             const noProviders = /no providers available/i.test(msg);
@@ -5519,17 +5706,24 @@ async function generateImageWithRetry(prompt, style, onStatusUpdate, options = {
                 msg.includes('timeout') ||
                 msg.includes('network')
             );
-            
+
             if (!isRetryable || attempt === maxRetries) {
                 break;
             }
-            
+
             const delay = baseDelay * Math.pow(2, attempt);
             onStatusUpdate?.(`Повтор через ${delay / 1000}с...`);
-            await new Promise(resolve => setTimeout(resolve, delay));
+            // Пауза перед повтором прерывается кнопкой «Остановить».
+            await new Promise((resolve, reject) => {
+                const timer = setTimeout(resolve, delay);
+                options.signal?.addEventListener('abort', () => {
+                    clearTimeout(timer);
+                    reject(options.signal.reason || new DOMException('Генерация отменена пользователем', 'AbortError'));
+                }, { once: true });
+            });
         }
     }
-    
+
     throw lastError;
 }
 
@@ -5829,13 +6023,29 @@ async function parseImageTags(text, options = {}) {
  */
 function createLoadingPlaceholder(tagId) {
     const placeholder = document.createElement('div');
+    const abortController = new AbortController();
     placeholder.className = 'iig-loading-placeholder';
     placeholder.dataset.tagId = tagId;
+    placeholder._abortController = abortController;
     placeholder.innerHTML = `
         <div class="iig-spinner"></div>
         <div class="iig-status">Генерация картинки...</div>
         <div class="iig-timer">0s</div>
+        <button type="button" class="iig-cancel-generation" title="Отменить генерацию"><i class="fa-solid fa-circle-stop"></i><span>Остановить</span></button>
     `;
+
+    const cancelButton = placeholder.querySelector('.iig-cancel-generation');
+    cancelButton?.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (abortController.signal.aborted) return;
+        cancelButton.disabled = true;
+        placeholder.classList.add('iig-generation-cancelling');
+        const statusEl = placeholder.querySelector('.iig-status');
+        if (statusEl) statusEl.textContent = 'Отмена...';
+        abortController.abort(new DOMException('Генерация отменена пользователем', 'AbortError'));
+    });
+
     const timerEl = placeholder.querySelector('.iig-timer');
     const start = Date.now();
     const iv = setInterval(() => {
@@ -5845,6 +6055,31 @@ function createLoadingPlaceholder(tagId) {
     }, 1000);
     placeholder._timerInterval = iv;
     return placeholder;
+}
+
+// Сигнал отмены лоадера (кнопка «Остановить»).
+function getLoadingSignal(placeholder) {
+    return placeholder?._abortController?.signal || null;
+}
+
+// Вызвать при успешном завершении: если юзер успел нажать отмену — бросаем AbortError,
+// иначе гасим кнопку (генерация уже закончилась, отменять нечего).
+function finishLoadingGeneration(placeholder) {
+    const signal = getLoadingSignal(placeholder);
+    if (signal?.aborted) throw signal.reason || new DOMException('Генерация отменена пользователем', 'AbortError');
+    const cancelButton = placeholder?.querySelector('.iig-cancel-generation');
+    if (cancelButton) cancelButton.disabled = true;
+}
+
+function isGenerationCancelled(error, signal = null) {
+    return !!signal?.aborted || error?.name === 'AbortError';
+}
+
+function clearLoadingPlaceholderTimer(placeholder) {
+    if (placeholder?._timerInterval) {
+        clearInterval(placeholder._timerInterval);
+        placeholder._timerInterval = null;
+    }
 }
 
 // Error image path - served from extension folder
@@ -5912,11 +6147,15 @@ async function processMessageTags(messageId) {
     if (!messageElement) {
         console.error('[IIG] Message element not found for ID:', messageId);
         toastr.error('Не удалось найти элемент сообщения', 'Генерация картинок');
+        processingMessages.delete(messageId);
         return;
     }
-    
+
     const mesTextEl = messageElement.querySelector('.mes_text');
-    if (!mesTextEl) return;
+    if (!mesTextEl) {
+        processingMessages.delete(messageId);
+        return;
+    }
     
     // Process each tag in parallel
     const processTag = async (tag, index) => {
@@ -6067,14 +6306,16 @@ async function processMessageTags(messageId) {
         }
         
         const statusEl = loadingPlaceholder.querySelector('.iig-status');
-        
+
         try {
             const generated = await generateImageWithRetry(
                 tag.prompt,
                 resolveEffectiveStyle(tag.style),
                 (status) => { statusEl.textContent = status; },
-                { aspectRatio: tag.aspectRatio, imageSize: tag.imageSize, quality: tag.quality, preset: tag.preset, messageId }
+                { aspectRatio: tag.aspectRatio, imageSize: tag.imageSize, quality: tag.quality, preset: tag.preset, messageId, signal: getLoadingSignal(loadingPlaceholder) }
             );
+            finishLoadingGeneration(loadingPlaceholder);
+            clearLoadingPlaceholderTimer(loadingPlaceholder);
 
             let persistedSrc = '';
             let persistedPosterSrc = '';
@@ -6143,12 +6384,14 @@ async function processMessageTags(messageId) {
                 { timeOut: 2000 }
             );
         } catch (error) {
-            iigLog('ERROR', `Failed to generate image for tag ${index}:`, error.message);
-            
+            clearLoadingPlaceholderTimer(loadingPlaceholder);
+            const cancelled = isGenerationCancelled(error, getLoadingSignal(loadingPlaceholder));
+            iigLog(cancelled ? 'INFO' : 'ERROR', `${cancelled ? 'Cancelled' : 'Failed to generate'} image for tag ${index}:`, error.message);
+
             // Replace with error placeholder
             const errorPlaceholder = createErrorPlaceholder(tagId, error.message, tag);
             loadingPlaceholder.replaceWith(errorPlaceholder);
-            
+
             // IMPORTANT: Mark tag as failed in message.mes - use error.svg path so it displays properly after swipe
             if (tag.isNewFormat) {
                 // NEW FORMAT: update src with error image path (will be detected for retry)
@@ -6160,8 +6403,9 @@ async function processMessageTags(messageId) {
                 replaceTagInMessageSource(message, tag, errorMarker);
             }
             iigLog('INFO', `Marked tag as failed in message.mes`);
-            
-            toastr.error(`Ошибка генерации: ${error.message}`, 'Генерация картинок');
+
+            if (cancelled) toastr.info('Генерация отменена', 'Генерация картинок', { timeOut: 2500 });
+            else toastr.error(`Ошибка генерации: ${error.message}`, 'Генерация картинок');
         }
     };
     
@@ -6179,7 +6423,12 @@ async function processMessageTags(messageId) {
     
     // Force re-render the message to show updated content
     // Use SillyTavern's messageFormatting if available
-    if (typeof context.messageFormatting === 'function') {
+    if (message.extra?.iig_history_pic) {
+        // Иллюстрация сцены: наш markup — мимо messageFormatting, иначе юзерские
+        // анти-HTML регексы зачищают сообщение в ноль (см. historyPicRenderHtml).
+        mesTextEl.innerHTML = historyPicRenderHtml(message);
+        console.log('[IIG] History-pic message re-rendered directly');
+    } else if (typeof context.messageFormatting === 'function') {
         const formattedMessage = context.messageFormatting(
             getMessageRenderText(message, settings),
             message.name,
@@ -6204,6 +6453,60 @@ async function processMessageTags(messageId) {
 }
 
 /**
+ * Перерисовать сообщение из источника (message.mes/display_text) и заново навесить
+ * кнопки на картинки. Лечит «протухший» DOM: вечные спиннеры от упавших генераций,
+ * потерянные обёртки с кнопками и т.п.
+ */
+// «Иллюстрация сцены» — сообщение с нашим СОБСТВЕННЫМ разметкой (цитата + картинка).
+// Его нельзя пропускать через messageFormatting: юзерские regex-скрипты (анти-HTML
+// «вэнквишеры») вычищают его в ноль, а у скрытых (is_system) сообщений ST не считает
+// depth (исключает их из usableMessages) — из-за этого minDepth-ограничения регексов
+// не срабатывают, и даже свежее сообщение попадает под нож. Рендерим сами.
+function historyPicRenderHtml(message) {
+    const raw = String(message?.mes || '');
+    try {
+        if (window.DOMPurify?.sanitize) return window.DOMPurify.sanitize(raw);
+    } catch (_) { /* нет DOMPurify — mes целиком наш, отдаём как есть */ }
+    return raw;
+}
+
+// Идемпотентное восстановление DOM такого сообщения (загрузка чата, редактирование,
+// любые перерисовки ST). true = содержимое вписали заново.
+function restoreHistoryPicMessageDom(messageId) {
+    const context = SillyTavern.getContext();
+    const message = context.chat[messageId];
+    if (!message?.extra?.iig_history_pic) return false;
+    const mesTextEl = document.querySelector(`#chat .mes[mesid="${messageId}"] .mes_text`);
+    if (!mesTextEl) return false;
+    // Картинка/видео уже на месте (сырым тегом или обёрнутым конвейером) — не трогаем.
+    if (mesTextEl.querySelector('img, video')) return false;
+    mesTextEl.innerHTML = historyPicRenderHtml(message);
+    return true;
+}
+
+function rerenderMessageFromSource(messageId) {
+    const context = SillyTavern.getContext();
+    const settings = getSettings();
+    const message = context.chat[messageId];
+    const mesTextEl = document.querySelector(`#chat .mes[mesid="${messageId}"] .mes_text`);
+    if (!message || !mesTextEl) return null;
+    if (message.extra?.iig_history_pic) {
+        // Наш собственный markup — мимо messageFormatting (см. historyPicRenderHtml).
+        mesTextEl.innerHTML = historyPicRenderHtml(message);
+    } else if (typeof context.messageFormatting === 'function') {
+        mesTextEl.innerHTML = context.messageFormatting(
+            getMessageRenderText(message, settings),
+            message.name,
+            message.is_system,
+            message.is_user,
+            messageId
+        );
+    }
+    enhanceRenderedImages(mesTextEl, messageId);
+    return mesTextEl;
+}
+
+/**
  * Regenerate all images in a message (user-triggered)
  */
 async function regenerateMessageImages(messageId) {
@@ -6225,47 +6528,69 @@ async function regenerateMessageImages(messageId) {
     
     iigLog('INFO', `Regenerating ${tags.length} images in message ${messageId}`);
     toastr.info(`Перегенерация ${tags.length} картинок...`, 'Генерация картинок');
-    
+
     // Process using existing logic
     processingMessages.add(messageId);
-    
+
     const messageElement = document.querySelector(`#chat .mes[mesid="${messageId}"]`);
-    if (!messageElement) {
-        processingMessages.delete(messageId);
-        return;
-    }
-    
-    const mesTextEl = messageElement.querySelector('.mes_text');
+    const mesTextEl = messageElement?.querySelector('.mes_text');
     if (!mesTextEl) {
         processingMessages.delete(messageId);
+        toastr.error('Элемент сообщения не найден', 'Генерация картинок');
         return;
     }
-    
-    for (let index = 0; index < tags.length; index++) {
-        const tag = tags[index];
-        const tagId = `iig-regen-${messageId}-${index}`;
-        
-        try {
-            // Find the existing rendered media element with data-iig-instruction
-            const existingMediaList = Array.from(
-                mesTextEl.querySelectorAll('img[data-iig-instruction], video[data-iig-instruction]')
-            );
-            const existingMedia = existingMediaList[index] || existingMediaList[0] || null;
-            if (existingMedia) {
+
+    try {
+        for (let index = 0; index < tags.length; index++) {
+            const tag = tags[index];
+            const tagId = `iig-regen-${messageId}-${index}`;
+            const taskKey = singleTagTaskKey(messageId, index);
+            if (activeSingleTagTasks.has(taskKey)) {
+                iigLog('INFO', `Skipping tag ${index}: already being generated`);
+                continue;
+            }
+            activeSingleTagTasks.add(taskKey);
+            let loadingPlaceholder = null;
+            let replacedEl = null;
+
+            try {
+                // Find the existing rendered media element with data-iig-instruction
+                let existingMediaList = Array.from(
+                    mesTextEl.querySelectorAll('img[data-iig-instruction], video[data-iig-instruction]')
+                );
+                let existingMedia = existingMediaList.find((m) => Number.parseInt(m.dataset.iigTagIndex || '', 10) === index)
+                    || existingMediaList[index]
+                    || null;
+                if (!existingMedia) {
+                    // DOM протух (вечный спиннер от упавшей попытки и т.п.) — восстановим разметку из источника
+                    rerenderMessageFromSource(messageId);
+                    existingMediaList = Array.from(
+                        mesTextEl.querySelectorAll('img[data-iig-instruction], video[data-iig-instruction]')
+                    );
+                    existingMedia = existingMediaList[index] || null;
+                }
+                if (!existingMedia) {
+                    throw new Error(`Картинка ${index + 1} не найдена в сообщении`);
+                }
+
                 // Preserve the instruction for future regenerations
                 const instruction = existingMedia.getAttribute('data-iig-instruction');
-                
-                const loadingPlaceholder = createLoadingPlaceholder(tagId);
-                existingMedia.replaceWith(loadingPlaceholder);
-                
+
+                // Если картинка обёрнута панелькой действий — заменяем всю обёртку
+                replacedEl = existingMedia.closest('.iig-image-wrapper') || existingMedia;
+                loadingPlaceholder = createLoadingPlaceholder(tagId);
+                replacedEl.replaceWith(loadingPlaceholder);
+
                 const statusEl = loadingPlaceholder.querySelector('.iig-status');
-                
+
                 const generated = await generateImageWithRetry(
                     tag.prompt,
                     resolveEffectiveStyle(tag.style),
                     (status) => { statusEl.textContent = status; },
-                    { aspectRatio: tag.aspectRatio, imageSize: tag.imageSize, quality: tag.quality, preset: tag.preset, messageId }
+                    { aspectRatio: tag.aspectRatio, imageSize: tag.imageSize, quality: tag.quality, preset: tag.preset, messageId, signal: getLoadingSignal(loadingPlaceholder) }
                 );
+                finishLoadingGeneration(loadingPlaceholder);
+                clearLoadingPlaceholderTimer(loadingPlaceholder);
 
                 let persistedSrc = '';
                 let persistedPosterSrc = '';
@@ -6305,32 +6630,46 @@ async function regenerateMessageImages(messageId) {
                 if (instruction) {
                     mediaElement.setAttribute('data-iig-instruction', instruction);
                 }
+                mediaElement.dataset.iigTagIndex = String(index);
 
                 // Wrap with actions
                 const wrappedElement = wrapImageWithActions(mediaElement, tag, messageId, index, tags.length);
                 loadingPlaceholder.replaceWith(wrappedElement);
-                
+
                 // Update message.mes
                 const updatedTag = isGeneratedVideoResult(generated)
                     ? buildPersistedVideoTag(tag.fullMatch, persistedSrc, persistedPosterSrc)
                     : tag.fullMatch.replace(/src\s*=\s*(['"])[^'"]*\1/i, `src="${persistedSrc}"`);
                 replaceTagInMessageSource(message, tag, updatedTag);
-                
+
                 toastr.success(
                     `${isGeneratedVideoResult(generated) ? 'Видео' : 'Картинка'} ${index + 1}/${tags.length} готов${isGeneratedVideoResult(generated) ? 'о' : 'а'}`,
                     'Генерация картинок',
                     { timeOut: 2000 }
                 );
+            } catch (error) {
+                clearLoadingPlaceholderTimer(loadingPlaceholder);
+                const cancelled = isGenerationCancelled(error, getLoadingSignal(loadingPlaceholder));
+                // Возвращаем старую картинку на место вместо вечного спиннера —
+                // кнопки действий сохраняются, можно повторить попытку.
+                if (loadingPlaceholder?.isConnected && replacedEl) {
+                    loadingPlaceholder.replaceWith(replacedEl);
+                }
+                iigLog(cancelled ? 'INFO' : 'ERROR', `Regeneration ${cancelled ? 'cancelled' : 'failed'} for tag ${index}:`, error.message);
+                if (cancelled) {
+                    toastr.info('Генерация отменена', 'Генерация картинок', { timeOut: 2500 });
+                    break;
+                }
+                toastr.error(`Ошибка: ${error.message}`, 'Генерация картинок');
+            } finally {
+                activeSingleTagTasks.delete(taskKey);
             }
-        } catch (error) {
-            iigLog('ERROR', `Regeneration failed for tag ${index}:`, error.message);
-            toastr.error(`Ошибка: ${error.message}`, 'Генерация картинок');
         }
+    } finally {
+        processingMessages.delete(messageId);
+        await context.saveChat();
+        iigLog('INFO', `Regeneration complete for message ${messageId}`);
     }
-    
-    processingMessages.delete(messageId);
-    await context.saveChat();
-    iigLog('INFO', `Regeneration complete for message ${messageId}`);
 }
 
 /**
@@ -6377,6 +6716,8 @@ function addButtonsToExistingMessages() {
         // Only add to AI messages (not user messages)
         if (message && !message.is_user) {
             addRegenerateButton(messageElement, messageId);
+            // Иллюстрацию сцены могли вычистить регексы при отрисовке — возвращаем.
+            try { restoreHistoryPicMessageDom(messageId); } catch (_) {}
             const mesText = messageElement.querySelector('.mes_text');
             if (mesText) enhanceRenderedImages(mesText, messageId);
             addedCount++;
@@ -6409,7 +6750,10 @@ async function onMessageReceived(messageId) {
     
     // Always add regenerate button for AI messages
     addRegenerateButton(messageElement, messageId);
-    
+
+    // Иллюстрация сцены: ST мог отрисовать её пустой (регексы юзера) — возвращаем разметку.
+    try { restoreHistoryPicMessageDom(messageId); } catch (_) {}
+
     await processMessageTags(messageId);
     
     // Enhance already-rendered images with zoom/fullscreen/regen buttons
@@ -7048,7 +7392,7 @@ function bindRefSlotEvents() {
             const file = e.target?.files?.[0];
             if (!file) return;
             try {
-                const resized = await iigFileToResizedBase64(file, 512);
+                const resized = await iigFileToResizedBase64(file, 512, true);
                 const name = (nameInput?.value || '').trim() || file.name.replace(/\.[^.]+$/, '') || 'Avatar';
                 addAvatarItem(name, resized, target);
                 if (nameInput) nameInput.value = '';
@@ -7186,23 +7530,19 @@ function bindRefSlotEvents() {
                     const f = inp.files?.[0];
                     if (!f) return;
                     try {
-                        const reader = new FileReader();
-                        reader.onload = async (ev) => {
-                            const rawBase64 = ev.target.result.split(',')[1];
-                            const compressed = await compressBase64Image(rawBase64);
-                            const ref = getRefByKey(key, settings);
-                            ref.imageBase64 = compressed;
-                            try {
-                                ref.imagePath = await saveRefImageToFile(compressed, key);
-                                ref.imageBase64 = '';
-                            }
-                            catch (saveErr) { iigLog('WARN', `Could not save ref to file: ${saveErr.message}`); }
-                            if (!ref.name) ref.name = f.name.replace(/\.[^.]+$/, '');
-                            saveSettings();
-                            renderRefSlots(); bindRefSlotEvents();
-                            toastr.success('Референс загружен', 'Генерация картинок');
-                        };
-                        reader.readAsDataURL(f);
+                        const dataUrl = await iigCropImageDialog(await iigFileToDataUrl(f));
+                        const compressed = await compressBase64Image(dataUrl.split(',')[1]);
+                        const ref = getRefByKey(key, settings);
+                        ref.imageBase64 = compressed;
+                        try {
+                            ref.imagePath = await saveRefImageToFile(compressed, key);
+                            ref.imageBase64 = '';
+                        }
+                        catch (saveErr) { iigLog('WARN', `Could not save ref to file: ${saveErr.message}`); }
+                        if (!ref.name) ref.name = f.name.replace(/\.[^.]+$/, '');
+                        saveSettings();
+                        renderRefSlots(); bindRefSlotEvents();
+                        toastr.success('Референс загружен', 'Генерация картинок');
                     } catch (err) { toastr.error('Ошибка: ' + err.message, 'Генерация картинок'); }
                 });
                 inp.click(); return;
@@ -7547,13 +7887,8 @@ function bindLorebookRefCardEvents() {
             const file = e.target.files?.[0];
             if (!file) return;
             try {
-                const rawBase64 = await new Promise((resolve, reject) => {
-                    const reader = new FileReader();
-                    reader.onloadend = () => resolve(reader.result.split(',')[1]);
-                    reader.onerror = reject;
-                    reader.readAsDataURL(file);
-                });
-                const compressed = await compressBase64Image(rawBase64, 768, 0.8);
+                const dataUrl = await iigCropImageDialog(await iigFileToDataUrl(file));
+                const compressed = await compressBase64Image(dataUrl.split(',')[1], 768, 0.8);
                 ref.imagePath = await saveRefImageToFile(compressed, `lorebook_ref_${index}`);
                 if (!ref.name) ref.name = file.name.replace(/\.[^.]+$/, '');
                 saveSettings();
@@ -7571,8 +7906,9 @@ function bindLorebookRefCardEvents() {
             const url = (prompt('URL изображения:') || '').trim();
             if (!url) return;
             try {
-                const dataUrl = await imageUrlToDataUrl(url);
+                let dataUrl = await imageUrlToDataUrl(url);
                 if (!dataUrl) throw new Error('Не удалось загрузить');
+                dataUrl = await iigCropImageDialog(dataUrl);
                 const b64 = dataUrl.split(',')[1];
                 const compressed = await compressBase64Image(b64, 768, 0.8);
                 ref.imagePath = await saveRefImageToFile(compressed, `lorebook_ref_${index}`);
@@ -7692,6 +8028,604 @@ function bindVisionSettingsEvents() {
     });
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  Иллюстрация сцены («картинка по истории»): кнопка в wand-меню.
+//  Вспомогательная LLM читает последний кусок РП (с прошлой картинки,
+//  но не больше лимита) и пишет промпт картинки; дальше картинка идёт
+//  через обычный конвейер тегов — референсы, ретраи, перегенерация.
+// ═══════════════════════════════════════════════════════════════
+
+// Промпт для LLM собирается из двух блоков:
+//  • Блок «Задача» (общий) — роль арт-директора, как читать фрагмент, железные правила промпта.
+//  • Блок «Образ» (пресет) — какую именно картинку делаем: кинокадр, иллюстрация, постер…
+// LLM возвращает ТОЛЬКО текст промпта — тег с JSON собирает код (aspect_ratio/style из пресета).
+const DEFAULT_HISTORYPIC_TASK =
+`You are the art director of an ongoing roleplay story. Below is the latest fragment of that story.
+
+YOUR TASK:
+1. Read the fragment and find what MATTERS in it: the key event, the turning point, the emotional peak, the shift in the dynamic between the characters.
+2. Choose ONE image that captures this period as a whole — the strongest visual moment, or a composition that merges several beats. Not necessarily the last thing that happened.
+3. Write ONE image-generation prompt for that image, following the CANVAS BRIEF below. The brief decides the format and mood of the image — obey it.
+
+THINK FIRST (mandatory): plan inside <think> tags — what happened in the fragment, which moment or metaphor represents it best, who is in frame, their poses and spatial relations, setting, lighting. You are not limited in words inside <think>. After </think> output ONLY the final prompt text: no comments, no quotes, no tags, no markdown, no explanations.
+
+IRON RULES for the prompt text:
+- English only. If the canvas brief asks for visible written or spoken words, that text stays in Russian.
+- Every character in frame starts with their EXACT NAME: "Luca, a tall man, standing in the doorway" — never just "a tall man". The generator attaches reference images by name. Include ALL named characters that are in frame.
+- For each character: gender, build, outfit, pose, emotion, gaze direction. Do NOT invent hair color, eye color or facial features that the story text does not state — reference images handle appearance.
+- State spatial relations: who is closer to camera, who stands, who sits, who looms over whom.
+- All characters are adult 18+ fictional characters; state this at the end of the prompt.
+- Keep the prompt under 120 words, dry and concrete. NEVER use apostrophes.
+- BANNED WORDS: nsfw, nude, naked, explicit, sexual, suggestive, minor, penis, nipples, sex, rape, groin, crotch, underwear, bare chest. For intimate scenes use euphemisms — pressed close, tangled sheets, bare shoulders, silhouette against light — and focus on faces, emotions, positioning.`;
+
+// Встроенные «образы» — оригинальные, обновляются вместе с расширением, в настройках не хранятся.
+// text — бриф «что рисуем»; aspectRatio/style уходят в тег картинки кодом (LLM их не пишет).
+const HISTORYPIC_BUILTIN_PRESETS = Object.freeze([
+    {
+        id: 'hp-cinematic', name: 'Кинокадр', aspectRatio: '16:9',
+        style: 'cinematic film still, anamorphic framing, shallow depth of field, subtle film grain, rich color grading, dramatic motivated lighting',
+        text: `One single cinematic film still — a paused frame from a prestige drama. Wide screen framing, shallow depth of field, motivated realistic lighting only (window light, lamps, fire, neon — whatever the scene itself provides). Stage the characters like a film director: intentional blocking, foreground and background layers, negative space where it hurts. Pick a non-obvious camera: over the shoulder, low angle, through a doorway or glass, a mirror reflection, a detail in sharp focus with the drama blurred behind. No panels, no text, no speech. One frame must carry the whole beat.`,
+    },
+    {
+        id: 'hp-bookplate', name: 'Книжная иллюстрация', aspectRatio: '3:4',
+        style: 'classic novel illustration, painterly full page plate, visible brushwork, rich textures, warm muted palette, storybook composition',
+        text: `One full-page painted illustration, like a plate from a beautifully published novel. The scene is shown as a whole: characters inside a living environment that tells the story with them — the room, the weather, the small telling objects. Composition is deliberate and slightly theatrical, with one clear focal point and supporting details that reward a second look. Light is painterly and atmospheric. A thin decorative border or a vignette edge is welcome when it fits the mood of the story. No text, no panels.`,
+    },
+    {
+        id: 'hp-anime', name: 'Аниме-кадр', aspectRatio: '16:9',
+        style: 'anime keyframe, high quality TV anime screencap, clean lineart, expressive faces, soft cel shading, atmospheric background art',
+        text: `One key frame from a high-budget anime adaptation of this story — the shot the studio would put in the trailer. Prioritize emotion: expressive faces and eyes, body language pushed slightly past realism. Choose either an intense close-up with a dramatic background treatment, or a wide atmospheric scene where small figures sit inside overwhelming scenery — whichever the fragment calls for. Light and air matter: god rays, dust, rain, the glow of screens or street lights. No panels, no speech bubbles, no text.`,
+    },
+    {
+        id: 'hp-poster', name: 'Постер эпизода', aspectRatio: '2:3',
+        style: 'dramatic episode poster art, painted montage, cinematic lighting, rich color, high detail',
+        text: `One vertical poster for this episode of the story, like key art for a series. The main characters stand in the foreground in expressive poses that show their current dynamic — closeness, tension, opposition. Behind and around them a montage: translucent symbols, locations and charged objects from the fragment woven into the background; larger-than-life faces fading into the sky are allowed. Dramatic unified lighting ties every layer together. Absolutely no text, no title, no logos — the image alone sells the episode.`,
+    },
+    {
+        id: 'hp-photo', name: 'Момент-фото', aspectRatio: '3:4',
+        style: 'candid 35mm photograph, natural ambient light, shallow focus, authentic colors, documentary feel',
+        text: `One candid photograph taken inside the story world, as if someone present grabbed a camera or a phone at exactly the right second. Imperfect, honest framing: subjects caught mid-motion or mid-emotion, maybe slightly off-center, someone unaware of the camera. Only the natural ambient light of the actual scene. Small environmental details keep it real — clutter, steam over a cup, a coat half off. Intimate and warm or awkward and raw, following the fragment. No posing for the viewer, no text.`,
+    },
+    {
+        id: 'hp-symbol', name: 'Символ', aspectRatio: '1:1',
+        style: 'symbolic minimalist illustration, poetic still life, single dramatic light source, rich shadow, painterly detail',
+        text: `One symbolic image that stands in for what happened — no full characters, or characters reduced to hands, silhouettes or reflections. Choose one strong metaphor from the fragment: a charged object, two hands almost touching, a broken or mended thing, an empty chair, light dying or breaking through. Compose it like a poetic still life: minimal elements, one dominant light source, meaningful shadow, generous negative space. A viewer who read the fragment must feel a punch of recognition. No text.`,
+    },
+]);
+
+// Нормализация своих пресетов + миграция старого historyPicPrompt в standalone-пресет.
+function ensureHistoryPicPresets(settings = getSettings()) {
+    if (!Array.isArray(settings.historyPicPresets)) settings.historyPicPresets = [];
+    settings.historyPicPresets = settings.historyPicPresets.map((p, i) => ({
+        id: String(p?.id || `iig-hp-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 8)}`),
+        name: String(p?.name || `Свой образ ${i + 1}`).trim(),
+        text: String(p?.text || ''),
+        aspectRatio: String(p?.aspectRatio || '').trim(),
+        style: String(p?.style || '').trim(),
+        standalone: !!p?.standalone,
+    }));
+    // Legacy-миграция: старый полный шаблон становится standalone-пресетом (дедуп по тексту —
+    // старый профиль может принести historyPicPrompt повторно) и остаётся активным.
+    const legacy = String(settings.historyPicPrompt || '').trim();
+    if (legacy) {
+        let preset = settings.historyPicPresets.find(p => p.text.trim() === legacy);
+        if (!preset) {
+            preset = {
+                id: `iig-hp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                name: 'Мой промпт', text: legacy, aspectRatio: '', style: '', standalone: true,
+            };
+            settings.historyPicPresets.push(preset);
+        }
+        settings.historyPicPresetId = preset.id;
+        settings.historyPicPrompt = '';
+    }
+    if (!findHistoryPicPreset(settings.historyPicPresetId, settings)) {
+        settings.historyPicPresetId = HISTORYPIC_BUILTIN_PRESETS[0].id;
+    }
+    return settings.historyPicPresets;
+}
+
+function findHistoryPicPreset(id, settings = getSettings()) {
+    if (!id) return null;
+    return HISTORYPIC_BUILTIN_PRESETS.find(p => p.id === id)
+        || (Array.isArray(settings.historyPicPresets) ? settings.historyPicPresets.find(p => p.id === id) : null)
+        || null;
+}
+
+function isHistoryPicBuiltin(id) {
+    return HISTORYPIC_BUILTIN_PRESETS.some(p => p.id === id);
+}
+
+function getActiveHistoryPicPreset(settings = getSettings()) {
+    ensureHistoryPicPresets(settings);
+    return findHistoryPicPreset(settings.historyPicPresetId, settings) || HISTORYPIC_BUILTIN_PRESETS[0];
+}
+
+// Шаблон запроса к LLM: «Задача» + «Образ», либо один пресет целиком (standalone).
+function buildHistoryPicLlmTemplate(settings, preset) {
+    if (preset?.standalone) return String(preset.text || '').trim() || DEFAULT_HISTORYPIC_TASK;
+    const task = String(settings.historyPicTaskPrompt || '').trim() || DEFAULT_HISTORYPIC_TASK;
+    const canvas = String(preset?.text || '').trim();
+    return canvas ? `${task}\n\nCANVAS BRIEF (the image to create):\n${canvas}` : task;
+}
+
+// Хвост к запросу при включённой цитате: LLM дописывает отдельной строкой эпиграф момента.
+const HISTORYPIC_QUOTE_APPENDIX =
+`\n\nQUOTE (mandatory): after the prompt, output one more separate line, exactly in this form:
+QUOTE: одна короткая пронзительная строка на русском (3-15 слов) — дословная реплика из фрагмента или выжимка сути момента.
+It will be shown next to the picture as an epigraph. No other commentary after it.`;
+
+// Вытаскивает строку «QUOTE: …» из ответа LLM. Возвращает { quote, rest } —
+// rest уходит в cleanHistoryPicResponse как раньше.
+function extractHistoryPicQuote(raw) {
+    let s = String(raw || '');
+    // Сначала режем размышления: QUOTE внутри <think> — черновик, не берём.
+    s = s.replace(/<think\b[^>]*>[\s\S]*?<\/think\s*>/gi, '');
+    let quote = '';
+    s = s.replace(/^\s*(?:QUOTE|ЦИТАТА)\s*[:—-]\s*(.+)\s*$/im, (_, q) => { quote = q; return ''; });
+    quote = quote
+        .replace(/<[^>]*>/g, ' ').replace(/[<>]/g, ' ')
+        .replace(/\s+/g, ' ').trim()
+        .replace(/^["'«»]+|["'«»]+$/g, '').trim();
+    if (quote.length > 200) quote = quote.slice(0, 200).trim() + '…';
+    return { quote, rest: s };
+}
+
+// Признак «в сообщении уже есть сгенерированная картинка/видео» — граница периода истории.
+const HISTORYPIC_IMG_RE = /\[IMG:✓:|\[VID:✓:|\[IMG:GEN[:\]]|\[IMG:ERROR|data-iig-instruction/;
+
+// Текст сообщения без картиночной разметки — в кусок истории для LLM идёт только сюжет.
+function historyPicCleanText(raw) {
+    let s = String(raw || '');
+    s = s.replace(/\[IMG:GEN:\{[\s\S]*?\}\]/g, ' ');
+    s = s.replace(/\[(?:IMG|VID):[^\]]*\]/g, ' ');
+    s = s.replace(/<video\b[^>]*>[\s\S]*?<\/video\s*>/gi, ' ');
+    s = s.replace(/<[^>]+>/g, ' ');
+    s = s.replace(/\s+/g, ' ').trim();
+    // Ограничиваем длину поста: LLM нужен сюжет, а не простыня целиком.
+    if (s.length > 1500) s = s.slice(0, 1500) + '…';
+    return s;
+}
+
+// Кусок истории для LLM: сообщения ПОСЛЕ последней сгенерированной картинки, максимум N
+// (настройка historyPicMaxMessages). Если картинок не было — просто последние N. Даже если
+// картинка совсем свежая, добираем минимум 3 сообщения, чтобы LLM было из чего писать.
+function collectHistoryPicSlice() {
+    const context = SillyTavern.getContext();
+    const settings = getSettings();
+    const cap = Math.max(2, Math.min(100, parseInt(settings.historyPicMaxMessages, 10) || 20));
+    const HISTORYPIC_MIN = 3;
+    const lines = [];
+    for (let i = context.chat.length - 1; i >= 0 && lines.length < cap; i--) {
+        const m = context.chat[i];
+        if (!m) continue;
+        // Границу-картинку ищем и в скрытых (is_system) сообщениях: сама иллюстрация теперь
+        // может вставляться скрытой — иначе следующий вызов не увидит прошлую картинку.
+        if (HISTORYPIC_IMG_RE.test(String(m.mes || '')) && lines.length >= HISTORYPIC_MIN) break;
+        if (m.is_system) continue;
+        const text = historyPicCleanText(m.mes);
+        if (text) lines.push(`${m.name || (m.is_user ? 'User' : 'Narrator')}: ${text}`);
+    }
+    lines.reverse();
+    return lines.join('\n');
+}
+
+// Запрос к LLM, которая пишет промпт: 'chat' — основная модель ST (generateQuietPrompt),
+// 'vision' — эндпоинт из таба Vision (текстовый вызов, без картинки).
+async function callHistoryPicLlm(promptText) {
+    const settings = getSettings();
+    if (settings.historyPicLlm === 'vision') {
+        const { endpoint, apiKey, model } = getEffectiveVisionConfig();
+        if (!endpoint || !apiKey || !model) {
+            throw new Error('Vision API не настроен: заполните эндпоинт/ключ/модель в табе Vision или переключите «Промпт пишет» на основную модель чата');
+        }
+        const url = `${endpoint.replace(/\/+$/, '')}/v1/chat/completions`;
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                model,
+                messages: [{ role: 'user', content: promptText }],
+                max_tokens: 600,
+                temperature: 0.7,
+            }),
+        });
+        if (!response.ok) {
+            const errorText = await response.text().catch(() => '');
+            throw new Error(`Vision API ${response.status}: ${String(errorText).slice(0, 300)}`);
+        }
+        const result = await response.json();
+        return String(result?.choices?.[0]?.message?.content || '').trim();
+    }
+    const context = SillyTavern.getContext();
+    // generateRaw — ГОЛЫЙ запрос к основному API: без пресета, джейлбрейка и истории чата.
+    // Через generateQuietPrompt модель оставалась в роли и вместо промпта писала РП-пост.
+    if (typeof context.generateRaw === 'function') {
+        const result = await context.generateRaw({ prompt: promptText });
+        return String(result || '').trim();
+    }
+    if (typeof context.generateQuietPrompt !== 'function') throw new Error('Основная модель чата недоступна (нет generateRaw/generateQuietPrompt)');
+    const result = await context.generateQuietPrompt({ quietPrompt: promptText, skipWIAN: true });
+    return String(result || '').trim();
+}
+
+// Ответ LLM → чистый промпт картинки: режем размышления/кавычки/markdown.
+// Пресет юзера может велеть модели писать картиночные ТЕГИ — если модель вернула
+// готовый тег (новый или legacy формат), вытаскиваем prompt прямо из него.
+function cleanHistoryPicResponse(raw) {
+    let s = String(raw || '');
+    s = s.replace(/<think\b[^>]*>[\s\S]*?<\/think\s*>/gi, '');
+    s = s.replace(/<\/?think\b[^>]*>/gi, '');
+    // Новый формат: <img data-iig-instruction='{"prompt":"..."}'>
+    const instrMatch = s.match(/data-iig-instruction\s*=\s*(['"])([\s\S]*?)\1/i);
+    if (instrMatch) {
+        const json = instrMatch[2]
+            .replace(/&quot;/g, '"').replace(/&#34;/g, '"')
+            .replace(/&apos;/g, "'").replace(/&#39;/g, "'")
+            .replace(/&amp;/g, '&');
+        try {
+            const data = JSON.parse(json);
+            if (data.prompt) s = String(data.prompt);
+        } catch (_) {
+            try {
+                const data = JSON.parse(json.replace(/'/g, '"'));
+                if (data.prompt) s = String(data.prompt);
+            } catch (_) { /* не распарсилось — работаем с текстом как есть */ }
+        }
+    } else {
+        // Legacy формат: [IMG:GEN:{...}]
+        const tagMatch = s.match(/\[IMG:GEN:(\{[\s\S]*?\})\]/);
+        if (tagMatch) {
+            try {
+                const data = JSON.parse(tagMatch[1].replace(/'/g, '"'));
+                if (data.prompt) s = String(data.prompt);
+            } catch (_) { /* не распарсилось — работаем с текстом как есть */ }
+        }
+    }
+    s = s.replace(/<[^>]*>/g, ' '); // остатки HTML-разметки — в промпте им не место
+    s = s.replace(/```[a-z]*\n?/gi, ' ').replace(/```/g, ' ');
+    s = s.replace(/^\s*(?:prompt|промпт)\s*[:—-]\s*/i, '');
+    s = s.replace(/\s+/g, ' ').trim();
+    s = s.replace(/^["'«]+|["'»]+$/g, '').trim();
+    // Апострофы → типографские: промпт живёт в single-quoted HTML-атрибуте
+    // data-iig-instruction, обычный апостроф закрыл бы атрибут раньше времени.
+    s = s.replace(/'/g, '’');
+    // Угловые скобки убираем совсем — чтобы кусок промпта не приняли за HTML-тег.
+    s = s.replace(/[<>]/g, ' ').replace(/\s+/g, ' ').trim();
+    return s;
+}
+
+let historyPicBusy = false;
+
+// Кнопка «Иллюстрация сцены»: собрать кусок РП → LLM пишет промпт → вставить в чат
+// новое сообщение с тегом [IMG:GEN:{...}] → processMessageTags генерирует как обычно.
+async function generateHistoryPicture() {
+    const context = SillyTavern.getContext();
+    const settings = getSettings();
+    if (historyPicBusy) { toastr.info('Уже генерирую — подождите', 'Иллюстрация сцены', { timeOut: 2000 }); return; }
+    if (!settings.enabled) { toastr.warning('Расширение выключено', 'Иллюстрация сцены'); return; }
+    try { validateSettings(); } catch (e) { toastr.error(e.message, 'Иллюстрация сцены'); return; }
+    historyPicBusy = true;
+    try {
+        const history = collectHistoryPicSlice();
+        if (!history) { toastr.warning('В чате нет текста для иллюстрации', 'Иллюстрация сцены'); return; }
+        const lastAi = [...context.chat].reverse().find(m => m && !m.is_user && !m.is_system);
+        const charName = lastAi?.name || context.name2 || 'Narrator';
+        const userName = context.name1 || 'User';
+        const preset = getActiveHistoryPicPreset(settings);
+        let tpl = buildHistoryPicLlmTemplate(settings, preset);
+        if (settings.historyPicQuote !== false) tpl += HISTORYPIC_QUOTE_APPENDIX;
+        // Функции-заменители: '$' в тексте РП не должен трактоваться как спецпаттерн replace.
+        let llmPrompt = tpl
+            .replaceAll('{{history}}', () => history)
+            .replaceAll('{{char}}', () => charName)
+            .replaceAll('{{user}}', () => userName);
+        // Юзерский шаблон без {{history}} — дописываем кусок РП в конец, иначе LLM нечего сводить.
+        if (!tpl.includes('{{history}}')) llmPrompt += `\n\nRoleplay fragment:\n${history}`;
+        const llmName = settings.historyPicLlm === 'vision' ? 'Vision API' : 'модель чата';
+        toastr.info(`${llmName} пишет промпт (сообщений: ${history.split('\n').length})…`, 'Иллюстрация сцены', { timeOut: 30000 });
+        const rawResponse = await callHistoryPicLlm(llmPrompt);
+        const { quote, rest } = settings.historyPicQuote !== false
+            ? extractHistoryPicQuote(rawResponse)
+            : { quote: '', rest: rawResponse };
+        const imgPrompt = cleanHistoryPicResponse(rest);
+        iigLog('INFO', `history pic prompt: ${imgPrompt.slice(0, 200)}`);
+        if (!imgPrompt || imgPrompt.length < 10) {
+            throw new Error(`LLM не вернула промпт (ответ: «${String(rawResponse).slice(0, 120)}»)`);
+        }
+        // Новое сообщение с тегом НОВОГО формата (<img data-iig-instruction>): конвейер сам
+        // сгенерирует картинку, подставит src и повесит кнопку перегенерации. Legacy-формат
+        // [IMG:GEN:...] не используем: у завершённого маркера [IMG:✓:путь] нет отрисовки,
+        // после перерендера он остаётся в сообщении сырым текстом.
+        // aspect_ratio и style кладёт КОД из пресета (LLM их не пишет — раньше выбрасывались).
+        const instruction = { prompt: imgPrompt };
+        const presetAr = String(preset.aspectRatio || '').trim();
+        if (VALID_ASPECT_RATIOS.includes(presetAr)) instruction.aspect_ratio = presetAr;
+        // Апострофы → типографские: JSON живёт в single-quoted HTML-атрибуте.
+        const presetStyle = String(preset.style || '').trim().replace(/'/g, '’');
+        if (presetStyle) instruction.style = presetStyle;
+        // Цитата-эпиграф — над картинкой; скрытое сообщение (is_system) видно в чате,
+        // но не уходит в промпт следующих генераций.
+        const quoteHtml = quote ? `<blockquote class="iig-scene-quote">${sanitizeForHtml(quote)}</blockquote>\n` : '';
+        const message = {
+            name: charName,
+            is_user: false,
+            is_system: settings.historyPicHideFromContext !== false,
+            send_date: typeof context.humanizedDateTime === 'function' ? context.humanizedDateTime() : Date.now(),
+            mes: `${quoteHtml}<img data-iig-instruction='${JSON.stringify(instruction)}' src="[IMG:GEN]" alt="Иллюстрация сцены">`,
+            extra: { iig_history_pic: true },
+        };
+        context.chat.push(message);
+        const messageId = context.chat.length - 1;
+        context.addOneMessage(message, { scroll: true });
+        await context.saveChat();
+        // CHARACTER_MESSAGE_RENDERED для addOneMessage не стреляет — запускаем конвейер сами
+        // (onMessageReceived = processMessageTags + кнопка перегенерации + зум/фуллскрин).
+        await onMessageReceived(messageId);
+    } catch (e) {
+        iigLog('ERROR', 'history picture failed:', e.message);
+        toastr.error(String(e.message || e).slice(0, 300), 'Иллюстрация сцены', { timeOut: 7000 });
+    } finally {
+        historyPicBusy = false;
+    }
+}
+
+// Пункт «Иллюстрация сцены» в меню «волшебной палочки» (#extensionsMenu).
+// Попап с wand-кнопки: быстрый выбор образа/LLM/лимита + галки цитаты и скрытия,
+// затем запуск генерации. Вёрстка колонкой — нормально встаёт и на телефоне.
+async function openHistoryPicDialog() {
+    const context = SillyTavern.getContext();
+    const settings = getSettings();
+    if (!settings.enabled) { toastr.warning('Расширение выключено', 'Иллюстрация сцены'); return; }
+    if (historyPicBusy) { toastr.info('Уже генерирую — подождите', 'Иллюстрация сцены', { timeOut: 2000 }); return; }
+    // Старые ST без штатных попапов — генерим сразу, как раньше.
+    if (typeof context.callGenericPopup !== 'function' || !context.POPUP_TYPE?.CONFIRM) {
+        return generateHistoryPicture();
+    }
+    ensureHistoryPicPresets(settings);
+    const active = getActiveHistoryPicPreset(settings);
+    const wrap = document.createElement('div');
+    wrap.className = 'iig-hp-dialog';
+    const opt = (p) => `<option value="${sanitizeForHtml(p.id)}" ${p.id === active.id ? 'selected' : ''}>${sanitizeForHtml(p.name)}${p.standalone ? ' (полный)' : ''}</option>`;
+    wrap.innerHTML = `
+        <h3 class="iig-hp-dialog-title"><i class="fa-solid fa-panorama"></i> Иллюстрация сцены</h3>
+        <label>Образ (что рисуем)
+            <select id="iig_hpd_preset" class="text_pole">
+                <optgroup label="Встроенные">${HISTORYPIC_BUILTIN_PRESETS.map(opt).join('')}</optgroup>
+                ${settings.historyPicPresets.length ? `<optgroup label="Мои">${settings.historyPicPresets.map(opt).join('')}</optgroup>` : ''}
+            </select>
+        </label>
+        <div class="iig-hp-dialog-row">
+            <label>Промпт пишет
+                <select id="iig_hpd_llm" class="text_pole">
+                    <option value="chat" ${settings.historyPicLlm !== 'vision' ? 'selected' : ''}>Модель чата</option>
+                    <option value="vision" ${settings.historyPicLlm === 'vision' ? 'selected' : ''}>Vision API</option>
+                </select>
+            </label>
+            <label title="Сколько сообщений истории брать максимум (с прошлой картинки, но не больше)">Сообщений
+                <input type="number" id="iig_hpd_max" class="text_pole" min="2" max="100" step="1" value="${Math.max(2, Math.min(100, parseInt(settings.historyPicMaxMessages, 10) || 20))}">
+            </label>
+        </div>
+        <label class="checkbox_label" title="LLM допишет короткую строку-эпиграф — она встанет цитатой над картинкой">
+            <input type="checkbox" id="iig_hpd_quote" ${settings.historyPicQuote !== false ? 'checked' : ''}>
+            <span>Цитата-эпиграф над картинкой</span>
+        </label>
+        <label class="checkbox_label" title="Сообщение с иллюстрацией видно в чате, но модель его не получает в следующих генерациях">
+            <input type="checkbox" id="iig_hpd_hide" ${settings.historyPicHideFromContext !== false ? 'checked' : ''}>
+            <span>Не отправлять в контекст</span>
+        </label>
+    `;
+    const result = await context.callGenericPopup(wrap, context.POPUP_TYPE.CONFIRM, '', { okButton: 'Создать', cancelButton: 'Отмена' });
+    const affirmative = context.POPUP_RESULT?.AFFIRMATIVE ?? 1;
+    if (result !== affirmative && result !== true) return;
+    settings.historyPicPresetId = wrap.querySelector('#iig_hpd_preset')?.value || settings.historyPicPresetId;
+    settings.historyPicLlm = wrap.querySelector('#iig_hpd_llm')?.value === 'vision' ? 'vision' : 'chat';
+    settings.historyPicMaxMessages = Math.max(2, Math.min(100, parseInt(wrap.querySelector('#iig_hpd_max')?.value, 10) || 20));
+    settings.historyPicQuote = !!wrap.querySelector('#iig_hpd_quote')?.checked;
+    settings.historyPicHideFromContext = !!wrap.querySelector('#iig_hpd_hide')?.checked;
+    saveSettings();
+    // Отражаем выбор в карточке настроек, чтобы попап и карточка не разъезжались.
+    try { renderHistoryPicPresetUi(); } catch (_) {}
+    const llmSel = document.getElementById('iig_historypic_llm'); if (llmSel) llmSel.value = settings.historyPicLlm;
+    const maxEl = document.getElementById('iig_historypic_max'); if (maxEl) maxEl.value = settings.historyPicMaxMessages;
+    const quoteEl = document.getElementById('iig_historypic_quote'); if (quoteEl) quoteEl.checked = settings.historyPicQuote;
+    const hideEl = document.getElementById('iig_historypic_hide'); if (hideEl) hideEl.checked = settings.historyPicHideFromContext;
+    await generateHistoryPicture();
+}
+
+function ensureHistoryPicWandButton() {
+    const settings = getSettings();
+    const show = settings.enabled !== false && settings.historyPicEnabled !== false;
+    let item = document.getElementById('iig_historypic_wand');
+    if (!show) { if (item) item.remove(); return; }
+    const menu = document.getElementById('extensionsMenu');
+    if (!menu) return; // меню ещё не построено — повторим на APP_READY/CHAT_CHANGED
+    if (!item) {
+        item = document.createElement('div');
+        item.id = 'iig_historypic_wand';
+        item.className = 'list-group-item flex-container flexGap5';
+        item.title = 'Картинка по последним событиям РП: откроется окошко с выбором образа и запуском';
+        item.addEventListener('click', () => openHistoryPicDialog());
+        item.innerHTML = '<div class="fa-solid fa-panorama extensionsMenuExtensionButton"></div><span>Иллюстрация сцены</span>';
+        menu.appendChild(item);
+    }
+}
+
+// Перерисовка UI «образов»: селектор, поля своего пресета, readonly у встроенных,
+// textarea блока задачи. Вызывается после построения панели и после загрузки профиля.
+function renderHistoryPicPresetUi() {
+    const settings = getSettings();
+    ensureHistoryPicPresets(settings);
+    const sel = document.getElementById('iig_historypic_preset');
+    if (!sel) return;
+    const active = getActiveHistoryPicPreset(settings);
+    const own = settings.historyPicPresets;
+    const opt = (p) => `<option value="${sanitizeForHtml(p.id)}" ${p.id === active.id ? 'selected' : ''}>${sanitizeForHtml(p.name)}${p.standalone ? ' (полный)' : ''}</option>`;
+    sel.innerHTML = `<optgroup label="Встроенные">${HISTORYPIC_BUILTIN_PRESETS.map(opt).join('')}</optgroup>`
+        + (own.length ? `<optgroup label="Мои">${own.map(opt).join('')}</optgroup>` : '');
+    const builtin = isHistoryPicBuiltin(active.id);
+    document.getElementById('iig_historypic_preset_custom')?.classList.toggle('iig-hidden', builtin);
+    document.getElementById('iig_historypic_preset_del')?.classList.toggle('iig-hidden', builtin);
+    const txt = document.getElementById('iig_historypic_preset_text');
+    if (txt) {
+        txt.value = active.text || '';
+        txt.readOnly = builtin;
+        txt.style.opacity = builtin ? '0.8' : '';
+    }
+    const hint = document.getElementById('iig_historypic_preset_hint');
+    if (hint) {
+        hint.innerHTML = builtin
+            ? 'Встроенный образ — только чтение. Кнопка <i class="fa-solid fa-clone"></i> создаст твою редактируемую копию.'
+            : 'Бриф «что рисуем» для LLM. С галкой «полный промпт» пресет заменяет ВЕСЬ запрос (блок задачи не подставляется); плейсхолдеры <code>{{history}}</code>/<code>{{char}}</code>/<code>{{user}}</code> работают, без <code>{{history}}</code> кусок РП допишется в конец.';
+    }
+    if (!builtin) {
+        const nameEl = document.getElementById('iig_historypic_preset_name');
+        if (nameEl) nameEl.value = active.name;
+        const arEl = document.getElementById('iig_historypic_preset_ar');
+        if (arEl) arEl.value = VALID_ASPECT_RATIOS.includes(active.aspectRatio) ? active.aspectRatio : '';
+        const styleEl = document.getElementById('iig_historypic_preset_style');
+        if (styleEl) styleEl.value = active.style || '';
+        const saEl = document.getElementById('iig_historypic_preset_standalone');
+        if (saEl) saEl.checked = !!active.standalone;
+    }
+    const taskArea = document.getElementById('iig_historypic_task');
+    if (taskArea && document.activeElement !== taskArea) {
+        taskArea.value = settings.historyPicTaskPrompt || DEFAULT_HISTORYPIC_TASK;
+    }
+}
+
+function bindHistoryPicSettingsEvents() {
+    const settings = getSettings();
+    document.getElementById('iig_historypic_enabled')?.addEventListener('change', (e) => {
+        settings.historyPicEnabled = e.target.checked;
+        saveSettings();
+        ensureHistoryPicWandButton();
+    });
+    document.getElementById('iig_historypic_llm')?.addEventListener('change', (e) => {
+        settings.historyPicLlm = e.target.value === 'vision' ? 'vision' : 'chat';
+        saveSettings();
+    });
+    document.getElementById('iig_historypic_max')?.addEventListener('change', (e) => {
+        settings.historyPicMaxMessages = Math.max(2, Math.min(100, parseInt(e.target.value, 10) || 20));
+        e.target.value = settings.historyPicMaxMessages;
+        saveSettings();
+    });
+    document.getElementById('iig_historypic_quote')?.addEventListener('change', (e) => {
+        settings.historyPicQuote = e.target.checked;
+        saveSettings();
+    });
+    document.getElementById('iig_historypic_hide')?.addEventListener('change', (e) => {
+        settings.historyPicHideFromContext = e.target.checked;
+        saveSettings();
+    });
+    // ── Пресеты «образа» ──
+    const makePresetId = () => `iig-hp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const activeUserPreset = () => {
+        ensureHistoryPicPresets(settings);
+        return settings.historyPicPresets.find(p => p.id === settings.historyPicPresetId) || null;
+    };
+    // Подпись пункта в селекторе без перестройки списка — чтобы не терять фокус ввода.
+    const refreshOptionLabel = (preset) => {
+        const sel = document.getElementById('iig_historypic_preset');
+        const option = sel ? Array.from(sel.options).find(o => o.value === preset.id) : null;
+        if (option) option.textContent = preset.name + (preset.standalone ? ' (полный)' : '');
+    };
+    document.getElementById('iig_historypic_preset')?.addEventListener('change', (e) => {
+        settings.historyPicPresetId = e.target.value;
+        saveSettings();
+        renderHistoryPicPresetUi();
+    });
+    document.getElementById('iig_historypic_preset_new')?.addEventListener('click', () => {
+        ensureHistoryPicPresets(settings);
+        const preset = {
+            id: makePresetId(),
+            name: `Свой образ ${settings.historyPicPresets.length + 1}`,
+            text: 'One single image of ... — describe the format, composition, camera, light and mood. The LLM reads the story fragment and follows this brief.',
+            aspectRatio: '', style: '', standalone: false,
+        };
+        settings.historyPicPresets.push(preset);
+        settings.historyPicPresetId = preset.id;
+        saveSettings();
+        renderHistoryPicPresetUi();
+    });
+    document.getElementById('iig_historypic_preset_copy')?.addEventListener('click', () => {
+        const src = getActiveHistoryPicPreset(settings);
+        const preset = {
+            id: makePresetId(),
+            name: `${src.name} (копия)`,
+            text: src.text || '', aspectRatio: src.aspectRatio || '', style: src.style || '',
+            standalone: !!src.standalone,
+        };
+        settings.historyPicPresets.push(preset);
+        settings.historyPicPresetId = preset.id;
+        saveSettings();
+        renderHistoryPicPresetUi();
+        toastr.info(`Копия «${preset.name}» создана — редактируй`, 'Иллюстрация сцены', { timeOut: 2500 });
+    });
+    document.getElementById('iig_historypic_preset_del')?.addEventListener('click', () => {
+        const preset = activeUserPreset();
+        if (!preset) return; // встроенные не удаляются (кнопка и так скрыта)
+        if (!confirm(`Удалить образ «${preset.name}»?`)) return;
+        settings.historyPicPresets = settings.historyPicPresets.filter(p => p.id !== preset.id);
+        settings.historyPicPresetId = HISTORYPIC_BUILTIN_PRESETS[0].id;
+        saveSettings();
+        renderHistoryPicPresetUi();
+    });
+    document.getElementById('iig_historypic_preset_name')?.addEventListener('input', (e) => {
+        const preset = activeUserPreset();
+        if (!preset) return;
+        preset.name = String(e.target.value || '').trim() || preset.name;
+        refreshOptionLabel(preset);
+        saveSettings();
+    });
+    document.getElementById('iig_historypic_preset_ar')?.addEventListener('change', (e) => {
+        const preset = activeUserPreset();
+        if (!preset) return;
+        preset.aspectRatio = e.target.value || '';
+        saveSettings();
+    });
+    document.getElementById('iig_historypic_preset_style')?.addEventListener('input', (e) => {
+        const preset = activeUserPreset();
+        if (!preset) return;
+        preset.style = String(e.target.value || '');
+        saveSettings();
+    });
+    document.getElementById('iig_historypic_preset_standalone')?.addEventListener('change', (e) => {
+        const preset = activeUserPreset();
+        if (!preset) return;
+        preset.standalone = e.target.checked;
+        refreshOptionLabel(preset);
+        saveSettings();
+    });
+    document.getElementById('iig_historypic_preset_text')?.addEventListener('input', (e) => {
+        const preset = activeUserPreset();
+        if (!preset) return; // встроенный readonly — input сюда не прилетит
+        preset.text = e.target.value;
+        saveSettings();
+    });
+    // ── Блок задачи (общий) ──
+    document.getElementById('iig_historypic_task_toggle')?.addEventListener('click', () => {
+        const wrap = document.getElementById('iig_historypic_task_wrap');
+        const chev = document.getElementById('iig_historypic_task_chevron');
+        if (!wrap) return;
+        const hidden = wrap.classList.toggle('iig-hidden');
+        if (chev) chev.className = `fa-solid fa-chevron-${hidden ? 'right' : 'down'} iig-card-chevron`;
+    });
+    const taskArea = document.getElementById('iig_historypic_task');
+    taskArea?.addEventListener('input', () => {
+        const v = taskArea.value;
+        // Совпадение с дефолтом (или пусто) храним как '' → значит «использовать стандартный».
+        settings.historyPicTaskPrompt = (v.trim() && v.trim() !== DEFAULT_HISTORYPIC_TASK.trim()) ? v : '';
+        saveSettings();
+    });
+    document.getElementById('iig_historypic_task_reset')?.addEventListener('click', () => {
+        settings.historyPicTaskPrompt = '';
+        saveSettings();
+        if (taskArea) taskArea.value = DEFAULT_HISTORYPIC_TASK;
+        toastr.info('Блок задачи сброшен на стандартный', 'Иллюстрация сцены', { timeOut: 2000 });
+    });
+}
+
 /**
  * Get a reference object by slot key.
  */
@@ -7734,6 +8668,7 @@ const PROFILE_SECTIONS = [
     { id: 'descriptions',  label: 'Описания {{char}}/{{user}}', keys: ['charDescription', 'userDescription', 'injectDescriptions'] },
     { id: 'styles',        label: 'Стили',                    keys: ['styles', 'activeStyleId'] },
     { id: 'vision',        label: 'Vision',                   keys: ['visionEndpoint', 'visionApiKey', 'visionModel', 'visionPrompt'], secret: ['visionApiKey'] },
+    { id: 'historyPic',    label: 'Иллюстрация сцены',        keys: ['historyPicEnabled', 'historyPicLlm', 'historyPicMaxMessages', 'historyPicTaskPrompt', 'historyPicPresets', 'historyPicPresetId', 'historyPicQuote', 'historyPicHideFromContext', 'historyPicPrompt'] },
     { id: 'flags',         label: 'Общие флаги',              keys: ['enabled', 'externalBlocks'] },
 ];
 const PROFILE_SECTION_BY_ID = Object.fromEntries(PROFILE_SECTIONS.map(s => [s.id, s]));
@@ -7926,20 +8861,26 @@ function buildProfileCardHtml(settings = getSettings()) {
         </label>`
     ).join('');
     return `
-        <div class="iig-settings-card iig-profile-card">
-            <div class="iig-profile-bar">
-                <b class="iig-profile-title"><i class="fa-solid fa-layer-group"></i> Профили</b>
-                <select id="iig_profile_select" class="text_pole flex1">${optionsHtml}</select>
-                <div id="iig_profile_load" class="menu_button" title="Загрузить выбранный профиль"><i class="fa-solid fa-download"></i></div>
-                <div id="iig_profile_save" class="menu_button" title="Сохранить текущие настройки как новый профиль"><i class="fa-solid fa-floppy-disk"></i></div>
-                <div id="iig_profile_update" class="menu_button" title="Обновить выбранный профиль текущими настройками"><i class="fa-solid fa-pen-to-square"></i></div>
-                <div id="iig_profile_export" class="menu_button" title="Экспорт профиля в файл (ключи вырезаются)"><i class="fa-solid fa-file-export"></i></div>
-                <div id="iig_profile_import" class="menu_button" title="Импорт профиля из файла"><i class="fa-solid fa-file-import"></i></div>
-                <div id="iig_profile_delete" class="menu_button" title="Удалить выбранный профиль" style="color:#cc5555;"><i class="fa-solid fa-trash"></i></div>
-            </div>
-            <div class="iig-profile-scope">
-                <span class="hint">Что сохранять в профиль:</span>
-                <div class="iig-profile-scope-grid">${scopeHtml}</div>
+        <div class="iig-settings-card iig-profile-card iig-collapse-card">
+            <h4 class="iig-card-toggle ${settings.profilesOpen ? '' : 'iig-card-collapsed'}" id="iig_profile_toggle" title="Свернуть/развернуть">
+                <i class="fa-solid fa-chevron-${settings.profilesOpen ? 'down' : 'right'} iig-card-chevron"></i>
+                <span><i class="fa-solid fa-layer-group"></i> Профили</span>
+                <span class="iig-card-count" id="iig_profile_count">${profiles.length || ''}</span>
+            </h4>
+            <div class="iig-card-body ${settings.profilesOpen ? '' : 'iig-hidden'}" id="iig_profile_body">
+                <div class="iig-profile-bar">
+                    <select id="iig_profile_select" class="text_pole flex1">${optionsHtml}</select>
+                    <div id="iig_profile_load" class="menu_button" title="Загрузить выбранный профиль"><i class="fa-solid fa-download"></i></div>
+                    <div id="iig_profile_save" class="menu_button" title="Сохранить текущие настройки как новый профиль"><i class="fa-solid fa-floppy-disk"></i></div>
+                    <div id="iig_profile_update" class="menu_button" title="Обновить выбранный профиль текущими настройками"><i class="fa-solid fa-pen-to-square"></i></div>
+                    <div id="iig_profile_export" class="menu_button" title="Экспорт профиля в файл (ключи вырезаются)"><i class="fa-solid fa-file-export"></i></div>
+                    <div id="iig_profile_import" class="menu_button" title="Импорт профиля из файла"><i class="fa-solid fa-file-import"></i></div>
+                    <div id="iig_profile_delete" class="menu_button" title="Удалить выбранный профиль" style="color:#cc5555;"><i class="fa-solid fa-trash"></i></div>
+                </div>
+                <div class="iig-profile-scope">
+                    <span class="hint">Что сохранять в профиль:</span>
+                    <div class="iig-profile-scope-grid">${scopeHtml}</div>
+                </div>
             </div>
         </div>
     `;
@@ -7978,9 +8919,12 @@ function createSettingsUI() {
 
                     ${buildProfileCardHtml(settings)}
 
-                    <hr>
-
-                    <h4>Настройки API</h4>
+                    <div class="iig-settings-card iig-collapse-card">
+                        <h4 class="iig-card-toggle ${settings.apiOpen ? '' : 'iig-card-collapsed'}" id="iig_api_toggle" title="Свернуть/развернуть">
+                            <i class="fa-solid fa-chevron-${settings.apiOpen ? 'down' : 'right'} iig-card-chevron"></i>
+                            <span>Настройки API</span>
+                        </h4>
+                        <div class="iig-card-body ${settings.apiOpen ? '' : 'iig-hidden'}" id="iig_api_body">
                     
                     <!-- Тип эндпоинта -->
                     <div class="flex-row">
@@ -8060,11 +9004,15 @@ function createSettingsUI() {
                         </label>
                         <p class="hint" style="margin-left:24px;">Включи если нужная картиночная модель не появляется в списке (например, малоизвестные модели VoidAI/Custom-эндпоинтов).</p>
                     </div>
-                    
-                    <hr>
+                        </div>
+                    </div>
 
-                    <div class="iig-settings-card" id="iig_image_context_section">
-                        <h4>Контекст картинок</h4>
+                    <div class="iig-settings-card iig-collapse-card" id="iig_image_context_section">
+                        <h4 class="iig-card-toggle ${settings.imageContextOpen ? '' : 'iig-card-collapsed'}" id="iig_image_context_toggle" title="Свернуть/развернуть">
+                            <i class="fa-solid fa-chevron-${settings.imageContextOpen ? 'down' : 'right'} iig-card-chevron"></i>
+                            <span>Контекст картинок</span>
+                        </h4>
+                        <div class="iig-card-body ${settings.imageContextOpen ? '' : 'iig-hidden'}" id="iig_image_context_body">
                         <p class="hint">Добавляет к генерации несколько предыдущих картинок из чата как контекст сцен и стиля.</p>
                         <label class="checkbox_label">
                             <input type="checkbox" id="iig_image_context_enabled" ${settings.imageContextEnabled ? 'checked' : ''}>
@@ -8085,10 +9033,15 @@ function createSettingsUI() {
                                 <span>предыдущих картинок.</span>
                             </div>
                         </div>
+                        </div>
                     </div>
 
-                    <div class="iig-settings-card">
-                        <h4>Параметры генерации</h4>
+                    <div class="iig-settings-card iig-collapse-card">
+                        <h4 class="iig-card-toggle ${settings.genParamsOpen ? '' : 'iig-card-collapsed'}" id="iig_genparams_toggle" title="Свернуть/развернуть">
+                            <i class="fa-solid fa-chevron-${settings.genParamsOpen ? 'down' : 'right'} iig-card-chevron"></i>
+                            <span>Параметры генерации</span>
+                        </h4>
+                        <div class="iig-card-body ${settings.genParamsOpen ? '' : 'iig-hidden'}" id="iig_genparams_body">
 
                         <!-- Размер -->
                         <div class="flex-row ${settings.apiType !== 'openai' ? 'iig-hidden' : ''}" id="iig_size_row">
@@ -8156,6 +9109,7 @@ function createSettingsUI() {
                                 </select>
                             </div>
                         </div>
+                        </div>
                     </div>
 
                     <div class="iig-settings-card iig-collapse-card">
@@ -8175,8 +9129,12 @@ function createSettingsUI() {
                         </div>
                     </div>
 
-                    <div class="iig-settings-card" id="iig_refs_mega_section">
-                        <h4>Референсы</h4>
+                    <div class="iig-settings-card iig-collapse-card" id="iig_refs_mega_section">
+                        <h4 class="iig-card-toggle ${settings.refsOpen ? '' : 'iig-card-collapsed'}" id="iig_refs_toggle" title="Свернуть/развернуть">
+                            <i class="fa-solid fa-chevron-${settings.refsOpen ? 'down' : 'right'} iig-card-chevron"></i>
+                            <span>Референсы</span>
+                        </h4>
+                        <div class="iig-card-body ${settings.refsOpen ? '' : 'iig-hidden'}" id="iig_refs_body">
 
                         <!-- Tabs -->
                         <div class="iig-ref-tabs">
@@ -8270,10 +9228,86 @@ function createSettingsUI() {
                                 <textarea id="iig_vision_prompt" class="text_pole" rows="2" placeholder="(дефолт: описание одежды/наряда на картинке)">${sanitizeForHtml(settings.visionPrompt || '')}</textarea>
                             </div>
                         </div>
+                        </div>
                     </div>
 
-                    <div class="iig-settings-card ${settings.apiType === 'electronhub' ? '' : 'iig-hidden'}" id="iig_electronhub_section">
-                        <h4>Electron Hub</h4>
+                    <div class="iig-settings-card iig-collapse-card" id="iig_historypic_section">
+                        <h4 class="iig-card-toggle ${settings.historyPicOpen ? '' : 'iig-card-collapsed'}" id="iig_historypic_toggle" title="Свернуть/развернуть">
+                            <i class="fa-solid fa-chevron-${settings.historyPicOpen ? 'down' : 'right'} iig-card-chevron"></i>
+                            <span>Иллюстрация сцены</span>
+                        </h4>
+                        <div class="iig-card-body ${settings.historyPicOpen ? '' : 'iig-hidden'}" id="iig_historypic_body">
+                        <p class="hint">Кнопка «Иллюстрация сцены» в меню «волшебной палочки»: вспомогательная LLM читает последние события РП (с прошлой картинки, но не больше лимита) и пишет промпт по выбранному «образу», дальше картинка генерится как обычно — с референсами и кнопкой перегенерации.</p>
+                        <label class="checkbox_label">
+                            <input type="checkbox" id="iig_historypic_enabled" ${settings.historyPicEnabled !== false ? 'checked' : ''}>
+                            <span>Кнопка в «волшебной палочке»</span>
+                        </label>
+                        <div class="flex-row">
+                            <label for="iig_historypic_llm">Промпт пишет</label>
+                            <select id="iig_historypic_llm" class="text_pole flex1">
+                                <option value="chat" ${settings.historyPicLlm !== 'vision' ? 'selected' : ''}>Основная модель чата</option>
+                                <option value="vision" ${settings.historyPicLlm === 'vision' ? 'selected' : ''}>Vision API (таб Vision)</option>
+                            </select>
+                        </div>
+                        <div class="flex-row">
+                            <label for="iig_historypic_max" title="Сколько сообщений истории брать максимум. Берутся сообщения после последней сгенерированной картинки, но не больше этого числа.">Макс. сообщений</label>
+                            <input type="number" id="iig_historypic_max" class="text_pole flex1" min="2" max="100" step="1" value="${Math.max(2, Math.min(100, parseInt(settings.historyPicMaxMessages, 10) || 20))}">
+                        </div>
+                        <label class="checkbox_label" title="LLM допишет короткую строку-эпиграф — она встанет цитатой над картинкой.">
+                            <input type="checkbox" id="iig_historypic_quote" ${settings.historyPicQuote !== false ? 'checked' : ''}>
+                            <span>Цитата-эпиграф над картинкой</span>
+                        </label>
+                        <label class="checkbox_label" title="Сообщение с иллюстрацией видно в чате, но скрыто из промпта (is_system) — модель его не видит в следующих генерациях.">
+                            <input type="checkbox" id="iig_historypic_hide" ${settings.historyPicHideFromContext !== false ? 'checked' : ''}>
+                            <span>Не отправлять в контекст</span>
+                        </label>
+                        <div class="flex-row" style="grid-template-columns:1fr auto auto auto;align-items:center;">
+                            <label for="iig_historypic_preset">Образ (что рисуем)</label>
+                            <div id="iig_historypic_preset_new" class="menu_button" title="Создать свой образ" style="font-size:0.85em;padding:2px 8px;"><i class="fa-solid fa-plus"></i></div>
+                            <div id="iig_historypic_preset_copy" class="menu_button" title="Дублировать выбранный образ в свой (редактируемый)" style="font-size:0.85em;padding:2px 8px;"><i class="fa-solid fa-clone"></i></div>
+                            <div id="iig_historypic_preset_del" class="menu_button iig-hidden" title="Удалить свой образ" style="font-size:0.85em;padding:2px 8px;"><i class="fa-solid fa-trash-can"></i></div>
+                        </div>
+                        <select id="iig_historypic_preset" class="text_pole" style="width:100%;box-sizing:border-box;"></select>
+                        <div id="iig_historypic_preset_custom" class="iig-hidden">
+                            <div class="flex-row">
+                                <label for="iig_historypic_preset_name">Название</label>
+                                <input type="text" id="iig_historypic_preset_name" class="text_pole flex1">
+                            </div>
+                            <div class="flex-row">
+                                <label for="iig_historypic_preset_ar" title="Соотношение сторон картинки для этого образа. Пусто — берётся из общих параметров генерации.">Соотношение</label>
+                                <select id="iig_historypic_preset_ar" class="text_pole flex1">
+                                    <option value="">Из настроек</option>
+                                    ${VALID_ASPECT_RATIOS.map(ar => `<option value="${ar}">${ar}</option>`).join('')}
+                                </select>
+                            </div>
+                            <div class="flex-row">
+                                <label for="iig_historypic_preset_style" title="Хвост стиля — уходит в тег картинки. Активный «Стиль» из секции Стили его перекрывает.">Стиль</label>
+                                <input type="text" id="iig_historypic_preset_style" class="text_pole flex1" placeholder="cinematic film still, film grain…">
+                            </div>
+                            <label class="checkbox_label" title="Текст пресета — это ВЕСЬ промпт для LLM, блок задачи не подставляется. Для переноса старых полных промптов.">
+                                <input type="checkbox" id="iig_historypic_preset_standalone">
+                                <span>Полный промпт (без блока задачи)</span>
+                            </label>
+                        </div>
+                        <textarea id="iig_historypic_preset_text" class="text_pole" rows="7" style="width:100%;box-sizing:border-box;"></textarea>
+                        <p class="hint" id="iig_historypic_preset_hint"></p>
+                        <div class="flex-row" style="grid-template-columns:1fr auto;">
+                            <label id="iig_historypic_task_toggle" style="cursor:pointer;" title="Общий блок: объясняет LLM её работу и железные правила промпта"><i class="fa-solid fa-chevron-right iig-card-chevron" id="iig_historypic_task_chevron"></i> Блок задачи (общий)</label>
+                            <div id="iig_historypic_task_reset" class="menu_button" title="Вернуть стандартный блок задачи" style="font-size:0.85em;padding:2px 8px;"><i class="fa-solid fa-rotate-left"></i> Сбросить</div>
+                        </div>
+                        <div id="iig_historypic_task_wrap" class="iig-hidden">
+                            <textarea id="iig_historypic_task" class="text_pole" rows="8" style="width:100%;box-sizing:border-box;"></textarea>
+                            <p class="hint">Учит LLM читать фрагмент и писать промпт. Плейсхолдеры: <code>{{history}}</code>, <code>{{char}}</code>, <code>{{user}}</code>; без <code>{{history}}</code> кусок РП допишется в конец. Для пресетов с галкой «полный промпт» этот блок не используется.</p>
+                        </div>
+                        </div>
+                    </div>
+
+                    <div class="iig-settings-card iig-collapse-card ${settings.apiType === 'electronhub' ? '' : 'iig-hidden'}" id="iig_electronhub_section">
+                        <h4 class="iig-card-toggle ${settings.electronhubOpen ? '' : 'iig-card-collapsed'}" id="iig_electronhub_toggle" title="Свернуть/развернуть">
+                            <i class="fa-solid fa-chevron-${settings.electronhubOpen ? 'down' : 'right'} iig-card-chevron"></i>
+                            <span>Electron Hub</span>
+                        </h4>
+                        <div class="iig-card-body ${settings.electronhubOpen ? '' : 'iig-hidden'}" id="iig_electronhub_body">
                         <p class="hint">Расширенные параметры специфичные для ElectronHub. Все поля опциональны — оставь пустыми, если не нужно.</p>
 
                         <div class="flex-row">
@@ -8301,6 +9335,7 @@ function createSettingsUI() {
                             <span>Экспериментально: отправлять референсы</span>
                         </label>
                         <p class="hint" style="margin-left:24px;">Большинство моделей ElectronHub не поддерживают /v1/images/edits. Включай только если уверена что модель умеет принимать image на /v1/images/generations.</p>
+                        </div>
                     </div>
 
                     <div class="iig-settings-card ${settings.apiType === 'naistera' ? '' : 'iig-hidden'}" id="iig_naistera_video_section">
@@ -8326,10 +9361,12 @@ function createSettingsUI() {
                         </div>
                     </div>
 
-                    <hr>
-
-                    <div class="iig-settings-card">
-                        <h4>Обработка ошибок</h4>
+                    <div class="iig-settings-card iig-collapse-card">
+                        <h4 class="iig-card-toggle ${settings.debugOpen ? '' : 'iig-card-collapsed'}" id="iig_debug_toggle" title="Свернуть/развернуть">
+                            <i class="fa-solid fa-chevron-${settings.debugOpen ? 'down' : 'right'} iig-card-chevron"></i>
+                            <span>Ошибки и отладка</span>
+                        </h4>
+                        <div class="iig-card-body ${settings.debugOpen ? '' : 'iig-hidden'}" id="iig_debug_body">
                     
                         <div class="flex-row">
                             <label for="iig_max_retries">Макс. повторов</label>
@@ -8341,10 +9378,6 @@ function createSettingsUI() {
                             <input type="number" id="iig_retry_delay" class="text_pole flex1" 
                                    value="${settings.retryDelay}" min="500" max="10000" step="500">
                         </div>
-                    </div>
-
-                    <div class="iig-settings-card">
-                        <h4>Отладка</h4>
                         <div style="display:flex;gap:6px;flex-wrap:wrap;">
                             <div id="iig_export_logs" class="menu_button" style="flex:1;">
                                 <i class="fa-solid fa-download"></i> Экспорт логов
@@ -8352,6 +9385,7 @@ function createSettingsUI() {
                             <div id="iig_show_last_gen" class="menu_button" style="flex:1;">
                                 <i class="fa-solid fa-magnifying-glass"></i> Последняя генерация
                             </div>
+                        </div>
                         </div>
                     </div>
                 </div>
@@ -9092,6 +10126,10 @@ function bindSettingsEvents() {
         enabled: ['iig_enabled', 'checked'], externalBlocks: ['iig_external_blocks', 'checked'],
         visionEndpoint: ['iig_vision_endpoint', 'value'], visionApiKey: ['iig_vision_api_key', 'value'],
         visionModel: ['iig_vision_model', 'value'], visionPrompt: ['iig_vision_prompt', 'value'],
+        historyPicEnabled: ['iig_historypic_enabled', 'checked'], historyPicLlm: ['iig_historypic_llm', 'value'],
+        historyPicMaxMessages: ['iig_historypic_max', 'value'],
+        historyPicQuote: ['iig_historypic_quote', 'checked'], historyPicHideFromContext: ['iig_historypic_hide', 'checked'],
+        // historyPicTaskPrompt/Presets/PresetId отражает renderHistoryPicPresetUi() ниже.
     };
 
     function renderProfileSelect() {
@@ -9100,6 +10138,8 @@ function bindSettingsEvents() {
         const list = settings.profiles || [];
         sel.innerHTML = `<option value="">-- Выберите профиль --</option>`
             + list.map(p => `<option value="${sanitizeForHtml(p.id)}" ${settings.activeProfileId === p.id ? 'selected' : ''}>${sanitizeForHtml(p.name)}</option>`).join('');
+        const cnt = document.getElementById('iig_profile_count');
+        if (cnt) cnt.textContent = list.length || '';
     }
 
     function ensureSelectOption(id, val) {
@@ -9127,6 +10167,8 @@ function bindSettingsEvents() {
         try { renderAvatarGrid('char'); renderAvatarGrid('user'); } catch (_) {}
         try { renderLorebookUI(); bindLorebookRefCardEvents(); } catch (_) {}
         try { renderStylePresets(); } catch (_) {}
+        try { renderHistoryPicPresetUi(); } catch (_) {}
+        try { ensureHistoryPicWandButton(); } catch (_) {}
         updateVisibility();
         return applied;
     }
@@ -9250,6 +10292,10 @@ function bindSettingsEvents() {
     // ── Vision API settings ──
     bindVisionSettingsEvents();
 
+    // ── Иллюстрация сцены ──
+    bindHistoryPicSettingsEvents();
+    renderHistoryPicPresetUi();
+
     // ── Wardrobe handlers ──
     document.getElementById('sw_open_wardrobe')?.addEventListener('click', () => {
         if (window.sillyWardrobe?.isReady()) {
@@ -9275,20 +10321,31 @@ function bindSettingsEvents() {
     });
 
     // ── Style presets ──
-    // Сворачивание карточки «Стили» (состояние запоминается в settings.stylesOpen).
-    document.getElementById('iig_styles_toggle')?.addEventListener('click', () => {
-        const s = getSettings();
-        s.stylesOpen = !s.stylesOpen;
-        saveSettings();
-        document.getElementById('iig_styles_body')?.classList.toggle('iig-hidden', !s.stylesOpen);
-        const toggle = document.getElementById('iig_styles_toggle');
-        toggle?.classList.toggle('iig-card-collapsed', !s.stylesOpen);
-        const chevron = toggle?.querySelector('.iig-card-chevron');
-        if (chevron) {
-            chevron.classList.toggle('fa-chevron-right', !s.stylesOpen);
-            chevron.classList.toggle('fa-chevron-down', s.stylesOpen);
-        }
-    });
+    // Сворачивание карточек настроек (состояние запоминается в settings[flag]).
+    function bindCardToggle(toggleId, bodyId, flag) {
+        document.getElementById(toggleId)?.addEventListener('click', () => {
+            const s = getSettings();
+            s[flag] = !s[flag];
+            saveSettings();
+            document.getElementById(bodyId)?.classList.toggle('iig-hidden', !s[flag]);
+            const toggle = document.getElementById(toggleId);
+            toggle?.classList.toggle('iig-card-collapsed', !s[flag]);
+            const chevron = toggle?.querySelector('.iig-card-chevron');
+            if (chevron) {
+                chevron.classList.toggle('fa-chevron-right', !s[flag]);
+                chevron.classList.toggle('fa-chevron-down', s[flag]);
+            }
+        });
+    }
+    bindCardToggle('iig_styles_toggle', 'iig_styles_body', 'stylesOpen');
+    bindCardToggle('iig_profile_toggle', 'iig_profile_body', 'profilesOpen');
+    bindCardToggle('iig_historypic_toggle', 'iig_historypic_body', 'historyPicOpen');
+    bindCardToggle('iig_api_toggle', 'iig_api_body', 'apiOpen');
+    bindCardToggle('iig_image_context_toggle', 'iig_image_context_body', 'imageContextOpen');
+    bindCardToggle('iig_genparams_toggle', 'iig_genparams_body', 'genParamsOpen');
+    bindCardToggle('iig_refs_toggle', 'iig_refs_body', 'refsOpen');
+    bindCardToggle('iig_electronhub_toggle', 'iig_electronhub_body', 'electronhubOpen');
+    bindCardToggle('iig_debug_toggle', 'iig_debug_body', 'debugOpen');
 
     document.getElementById('iig_style_add')?.addEventListener('click', () => {
         const inp = document.getElementById('iig_new_style_name');
@@ -9332,6 +10389,12 @@ function openFullscreenViewer(imgSrc) {
     closeBtn.addEventListener('click', (e) => { e.stopPropagation(); closeFullscreenViewer(); });
     closeBtn.addEventListener('touchend', (e) => { e.preventDefault(); e.stopPropagation(); closeFullscreenViewer(); });
 
+    // Скачать оригинал (клик обрабатывается глобальной делегацией — см. initGlobalClickHandler).
+    const downloadBtn = document.createElement('div');
+    downloadBtn.className = 'iig-fs-download';
+    downloadBtn.title = 'Скачать оригинал';
+    downloadBtn.innerHTML = '<i class="fa-solid fa-download"></i>';
+
     // Tap on overlay background → close
     overlay.addEventListener('click', (e) => {
         if (e.target === overlay) closeFullscreenViewer();
@@ -9365,6 +10428,7 @@ function openFullscreenViewer(imgSrc) {
 
     overlay.appendChild(img);
     overlay.appendChild(closeBtn);
+    overlay.appendChild(downloadBtn);
     document.body.appendChild(overlay);
 }
 
@@ -9409,6 +10473,15 @@ function initGlobalClickHandler() {
                 e.preventDefault();
                 e.stopPropagation();
                 closeFullscreenViewer();
+                return;
+            }
+
+            // Download button — скачать оригинал открытой картинки
+            if (e.target.closest('.iig-fs-download')) {
+                e.preventDefault();
+                e.stopPropagation();
+                const src = overlay.querySelector('.iig-fs-image')?.getAttribute('src') || '';
+                if (src) iigDownloadImage(src);
                 return;
             }
 
@@ -9522,6 +10595,9 @@ function wrapImageWithActions(mediaElement, tag, messageId, tagIndex, totalTags)
     fullscreenBtn.dataset.imgSrc = mediaElement.src || mediaElement.getAttribute('src') || '';
     actions.appendChild(fullscreenBtn);
 
+    // Скачивание оригинала — НЕ здесь: кнопка ⬇ живёт в полноэкранном вьюере (открывается тапом
+    // по картинке), чтобы не раздувать панельку действий (просьба юзера: две кнопки, не три).
+
     // Per-image regeneration button — stores ids in dataset, handled by delegation
     const regenBtn = document.createElement('div');
     regenBtn.className = 'iig-image-action-btn iig-regen-single-btn';
@@ -9578,16 +10654,27 @@ async function regenerateSingleImage(messageId, targetTagIndex) {
         return;
     }
 
+    const taskKey = singleTagTaskKey(messageId, targetTagIndex);
+    if (activeSingleTagTasks.has(taskKey)) {
+        toastr.info('Эта картинка уже генерируется', 'Генерация картинок', { timeOut: 2000 });
+        return;
+    }
+
+    const messageElement = document.querySelector(`#chat .mes[mesid="${messageId}"]`);
+    const mesTextEl = messageElement?.querySelector('.mes_text');
+    if (!mesTextEl) {
+        toastr.error('Элемент сообщения не найден', 'Генерация картинок');
+        return;
+    }
+
     const tag = tags[targetTagIndex];
     iigLog('INFO', `Regenerating single image ${targetTagIndex} in message ${messageId}`);
     toastr.info('Перегенерация 1 картинки...', 'Генерация картинок');
 
-    const messageElement = document.querySelector(`#chat .mes[mesid="${messageId}"]`);
-    if (!messageElement) return;
-    const mesTextEl = messageElement.querySelector('.mes_text');
-    if (!mesTextEl) return;
-
+    activeSingleTagTasks.add(taskKey);
     const tagId = `iig-regen-single-${messageId}-${targetTagIndex}`;
+    let loadingPlaceholder = null;
+    let replacedEl = null;
 
     try {
         // Find the existing rendered media element by data-tag-index (reliable) or positional fallback
@@ -9603,6 +10690,14 @@ async function regenerateSingleImage(messageId, targetTagIndex) {
             targetEl = allWrappers[targetTagIndex] || null;
         }
         if (!targetEl) {
+            // DOM протух (вечный спиннер от упавшей попытки, потерянные обёртки) —
+            // восстанавливаем разметку из источника и ищем ещё раз.
+            rerenderMessageFromSource(messageId);
+            targetEl = mesTextEl.querySelector(`.iig-image-wrapper[data-tag-index="${targetTagIndex}"]`)
+                || Array.from(mesTextEl.querySelectorAll('img[data-iig-instruction], video[data-iig-instruction]'))[targetTagIndex]
+                || null;
+        }
+        if (!targetEl) {
             toastr.error('Элемент картинки не найден', 'Генерация картинок');
             return;
         }
@@ -9610,7 +10705,8 @@ async function regenerateSingleImage(messageId, targetTagIndex) {
         const instruction = targetEl.querySelector?.('img[data-iig-instruction]')?.getAttribute('data-iig-instruction')
             || targetEl.getAttribute?.('data-iig-instruction');
 
-        const loadingPlaceholder = createLoadingPlaceholder(tagId);
+        replacedEl = targetEl;
+        loadingPlaceholder = createLoadingPlaceholder(tagId);
         targetEl.replaceWith(loadingPlaceholder);
 
         const statusEl = loadingPlaceholder.querySelector('.iig-status');
@@ -9619,8 +10715,10 @@ async function regenerateSingleImage(messageId, targetTagIndex) {
             tag.prompt,
             resolveEffectiveStyle(tag.style),
             (status) => { statusEl.textContent = status; },
-            { aspectRatio: tag.aspectRatio, imageSize: tag.imageSize, quality: tag.quality, preset: tag.preset, messageId }
+            { aspectRatio: tag.aspectRatio, imageSize: tag.imageSize, quality: tag.quality, preset: tag.preset, messageId, signal: getLoadingSignal(loadingPlaceholder) }
         );
+        finishLoadingGeneration(loadingPlaceholder);
+        clearLoadingPlaceholderTimer(loadingPlaceholder);
 
         let persistedSrc = '';
         if (isGeneratedVideoResult(generated)) {
@@ -9640,6 +10738,7 @@ async function regenerateSingleImage(messageId, targetTagIndex) {
         if (instruction) {
             mediaElement.setAttribute('data-iig-instruction', instruction);
         }
+        mediaElement.dataset.iigTagIndex = String(targetTagIndex);
 
         // Wrap with actions again
         const wrapped = wrapImageWithActions(mediaElement, tag, messageId, targetTagIndex, tags.length);
@@ -9654,8 +10753,18 @@ async function regenerateSingleImage(messageId, targetTagIndex) {
         await context.saveChat();
         toastr.success('Картинка перегенерирована', 'Генерация картинок', { timeOut: 2000 });
     } catch (error) {
-        iigLog('ERROR', `Single image regeneration failed: ${error.message}`);
-        toastr.error(`Ошибка: ${error.message}`, 'Генерация картинок');
+        clearLoadingPlaceholderTimer(loadingPlaceholder);
+        const cancelled = isGenerationCancelled(error, getLoadingSignal(loadingPlaceholder));
+        // Возвращаем старую картинку на место вместо вечного спиннера —
+        // кнопки действий сохраняются, можно повторить попытку.
+        if (loadingPlaceholder?.isConnected && replacedEl) {
+            loadingPlaceholder.replaceWith(replacedEl);
+        }
+        iigLog(cancelled ? 'INFO' : 'ERROR', `Single image regeneration ${cancelled ? 'cancelled' : 'failed'}: ${error.message}`);
+        if (cancelled) toastr.info('Генерация отменена', 'Генерация картинок', { timeOut: 2500 });
+        else toastr.error(`Ошибка: ${error.message}`, 'Генерация картинок');
+    } finally {
+        activeSingleTagTasks.delete(taskKey);
     }
 }
 
@@ -9725,6 +10834,892 @@ function enhanceRenderedImages(mesTextEl, messageId) {
     }
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   ГАЛЕРЕЯ ЧАТА (порт из novarakk)
+   Модалка с сеткой сгенерированных картинок и файловыми действиями:
+   просмотр (фуллскрин-вьюер), выбор, массовое скачивание/удаление,
+   пагинация, сортировка, размер тумбнейлов.
+
+   Два скоупа, переключаются в шапке:
+     'chat'      — картинки из сообщений текущего чата (по DOM);
+     'character' — все файлы картинок персонажа
+                   (user/images/<имя персонажа>/, через /api/images/list).
+   ═══════════════════════════════════════════════════════════════ */
+
+// Свой id (не iig_gallery_overlay): если рядом установлен novarakk — не конфликтуем.
+const GALLERY_OVERLAY_ID = 'iig_si_gallery_overlay';
+const GALLERY_PAGE_SIZE_OPTIONS = [6, 12, 24, 48];
+const GALLERY_DEFAULT_PER_PAGE = 12;
+const GALLERY_THUMB_SIZE_OPTIONS = [80, 130, 180, 240];
+const GALLERY_DEFAULT_THUMB_SIZE = 130;
+
+function iigEscapeRegex(text) {
+    return String(text || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// data-iig-instruction (HTML-сущности) → объект {prompt, style, ...} или null.
+function parseInstructionAttr(instruction) {
+    if (!instruction) return null;
+    try {
+        const decoded = String(instruction)
+            .replace(/&quot;/g, '"')
+            .replace(/&apos;/g, "'")
+            .replace(/&#39;/g, "'")
+            .replace(/&#34;/g, '"')
+            .replace(/&amp;/g, '&');
+        const parsed = JSON.parse(decoded);
+        return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+        return null;
+    }
+}
+
+// ── Сбор картинок из текущего чата (по DOM) ──
+
+function collectChatImages() {
+    const context = SillyTavern.getContext();
+    if (!context.chat || context.chat.length === 0) return [];
+
+    const results = [];
+    const messageElements = document.querySelectorAll('#chat .mes');
+
+    for (const mesEl of messageElements) {
+        const mesId = mesEl.getAttribute('mesid');
+        if (mesId === null) continue;
+        const messageId = parseInt(mesId, 10);
+        const message = context.chat[messageId];
+        if (!message) continue;
+
+        // Новый формат (data-iig-instruction) + legacy-картинки (.iig-generated-image без инструкции)
+        const imgs = Array.from(mesEl.querySelectorAll('img[data-iig-instruction], img.iig-generated-image'));
+        const seen = new Set();
+        let tagIndex = -1;
+        for (const img of imgs) {
+            if (seen.has(img)) continue;
+            seen.add(img);
+            tagIndex++;
+            const src = img.getAttribute('src') || '';
+            if (!src || src.includes('[IMG:') || src.includes('[VID:')) continue;
+            if (img.classList.contains('iig-error-image') || src.includes('error.svg')) continue;
+
+            const data = parseInstructionAttr(img.getAttribute('data-iig-instruction'));
+            const prompt = data?.prompt || img.alt || '';
+            const style = data?.style || '';
+            const absSrc = img.src;
+            let filename = absSrc.includes('/') ? absSrc.split('/').pop() : absSrc;
+            try { filename = decodeURIComponent(filename); } catch { /* кривый URL — оставляем как есть */ }
+
+            results.push({
+                src: absSrc,
+                prompt,
+                style,
+                messageId,
+                tagIndex,
+                order: results.length,
+                filename: filename || `image_${tagIndex}`,
+                isUser: !!message.is_user,
+                charName: message.name || '',
+            });
+        }
+    }
+
+    return results;
+}
+
+// ── Сбор всех картинок текущего персонажа (с диска) ──
+
+async function getCharacterFolder() {
+    const context = SillyTavern.getContext();
+    // Та же логика выбора папки, что и при сохранении в saveImageToFile
+    let charName = 'generated';
+    if (context.characterId !== undefined && context.characters?.[context.characterId]) {
+        charName = context.characters[context.characterId].name || 'generated';
+    }
+    try {
+        const resp = await fetch('/api/files/sanitize-filename', {
+            method: 'POST',
+            headers: context.getRequestHeaders(),
+            body: JSON.stringify({ fileName: charName }),
+        });
+        if (resp.ok) {
+            const data = await resp.json();
+            if (data.fileName) return data.fileName;
+        }
+    } catch { /* fall back to raw name */ }
+    return charName;
+}
+
+async function collectCharacterImages() {
+    const context = SillyTavern.getContext();
+    const folder = await getCharacterFolder();
+    const resp = await fetch('/api/images/list', {
+        method: 'POST',
+        headers: context.getRequestHeaders(),
+        body: JSON.stringify({ folder, sortField: 'date', sortOrder: 'asc' }),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const files = await resp.json();
+    const list = Array.isArray(files) ? files.filter(f => typeof f === 'string') : [];
+
+    return list.map((file, i) => ({
+        src: `user/images/${encodeURIComponent(folder)}/${encodeURIComponent(file)}`,
+        diskPath: `user/images/${folder}/${file}`,
+        prompt: '',
+        style: '',
+        messageId: null,
+        tagIndex: 0,
+        order: i,
+        filename: file,
+        isUser: false,
+        charName: folder,
+    }));
+}
+
+// ── Состояние галереи ──
+
+let galleryState = {
+    images: [],
+    selected: new Set(),
+    selectMode: false,
+    page: 0,
+    sort: 'newest',
+    scope: 'chat', // 'chat' | 'character'
+    perPage: GALLERY_DEFAULT_PER_PAGE,
+    thumbSize: GALLERY_DEFAULT_THUMB_SIZE,
+    showThumbSlider: false,
+};
+
+function resetGalleryState() {
+    const perPage = galleryState.perPage || GALLERY_DEFAULT_PER_PAGE;
+    const thumbSize = galleryState.thumbSize || GALLERY_DEFAULT_THUMB_SIZE;
+    const scope = galleryState.scope || 'chat';
+    galleryState = { images: [], selected: new Set(), selectMode: false, page: 0, sort: 'newest', scope, perPage, thumbSize, showThumbSlider: false };
+}
+
+function getSortedGalleryImages() {
+    const imgs = galleryState.images.slice();
+    switch (galleryState.sort) {
+        case 'oldest':
+            imgs.sort((a, b) => a.order - b.order);
+            break;
+        case 'name-asc':
+            imgs.sort((a, b) => a.filename.localeCompare(b.filename));
+            break;
+        case 'name-desc':
+            imgs.sort((a, b) => b.filename.localeCompare(a.filename));
+            break;
+        default: // newest
+            imgs.sort((a, b) => b.order - a.order);
+            break;
+    }
+    return imgs;
+}
+
+function getGalleryTotalPages() {
+    return Math.max(1, Math.ceil(getSortedGalleryImages().length / galleryState.perPage));
+}
+
+function getGalleryPageImages() {
+    const sorted = getSortedGalleryImages();
+    const start = galleryState.page * galleryState.perPage;
+    return sorted.slice(start, start + galleryState.perPage);
+}
+
+function clampGalleryPage() {
+    const tp = getGalleryTotalPages();
+    if (galleryState.page >= tp) galleryState.page = Math.max(0, tp - 1);
+}
+
+// ── Обновление содержимого ──
+
+let galleryLoadToken = 0;
+
+async function refreshGallery() {
+    const overlay = document.getElementById(GALLERY_OVERLAY_ID);
+    if (!overlay) return;
+    const bodyEl = overlay.querySelector('#iig_gallery_body');
+    const token = ++galleryLoadToken;
+    galleryState.selected.clear();
+
+    if (galleryState.scope === 'character' && bodyEl) {
+        bodyEl.innerHTML = '<div class="iig-gallery-empty"><i class="fa-solid fa-spinner fa-spin"></i><p>Загрузка картинок…</p></div>';
+    }
+
+    let images;
+    try {
+        images = galleryState.scope === 'character' ? await collectCharacterImages() : collectChatImages();
+    } catch (err) {
+        iigLog('ERROR', 'Gallery: failed to load images:', err);
+        if (token === galleryLoadToken && bodyEl) {
+            bodyEl.innerHTML = '<div class="iig-gallery-empty"><i class="fa-solid fa-triangle-exclamation"></i><p>Не удалось загрузить картинки</p></div>';
+        }
+        return;
+    }
+
+    if (token !== galleryLoadToken || !document.getElementById(GALLERY_OVERLAY_ID)) return;
+    galleryState.images = images;
+    clampGalleryPage();
+    updateGallerySelectionUI(overlay);
+    if (bodyEl) renderGalleryContent(bodyEl);
+}
+
+// ── Модалка галереи ──
+
+function openGallery() {
+    if (document.getElementById(GALLERY_OVERLAY_ID)) return;
+
+    resetGalleryState();
+
+    const overlay = document.createElement('div');
+    overlay.id = GALLERY_OVERLAY_ID;
+    overlay.className = 'iig-gallery-overlay';
+
+    overlay.innerHTML = `
+        <div class="iig-gallery-modal">
+            <div class="iig-gallery-header">
+                <span class="iig-gallery-title"><i class="fa-solid fa-images"></i> Галерея</span>
+                <span class="iig-gallery-count" id="iig_gallery_count"></span>
+                <button class="iig-gallery-btn iig-gallery-close iig-gallery-close-mobile" id="iig_gallery_close_mobile" type="button" title="Закрыть">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+                <div class="iig-gallery-header-actions">
+                    <div class="iig-gallery-scope" id="iig_gallery_scope">
+                        <button class="iig-gallery-scope-btn ${galleryState.scope === 'chat' ? 'active' : ''}" data-gallery-scope="chat" type="button" title="Картинки из текущего чата">
+                            <i class="fa-solid fa-comment"></i> Чат
+                        </button>
+                        <button class="iig-gallery-scope-btn ${galleryState.scope === 'character' ? 'active' : ''}" data-gallery-scope="character" type="button" title="Все картинки этого персонажа">
+                            <i class="fa-solid fa-user"></i> Все
+                        </button>
+                    </div>
+                    <select class="iig-gallery-sort" id="iig_gallery_sort" title="Сортировка">
+                        <option value="newest" selected>Новые</option>
+                        <option value="oldest">Старые</option>
+                        <option value="name-asc">A → Z</option>
+                        <option value="name-desc">Z → A</option>
+                    </select>
+                    <select class="iig-gallery-perpage" id="iig_gallery_perpage" title="На странице">
+                        ${GALLERY_PAGE_SIZE_OPTIONS.map(n => `<option value="${n}" ${n === galleryState.perPage ? 'selected' : ''}>${n}</option>`).join('')}
+                    </select>
+                    <button class="iig-gallery-btn" id="iig_gallery_select_toggle" type="button" title="Режим выбора">
+                        <i class="fa-regular fa-square-check"></i>
+                    </button>
+                    <button class="iig-gallery-btn" id="iig_gallery_select_all" type="button" title="Выбрать все" style="display:none">
+                        <i class="fa-solid fa-check-double"></i>
+                    </button>
+                    <button class="iig-gallery-btn iig-gallery-btn-danger" id="iig_gallery_delete_selected" type="button" title="Удалить выбранные" style="display:none">
+                        <i class="fa-solid fa-trash"></i>
+                    </button>
+                    <button class="iig-gallery-btn" id="iig_gallery_download_selected" type="button" title="Скачать выбранные" style="display:none">
+                        <i class="fa-solid fa-download"></i>
+                    </button>
+                    <button class="iig-gallery-btn" id="iig_gallery_thumbsize_toggle" type="button" title="Размер тумбнейлов">
+                        <i class="fa-solid fa-up-right-and-down-left-from-center"></i>
+                    </button>
+                    <button class="iig-gallery-btn iig-gallery-close" id="iig_gallery_close" type="button" title="Закрыть">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="iig-gallery-body" id="iig_gallery_body"></div>
+            <div class="iig-gallery-footer" id="iig_gallery_footer"></div>
+        </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    const modal = overlay.querySelector('.iig-gallery-modal');
+    const bodyEl = overlay.querySelector('#iig_gallery_body');
+
+    // Закрытие
+    const close = () => {
+        if (!overlay.isConnected) return;
+        overlay._chatObserver?.disconnect();
+        if (overlay._chatRefreshTimer) clearTimeout(overlay._chatRefreshTimer);
+        resetGalleryState();
+        overlay.remove();
+    };
+    const closeFromControl = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        close();
+    };
+    for (const closeButton of overlay.querySelectorAll('.iig-gallery-close')) {
+        closeButton.addEventListener('click', closeFromControl);
+        closeButton.addEventListener('pointerup', closeFromControl);
+        closeButton.addEventListener('touchend', closeFromControl, { passive: false });
+    }
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    document.addEventListener('keydown', function escHandler(e) {
+        if (e.key === 'Escape' && document.getElementById(GALLERY_OVERLAY_ID)) {
+            e.stopPropagation();
+            close();
+            document.removeEventListener('keydown', escHandler, true);
+        }
+    }, true);
+
+    // Гасим всплытие, чтобы клики по модалке не утекали в чат
+    for (const ev of ['click', 'mousedown', 'pointerdown']) {
+        modal.addEventListener(ev, (e) => e.stopPropagation());
+    }
+
+    // Синхронизация чат-скоупа с завершёнными перегенерациями: обновляемся,
+    // когда в чате добавилась сгенерированная картинка или сменился её src.
+    const chat = document.getElementById('chat');
+    if (chat) {
+        const scheduleChatRefresh = () => {
+            if (!overlay.isConnected || galleryState.scope !== 'chat') return;
+            if (overlay._chatRefreshTimer) clearTimeout(overlay._chatRefreshTimer);
+            overlay._chatRefreshTimer = setTimeout(() => {
+                overlay._chatRefreshTimer = null;
+                if (!overlay.isConnected || galleryState.scope !== 'chat') return;
+                galleryState.images = collectChatImages();
+                galleryState.selected.clear();
+                clampGalleryPage();
+                updateGallerySelectionUI(overlay);
+                renderGalleryContent(bodyEl);
+            }, 120);
+        };
+        overlay._chatObserver = new MutationObserver((mutations) => {
+            const changed = mutations.some((mutation) => {
+                if (mutation.type === 'attributes') {
+                    return mutation.target instanceof HTMLImageElement
+                        && mutation.target.matches('img[data-iig-instruction], img.iig-generated-image');
+                }
+                return Array.from(mutation.addedNodes).some((node) => node instanceof Element
+                    && (node.matches?.('img[data-iig-instruction], img.iig-generated-image')
+                        || node.querySelector?.('img[data-iig-instruction], img.iig-generated-image')));
+            });
+            if (changed) scheduleChatRefresh();
+        });
+        overlay._chatObserver.observe(chat, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['src'],
+        });
+    }
+
+    // Переключение скоупа (чат / все картинки персонажа)
+    overlay.querySelectorAll('[data-gallery-scope]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const scope = btn.getAttribute('data-gallery-scope');
+            if (scope === galleryState.scope) return;
+            galleryState.scope = scope;
+            galleryState.page = 0;
+            galleryState.selected.clear();
+            overlay.querySelectorAll('[data-gallery-scope]').forEach((b) => {
+                b.classList.toggle('active', b.getAttribute('data-gallery-scope') === galleryState.scope);
+            });
+            refreshGallery();
+        });
+    });
+
+    // Сортировка
+    overlay.querySelector('#iig_gallery_sort').addEventListener('change', (e) => {
+        galleryState.sort = e.target.value;
+        galleryState.page = 0;
+        galleryState.selected.clear();
+        updateGallerySelectionUI(overlay);
+        renderGalleryContent(bodyEl);
+    });
+
+    // Кол-во на странице
+    overlay.querySelector('#iig_gallery_perpage').addEventListener('change', (e) => {
+        galleryState.perPage = parseInt(e.target.value, 10) || GALLERY_DEFAULT_PER_PAGE;
+        galleryState.page = 0;
+        galleryState.selected.clear();
+        updateGallerySelectionUI(overlay);
+        renderGalleryContent(bodyEl);
+    });
+
+    applyGalleryThumbSize(overlay);
+
+    // Слайдер размера тумбнейлов
+    overlay.querySelector('#iig_gallery_thumbsize_toggle').addEventListener('click', () => {
+        galleryState.showThumbSlider = !galleryState.showThumbSlider;
+        overlay.querySelector('#iig_gallery_thumbsize_toggle').classList.toggle('iig-gallery-btn-active', galleryState.showThumbSlider);
+        const footerEl = overlay.querySelector('#iig_gallery_footer');
+        if (footerEl) renderGalleryFooter(footerEl);
+    });
+
+    // Режим выбора
+    overlay.querySelector('#iig_gallery_select_toggle').addEventListener('click', () => {
+        galleryState.selectMode = !galleryState.selectMode;
+        galleryState.selected.clear();
+        updateGallerySelectionUI(overlay);
+        renderGalleryContent(bodyEl);
+    });
+
+    // Выбрать все (на текущей странице)
+    overlay.querySelector('#iig_gallery_select_all').addEventListener('click', () => {
+        const pageImgs = getGalleryPageImages();
+        const allOnPage = pageImgs.every((_, i) => galleryState.selected.has(galleryState.page * galleryState.perPage + i));
+        if (allOnPage) {
+            pageImgs.forEach((_, i) => galleryState.selected.delete(galleryState.page * galleryState.perPage + i));
+        } else {
+            pageImgs.forEach((_, i) => galleryState.selected.add(galleryState.page * galleryState.perPage + i));
+        }
+        updateGallerySelectionUI(overlay);
+        renderGalleryContent(bodyEl);
+    });
+
+    // Скачать выбранные
+    overlay.querySelector('#iig_gallery_download_selected').addEventListener('click', async () => {
+        const selected = getSelectedGalleryImages();
+        for (const img of selected) {
+            await downloadGalleryImage(img);
+        }
+    });
+
+    // Удалить выбранные
+    overlay.querySelector('#iig_gallery_delete_selected').addEventListener('click', async () => {
+        const selected = getSelectedGalleryImages();
+        if (selected.length === 0) return;
+        const confirmed = confirm(`Удалить выбранные (${selected.length})? Это действие необратимо.`);
+        if (!confirmed) return;
+
+        for (const img of selected) {
+            await deleteGalleryImage(img);
+        }
+
+        await refreshGallery();
+        toastr.success(`Удалено: ${selected.length}`, 'Галерея', { timeOut: 2000 });
+    });
+
+    refreshGallery();
+    updateGalleryCount(overlay);
+}
+
+function getSelectedGalleryImages() {
+    const sorted = getSortedGalleryImages();
+    return Array.from(galleryState.selected)
+        .sort((a, b) => b - a)
+        .map(idx => sorted[idx])
+        .filter(Boolean);
+}
+
+function updateGallerySelectionUI(overlay) {
+    const toggleBtn = overlay.querySelector('#iig_gallery_select_toggle');
+    const selectAllBtn = overlay.querySelector('#iig_gallery_select_all');
+    const deleteBtn = overlay.querySelector('#iig_gallery_delete_selected');
+    const downloadBtn = overlay.querySelector('#iig_gallery_download_selected');
+
+    toggleBtn.classList.toggle('iig-gallery-btn-active', galleryState.selectMode);
+    selectAllBtn.style.display = galleryState.selectMode ? '' : 'none';
+    deleteBtn.style.display = galleryState.selectMode ? '' : 'none';
+    downloadBtn.style.display = galleryState.selectMode ? '' : 'none';
+
+    deleteBtn.disabled = galleryState.selected.size === 0;
+    downloadBtn.disabled = galleryState.selected.size === 0;
+
+    updateGalleryCount(overlay);
+}
+
+function updateGalleryCount(overlay) {
+    const countEl = overlay.querySelector('#iig_gallery_count');
+    if (!countEl) return;
+    const total = galleryState.images.length;
+    const selCount = galleryState.selected.size;
+    if (galleryState.selectMode && selCount > 0) {
+        countEl.textContent = `${selCount} / ${total}`;
+    } else {
+        countEl.textContent = `${total}`;
+    }
+}
+
+// ── Отрисовка сетки и пагинации ──
+
+function applyGalleryThumbSize(overlay) {
+    overlay.style.setProperty('--iig-gallery-thumb-min', galleryState.thumbSize + 'px');
+}
+
+function renderGalleryContent(bodyEl) {
+    clampGalleryPage();
+    const sorted = getSortedGalleryImages();
+    const overlay = document.getElementById(GALLERY_OVERLAY_ID);
+
+    if (sorted.length === 0) {
+        const emptyText = galleryState.scope === 'character'
+            ? 'У этого персонажа нет сохранённых картинок'
+            : 'В этом чате нет сгенерированных картинок';
+        bodyEl.innerHTML = `<div class="iig-gallery-empty"><i class="fa-regular fa-image"></i><p>${emptyText}</p></div>`;
+        if (overlay) renderGalleryFooter(overlay.querySelector('#iig_gallery_footer'));
+        return;
+    }
+
+    const pageImages = getGalleryPageImages();
+    const startIdx = galleryState.page * galleryState.perPage;
+
+    const cardsHtml = pageImages.map((img, i) => {
+        const globalIdx = startIdx + i;
+        const isSelected = galleryState.selected.has(globalIdx);
+        const promptShort = (img.prompt || '').slice(0, 80) + ((img.prompt || '').length > 80 ? '…' : '');
+
+        // Одна строка мета поверх картинки: в чат-скоупе — № сообщения и имя,
+        // в скоупе «Все» — имя файла. Полные данные — в title-тултипе.
+        const metaLine = img.messageId !== null
+            ? `#${img.messageId}${img.charName ? ' · ' + sanitizeForHtml(img.charName) : ''}`
+            : sanitizeForHtml(img.filename);
+        const tooltipParts = [];
+        if (img.messageId !== null) tooltipParts.push(`Сообщение #${img.messageId}${img.charName ? ' · ' + img.charName : ''}`);
+        if (img.filename) tooltipParts.push(img.filename);
+        if (img.prompt) tooltipParts.push(img.prompt);
+        const tooltip = sanitizeForHtml(tooltipParts.join('\n')).replace(/"/g, '&quot;');
+
+        return `
+            <div class="iig-gallery-card ${isSelected ? 'iig-gallery-card-selected' : ''}" data-gallery-idx="${globalIdx}" title="${tooltip}">
+                <img class="iig-gallery-thumb" src="${sanitizeForHtml(img.src)}" alt="" loading="lazy">
+                ${galleryState.selectMode ? `<div class="iig-gallery-checkbox ${isSelected ? 'checked' : ''}"><i class="fa-${isSelected ? 'solid fa-square-check' : 'regular fa-square'}"></i></div>` : ''}
+                <div class="iig-gallery-card-actions">
+                    <button class="iig-gallery-card-btn" data-gallery-action="download" data-gallery-idx="${globalIdx}" title="Скачать"><i class="fa-solid fa-download"></i></button>
+                    <button class="iig-gallery-card-btn iig-gallery-card-btn-danger" data-gallery-action="delete" data-gallery-idx="${globalIdx}" title="Удалить"><i class="fa-solid fa-trash"></i></button>
+                </div>
+                <div class="iig-gallery-card-meta">
+                    <span class="iig-gallery-card-line">${metaLine}</span>
+                    ${promptShort ? `<span class="iig-gallery-card-prompt">${sanitizeForHtml(promptShort)}</span>` : ''}
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    bodyEl.innerHTML = `<div class="iig-gallery-grid">${cardsHtml}</div>`;
+
+    if (overlay) {
+        applyGalleryThumbSize(overlay);
+        renderGalleryFooter(overlay.querySelector('#iig_gallery_footer'));
+    }
+
+    bodyEl.removeEventListener('click', handleGalleryBodyClick);
+    bodyEl.addEventListener('click', handleGalleryBodyClick);
+}
+
+function renderGalleryFooter(footerEl) {
+    if (!footerEl) return;
+    const paginationHtml = buildGalleryPaginationHtml();
+    const thumbSliderHtml = galleryState.showThumbSlider ? `
+        <div class="iig-gallery-thumb-size-wrap">
+            <i class="fa-solid fa-image" style="font-size:10px;opacity:0.5"></i>
+            <input type="range" class="iig-gallery-thumb-slider" id="iig_gallery_thumb_size"
+                min="${GALLERY_THUMB_SIZE_OPTIONS[0]}" max="${GALLERY_THUMB_SIZE_OPTIONS[GALLERY_THUMB_SIZE_OPTIONS.length - 1]}"
+                step="10" value="${galleryState.thumbSize}">
+            <i class="fa-solid fa-image" style="font-size:16px;opacity:0.5"></i>
+        </div>
+    ` : '';
+    const hasContent = paginationHtml || thumbSliderHtml;
+    footerEl.innerHTML = hasContent ? `<div class="iig-gallery-footer-row">${paginationHtml}${thumbSliderHtml}</div>` : '';
+    footerEl.style.display = hasContent ? '' : 'none';
+    const slider = footerEl.querySelector('#iig_gallery_thumb_size');
+    if (slider) {
+        slider.addEventListener('input', (e) => {
+            galleryState.thumbSize = parseInt(e.target.value, 10) || GALLERY_DEFAULT_THUMB_SIZE;
+            const overlay = document.getElementById(GALLERY_OVERLAY_ID);
+            if (overlay) applyGalleryThumbSize(overlay);
+        });
+    }
+    footerEl.removeEventListener('click', handleGalleryBodyClick);
+    footerEl.addEventListener('click', handleGalleryBodyClick);
+}
+
+function buildGalleryPaginationHtml() {
+    const totalPages = getGalleryTotalPages();
+    if (totalPages <= 1) return '';
+
+    const pages = [];
+    for (let i = 0; i < totalPages; i++) {
+        if (totalPages > 7) {
+            const show = i === 0 || i === totalPages - 1
+                || (i >= galleryState.page - 1 && i <= galleryState.page + 1);
+            if (!show) {
+                if (pages.length && pages[pages.length - 1] !== '…') pages.push('…');
+                continue;
+            }
+        }
+        pages.push(i);
+    }
+
+    const btns = pages.map(p => {
+        if (p === '…') return `<span class="iig-gallery-page-ellipsis">…</span>`;
+        return `<button class="iig-gallery-page-btn ${p === galleryState.page ? 'active' : ''}" data-gallery-page="${p}" type="button">${p + 1}</button>`;
+    }).join('');
+
+    return `
+        <div class="iig-gallery-pagination">
+            <button class="iig-gallery-page-btn" data-gallery-page-prev type="button" ${galleryState.page <= 0 ? 'disabled' : ''}><i class="fa-solid fa-chevron-left"></i></button>
+            ${btns}
+            <button class="iig-gallery-page-btn" data-gallery-page-next type="button" ${galleryState.page >= totalPages - 1 ? 'disabled' : ''}><i class="fa-solid fa-chevron-right"></i></button>
+        </div>
+    `;
+}
+
+// ── Делегированный обработчик кликов ──
+
+function handleGalleryBodyClick(e) {
+    const target = e.target instanceof Element ? e.target : null;
+    if (!target) return;
+
+    // Пагинация
+    const pageBtn = target.closest('[data-gallery-page]');
+    if (pageBtn) {
+        galleryState.page = parseInt(pageBtn.getAttribute('data-gallery-page'), 10);
+        galleryState.selected.clear();
+        const overlay = document.getElementById(GALLERY_OVERLAY_ID);
+        const bodyEl = overlay?.querySelector('#iig_gallery_body');
+        if (overlay) updateGallerySelectionUI(overlay);
+        if (bodyEl) renderGalleryContent(bodyEl);
+        bodyEl?.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+    }
+    if (target.closest('[data-gallery-page-prev]')) {
+        if (galleryState.page > 0) { galleryState.page--; galleryState.selected.clear(); }
+        const overlay = document.getElementById(GALLERY_OVERLAY_ID);
+        const bodyEl = overlay?.querySelector('#iig_gallery_body');
+        if (overlay) updateGallerySelectionUI(overlay);
+        if (bodyEl) renderGalleryContent(bodyEl);
+        bodyEl?.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+    }
+    if (target.closest('[data-gallery-page-next]')) {
+        if (galleryState.page < getGalleryTotalPages() - 1) { galleryState.page++; galleryState.selected.clear(); }
+        const overlay = document.getElementById(GALLERY_OVERLAY_ID);
+        const bodyEl = overlay?.querySelector('#iig_gallery_body');
+        if (overlay) updateGallerySelectionUI(overlay);
+        if (bodyEl) renderGalleryContent(bodyEl);
+        bodyEl?.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+    }
+
+    // Кнопки действий на карточке
+    const actionBtn = target.closest('[data-gallery-action]');
+    if (actionBtn) {
+        e.stopPropagation();
+        const action = actionBtn.getAttribute('data-gallery-action');
+        const idx = parseInt(actionBtn.getAttribute('data-gallery-idx'), 10);
+        const sorted = getSortedGalleryImages();
+        const img = sorted[idx];
+        if (!img) return;
+
+        if (action === 'download') {
+            downloadGalleryImage(img);
+        } else if (action === 'delete') {
+            handleGallerySingleDelete(idx);
+        }
+        return;
+    }
+
+    // Клик по карточке — выбор или просмотр
+    const card = target.closest('.iig-gallery-card[data-gallery-idx]');
+    if (card) {
+        const idx = parseInt(card.getAttribute('data-gallery-idx'), 10);
+        if (galleryState.selectMode) {
+            if (galleryState.selected.has(idx)) galleryState.selected.delete(idx);
+            else galleryState.selected.add(idx);
+            const overlay = document.getElementById(GALLERY_OVERLAY_ID);
+            const bodyEl = overlay?.querySelector('#iig_gallery_body');
+            if (overlay) updateGallerySelectionUI(overlay);
+            if (bodyEl) renderGalleryContent(bodyEl);
+        } else {
+            openGalleryViewer(idx);
+        }
+    }
+}
+
+// ── Удаление одной картинки ──
+
+async function handleGallerySingleDelete(idx) {
+    const sorted = getSortedGalleryImages();
+    const img = sorted[idx];
+    if (!img) return;
+    const confirmText = img.messageId === null
+        ? 'Удалить этот файл с диска? Действие необратимо.'
+        : 'Удалить эту картинку из чата?';
+    const confirmed = confirm(confirmText);
+    if (!confirmed) return;
+
+    await deleteGalleryImage(img);
+    await refreshGallery();
+    toastr.success('Картинка удалена', 'Галерея', { timeOut: 2000 });
+}
+
+async function deleteGalleryImage(img) {
+    if (img.messageId === null) {
+        await deleteGalleryImageFile(img);
+    } else {
+        await deleteGalleryImageFromChat(img);
+    }
+}
+
+// ── Просмотр из галереи (фуллскрин-вьюер) ──
+
+function restoreGalleryWhenViewerCloses(overlay) {
+    const viewer = document.getElementById('iig-fullscreen-overlay');
+    if (!viewer) {
+        if (overlay) overlay.style.display = '';
+        return;
+    }
+    const observer = new MutationObserver(() => {
+        if (!document.getElementById('iig-fullscreen-overlay')) {
+            observer.disconnect();
+            if (overlay) overlay.style.display = '';
+        }
+    });
+    observer.observe(document.body, { childList: true });
+}
+
+function openGalleryViewer(idx) {
+    const sorted = getSortedGalleryImages();
+    const img = sorted[idx];
+    if (!img) return;
+
+    const overlay = document.getElementById(GALLERY_OVERLAY_ID);
+    if (overlay) overlay.style.display = 'none';
+
+    openFullscreenViewer(img.src);
+    restoreGalleryWhenViewerCloses(overlay);
+}
+
+// ── Скачивание ──
+
+async function downloadGalleryImage(img) {
+    await iigDownloadImage(img.src, img.filename || '');
+}
+
+// ── Удаление картинки из сообщения чата ──
+
+async function deleteGalleryImageFromChat(img) {
+    const context = SillyTavern.getContext();
+    const message = context.chat[img.messageId];
+    if (!message) return;
+
+    // В message.mes src хранится относительным путём ("user/images/...") без
+    // percent-encoding, а DOM img.src — абсолютный закодированный URL.
+    // Матчим все варианты записи.
+    const variants = new Set([img.src]);
+    if (!img.src.startsWith('data:')) {
+        try {
+            const pathname = new URL(img.src, location.origin).pathname;
+            const decoded = decodeURIComponent(pathname);
+            for (const p of [pathname, decoded]) {
+                variants.add(p);
+                variants.add(p.replace(/^\//, ''));
+            }
+        } catch { /* оставляем только абсолютный src */ }
+    }
+    const srcPattern = Array.from(variants).map(iigEscapeRegex).join('|');
+    const imgTagRegex = new RegExp(
+        `<img\\s[^>]*src\\s*=\\s*["'](?:${srcPattern})["'][^>]*>`,
+        'i',
+    );
+    // Legacy-маркер завершённой генерации [IMG:✓:src]
+    const legacyMarkerRegex = new RegExp(`\\[IMG:✓:(?:${srcPattern})\\]`, 'i');
+
+    const stripTag = (text) => String(text).replace(imgTagRegex, '').replace(legacyMarkerRegex, '');
+    if (message.mes) message.mes = stripTag(message.mes);
+    if (message.extra?.display_text) message.extra.display_text = stripTag(message.extra.display_text);
+    if (message.extra?.extblocks) message.extra.extblocks = stripTag(message.extra.extblocks);
+
+    // Зеркала текущего свайпа — иначе картинка «воскресает» после свайпа туда-обратно
+    const swipeId = message.swipe_id;
+    if (swipeId !== undefined) {
+        if (Array.isArray(message.swipes) && typeof message.swipes[swipeId] === 'string') {
+            message.swipes[swipeId] = stripTag(message.swipes[swipeId]);
+        }
+        const swipeExtra = message.swipe_info?.[swipeId]?.extra;
+        if (swipeExtra?.extblocks) swipeExtra.extblocks = stripTag(swipeExtra.extblocks);
+        if (swipeExtra?.display_text) swipeExtra.display_text = stripTag(swipeExtra.display_text);
+    }
+
+    rerenderMessageFromSource(img.messageId);
+
+    await context.saveChat();
+
+    if (img.src && !img.src.startsWith('data:')) {
+        try {
+            const path = img.src.startsWith('/') ? img.src : new URL(img.src, location.origin).pathname;
+            await fetch('/api/images/delete', {
+                method: 'POST',
+                headers: context.getRequestHeaders(),
+                body: JSON.stringify({ path }),
+            });
+        } catch (err) {
+            iigLog('WARN', 'Gallery: failed to delete image file:', err);
+        }
+    }
+}
+
+// ── Удаление файла картинки с диска (скоуп «Все») ──
+
+async function deleteGalleryImageFile(img) {
+    if (!img.diskPath) return;
+    const context = SillyTavern.getContext();
+    try {
+        await fetch('/api/images/delete', {
+            method: 'POST',
+            headers: context.getRequestHeaders(),
+            body: JSON.stringify({ path: img.diskPath }),
+        });
+    } catch (err) {
+        iigLog('WARN', 'Gallery: failed to delete image file:', err);
+    }
+}
+
+// ── Пункт «Галерея чата» в меню «волшебной палочки» ──
+
+function ensureGalleryWandButton() {
+    const settings = getSettings();
+    const show = settings.enabled !== false;
+    // Свой id (не iig_gallery_wand_button): если рядом установлен novarakk — не конфликтуем.
+    let item = document.getElementById('iig_si_gallery_wand');
+    if (!show) { if (item) item.remove(); return; }
+    const menu = document.getElementById('extensionsMenu');
+    if (!menu) return; // меню ещё не построено — повторим на APP_READY/CHAT_CHANGED
+    if (!item) {
+        item = document.createElement('div');
+        item.id = 'iig_si_gallery_wand';
+        item.className = 'list-group-item flex-container flexGap5';
+        item.title = 'Все сгенерированные картинки чата и персонажа: просмотр, скачивание, удаление';
+        item.addEventListener('click', () => openGallery());
+        item.innerHTML = '<div class="fa-solid fa-images extensionsMenuExtensionButton"></div><span>Галерея чата</span>';
+        menu.appendChild(item);
+    }
+}
+
+/**
+ * Кнопка «Скачать» во вьюере штатной галереи ST.
+ * Галерея открывает картинку в draggable-окне (.galleryImageDraggable в #movingDivs),
+ * откуда оригинал не вытащить по-человечески (drag заблокирован, на мобильных — только скриншот).
+ * Подсаживаем иконку скачивания в шапку окна через MutationObserver — ядро ST не трогаем.
+ */
+function initGalleryDownloadButton() {
+    const container = document.getElementById('movingDivs');
+    if (!container || container.dataset.iigDownloadObserver) return;
+    container.dataset.iigDownloadObserver = '1';
+
+    const inject = (node) => {
+        if (!(node instanceof HTMLElement) || !node.classList?.contains('galleryImageDraggable')) return;
+        const bar = node.querySelector('.panelControlBar');
+        if (!bar || bar.querySelector('.iig-drag-download')) return;
+        const btn = document.createElement('div');
+        btn.className = 'fa-fw fa-solid fa-download iig-drag-download';
+        btn.title = 'Скачать оригинал';
+        btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const src = node.querySelector('img')?.getAttribute('src')
+                || node.querySelector('video')?.getAttribute('src') || '';
+            if (src) iigDownloadImage(src);
+        });
+        bar.insertBefore(btn, bar.querySelector('.dragClose'));
+    };
+
+    for (const el of container.querySelectorAll('.galleryImageDraggable')) inject(el);
+    const observer = new MutationObserver((mutations) => {
+        for (const m of mutations) {
+            for (const node of m.addedNodes) inject(node);
+        }
+    });
+    observer.observe(container, { childList: true });
+}
+
 /**
  * Initialize extension
  */
@@ -9740,6 +11735,9 @@ function enhanceRenderedImages(mesTextEl, messageId) {
     
     // Initialize global click handler (event delegation — survives DOM re-renders)
     initGlobalClickHandler();
+
+    // Кнопка «Скачать оригинал» во вьюере штатной галереи ST
+    initGalleryDownloadButton();
     
     // Create settings UI when app is ready
     context.eventSource.on(context.event_types.APP_READY, () => {
@@ -9747,6 +11745,10 @@ function enhanceRenderedImages(mesTextEl, messageId) {
         // Add buttons to any messages already in chat
         addButtonsToExistingMessages();
         try { updateAvatarAppearanceInjection(); } catch (e) {}
+        try { ensureHistoryPicWandButton(); } catch (e) {}
+        try { ensureGalleryWandButton(); } catch (e) {}
+        // Повтор на случай, если #movingDivs ещё не существовал при загрузке модуля
+        try { initGalleryDownloadButton(); } catch (e) {}
     });
     
     // When chat is loaded/changed, add buttons to all existing messages
@@ -9760,6 +11762,8 @@ function enhanceRenderedImages(mesTextEl, messageId) {
             try { renderRefSlots(); bindRefSlotEvents(); } catch (e) { iigLog('WARN', 'per-char UI refresh failed:', e.message); }
             // Обновляем инъекцию внешности аватаров в LLM-контекст под новый чат.
             try { updateAvatarAppearanceInjection(); } catch (e) {}
+            try { ensureHistoryPicWandButton(); } catch (e) {}
+            try { ensureGalleryWandButton(); } catch (e) {}
         }, 100);
     });
 
@@ -9780,6 +11784,26 @@ function enhanceRenderedImages(mesTextEl, messageId) {
             }
         }, 100);
     });
+
+    // Ре-рендер сообщения (редактирование, обновление) уничтожает обёртки с кнопками —
+    // навешиваем заново, иначе картинку потом «нельзя перегенерить».
+    for (const evName of ['MESSAGE_EDITED', 'MESSAGE_UPDATED']) {
+        const evType = context.event_types[evName];
+        if (!evType) continue;
+        context.eventSource.on(evType, (messageId) => {
+            setTimeout(() => {
+                const el = document.querySelector(`#chat .mes[mesid="${messageId}"]`);
+                if (!el) return;
+                const msg = context.chat[messageId];
+                if (msg && !msg.is_user) {
+                    addRegenerateButton(el, messageId);
+                    try { restoreHistoryPicMessageDom(messageId); } catch (_) {}
+                    const mesText = el.querySelector('.mes_text');
+                    if (mesText) enhanceRenderedImages(mesText, messageId);
+                }
+            }, 100);
+        });
+    }
 
     // Safety net: MutationObserver re-adds buttons if DOM is rebuilt for any reason.
     // NOTE: subtree:false — `.mes` elements are always direct children of `#chat`.

@@ -4,7 +4,7 @@
 .iig-settings {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
     /* SillyTavern can apply pre-wrap in some panels; avoid showing template indentation. */
     white-space: normal !important;
 }
@@ -17,8 +17,8 @@
     display: grid;
     grid-template-columns: minmax(140px, 180px) 1fr auto;
     align-items: center;
-    column-gap: 10px;
-    row-gap: 6px;
+    column-gap: 8px;
+    row-gap: 4px;
 }
 
 .iig-settings .flex-row > label {
@@ -42,9 +42,10 @@
 }
 
 .iig-settings .hint {
-    font-size: 0.85em;
+    font-size: 0.8em;
     color: var(--SmartThemeQuoteColor);
     margin: 0;
+    opacity: 0.9;
 }
 
 .iig-hidden {
@@ -63,14 +64,20 @@
 .iig-settings-card {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 10px;
+    gap: 6px;
+    padding: 8px 10px;
     background: var(--SmartThemeBlurTintColor);
     border-radius: 6px;
 }
 
+/* Свёрнутая карточка — тонкая строка-заголовок */
+.iig-settings-card:has(> .iig-card-collapsed) {
+    padding: 5px 10px;
+}
+
 .iig-settings-card h4 {
     margin: 0;
+    font-size: 0.95em;
 }
 
 .iig-settings-card .hint {
@@ -112,7 +119,7 @@
 .iig-card-body {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
 }
 
 .iig-naistera-refs h4 {
@@ -198,6 +205,70 @@
 
 @keyframes iig-spin {
     to { transform: rotate(360deg); }
+}
+
+/* Кнопка «Остановить» в лоадере генерации (порт из novarakk) */
+.iig-cancel-generation {
+    appearance: none;
+    box-sizing: border-box;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    gap: 7px;
+    width: auto !important;
+    min-width: 0 !important;
+    max-width: calc(100% - 16px);
+    min-height: 32px;
+    margin: 12px 8px 0 !important;
+    padding: 6px 13px !important;
+    overflow: hidden;
+    color: #ffb8b8 !important;
+    background: rgba(120, 34, 34, 0.22) !important;
+    border: 1px solid rgba(255, 112, 112, 0.42) !important;
+    border-radius: 7px !important;
+    font: inherit;
+    font-size: 0.82em !important;
+    font-weight: 500;
+    line-height: 1.2 !important;
+    white-space: nowrap !important;
+    text-align: center;
+    cursor: pointer;
+    box-shadow: none !important;
+    transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+}
+
+.iig-cancel-generation span {
+    display: inline-block;
+    min-width: 0;
+    white-space: nowrap !important;
+    word-break: normal !important;
+    overflow-wrap: normal !important;
+}
+
+.iig-cancel-generation i {
+    flex: 0 0 auto;
+    font-size: 1em;
+}
+
+.iig-cancel-generation:hover:not(:disabled) {
+    color: #fff !important;
+    background: rgba(170, 48, 48, 0.42) !important;
+    border-color: rgba(255, 135, 135, 0.78) !important;
+}
+
+.iig-cancel-generation:active:not(:disabled) {
+    transform: translateY(1px);
+}
+
+.iig-cancel-generation:disabled {
+    cursor: default;
+    opacity: 0.55;
+}
+
+.iig-generation-cancelling .iig-spinner {
+    animation-duration: 2.5s;
+    opacity: 0.55;
 }
 
 /* Error Wrapper - contains img with preserved data-iig-instruction for DOM search */
@@ -374,6 +445,14 @@
         right: 10px;
         touch-action: manipulation;
     }
+    #iig-fullscreen-overlay .iig-fs-download {
+        width: 48px;
+        height: 48px;
+        font-size: 22px;
+        top: 10px;
+        left: 10px;
+        touch-action: manipulation;
+    }
 }
 
 /* Make any IIG image clickable even without wrapper */
@@ -455,6 +534,41 @@ img[data-iig-instruction] {
 
 #iig-fullscreen-overlay .iig-fs-close:hover {
     background: rgba(255, 255, 255, 0.15);
+}
+
+/* Скачать оригинал — зеркально кнопке закрытия, в левом верхнем углу */
+#iig-fullscreen-overlay .iig-fs-download {
+    position: fixed;
+    top: 16px;
+    left: 16px;
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.6);
+    color: #fff;
+    font-size: 18px;
+    cursor: pointer;
+    z-index: 100001;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    transition: background 0.15s;
+}
+
+#iig-fullscreen-overlay .iig-fs-download:hover {
+    background: rgba(255, 255, 255, 0.15);
+}
+
+/* Скачать оригинал — иконка в шапке draggable-вьюера штатной галереи ST */
+.galleryImageDraggable .iig-drag-download {
+    cursor: pointer;
+    opacity: 0.7;
+    transition: opacity 0.15s;
+}
+
+.galleryImageDraggable .iig-drag-download:hover {
+    opacity: 1;
 }
 
 /* ═══════════════════════════════════════════
@@ -1843,7 +1957,23 @@ img[data-iig-instruction] {
     display: flex; align-items: center; justify-content: center;
     background: rgba(0, 0, 0, 0.25); border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.08));
     padding: 6px; margin-bottom: 4px;
+    position: relative;
 }
+/* Кадрировать/скачать картинку прямо из формы образа */
+.sw-form-crop, .sw-form-download {
+    position: absolute; top: 8px; right: 8px;
+    width: 34px; height: 34px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.55); color: rgba(255, 255, 255, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    cursor: pointer; font-size: 14px;
+    touch-action: manipulation;
+    transition: background 0.15s, color 0.15s;
+}
+.sw-form-download { top: 48px; }
+.sw-form-crop:hover, .sw-form-download:hover { background: rgba(0, 0, 0, 0.8); color: #fff; }
+.sw-form-crop[hidden], .sw-form-download[hidden] { display: none; }
 .sw-form-preview img { max-width: 100%; max-height: 240px; object-fit: contain; display: block; }
 .sw-form-preview img[hidden] { display: none; }
 /* Заглушка превью в режиме «образ по описанию» — пока картинка не сгенерирована */
@@ -2854,3 +2984,640 @@ img[data-iig-instruction] {
     margin-bottom: 4px;
 }
 .iig-avatar-lib-block .iig-extras-add-row .menu_button { white-space: nowrap; }
+
+/* ═══════════════════════════════════════════════════════════════
+   ГАЛЕРЕЯ ЧАТА — компактные плитки: картинка занимает всю карточку,
+   мета-строка и кнопки лежат оверлеями поверх неё
+   ═══════════════════════════════════════════════════════════════ */
+
+.iig-gallery-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 99999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.76);
+    backdrop-filter: blur(6px);
+}
+
+.iig-gallery-modal {
+    width: calc(100% - 32px);
+    max-width: 1100px;
+    max-height: 92vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--SmartThemeBlurTintColor);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 10px;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+    animation: iig-gallery-in 0.2s ease-out;
+}
+
+@keyframes iig-gallery-in {
+    from { transform: scale(0.97) translateY(8px); opacity: 0; }
+    to   { transform: scale(1) translateY(0); opacity: 1; }
+}
+
+/* ── Шапка: один компактный ряд ── */
+
+.iig-gallery-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+    flex-shrink: 0;
+}
+
+.iig-gallery-title {
+    flex: 1;
+    min-width: 0;
+    font-weight: 700;
+    font-size: 13px;
+    color: var(--SmartThemeBodyColor);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.iig-gallery-count {
+    font-size: 11px;
+    color: var(--SmartThemeQuoteColor);
+    padding: 1px 7px;
+    background: var(--SmartThemeBorderColor);
+    border-radius: 9px;
+    flex-shrink: 0;
+}
+
+.iig-gallery-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.iig-gallery-scope {
+    display: flex;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+.iig-gallery-scope-btn {
+    background: none;
+    border: none;
+    color: var(--SmartThemeBodyColor);
+    cursor: pointer;
+    padding: 4px 9px;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+    opacity: 0.7;
+    transition: background 0.15s, opacity 0.15s;
+}
+
+.iig-gallery-scope-btn + .iig-gallery-scope-btn {
+    border-left: 1px solid var(--SmartThemeBorderColor);
+}
+
+.iig-gallery-scope-btn:hover {
+    opacity: 1;
+}
+
+.iig-gallery-scope-btn.active {
+    background: var(--SmartThemeBorderColor);
+    opacity: 1;
+}
+
+.iig-gallery-sort,
+.iig-gallery-perpage {
+    background: var(--SmartThemeBlurTintColor);
+    color: var(--SmartThemeBodyColor);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    padding: 3px 6px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.iig-gallery-sort {
+    max-width: 100px;
+}
+
+.iig-gallery-perpage {
+    max-width: 58px;
+}
+
+.iig-gallery-btn {
+    background: none;
+    border: 1px solid transparent;
+    color: var(--SmartThemeBodyColor);
+    cursor: pointer;
+    padding: 5px 7px;
+    border-radius: 6px;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.iig-gallery-btn:hover {
+    background: var(--SmartThemeBorderColor);
+}
+
+.iig-gallery-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
+}
+
+.iig-gallery-btn-active {
+    background: var(--SmartThemeBorderColor);
+    border-color: var(--SmartThemeQuoteColor);
+}
+
+.iig-gallery-btn-danger {
+    color: #e55;
+}
+
+.iig-gallery-btn-danger:hover {
+    background: rgba(238, 85, 85, 0.15);
+}
+
+.iig-gallery-close-mobile {
+    display: none;
+}
+
+.iig-gallery-close {
+    position: relative;
+    z-index: 10;
+    pointer-events: auto !important;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+}
+
+/* ── Тело и сетка ── */
+
+.iig-gallery-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px;
+}
+
+.iig-gallery-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(var(--iig-gallery-thumb-min, 130px), 1fr));
+    gap: 8px;
+}
+
+/* ── Плитка: только картинка, всё остальное — оверлеи ── */
+
+.iig-gallery-card {
+    position: relative;
+    aspect-ratio: 1 / 1;
+    border-radius: 8px;
+    overflow: hidden;
+    cursor: pointer;
+    background: rgba(0, 0, 0, 0.2);
+}
+
+/* Рамка pseudo-элементом: box-shadow/outline прячутся под картинкой */
+.iig-gallery-card::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: inherit;
+    pointer-events: none;
+    transition: border-color 0.15s;
+}
+
+.iig-gallery-card:hover::after {
+    border-color: var(--SmartThemeQuoteColor);
+}
+
+.iig-gallery-card-selected::after {
+    border: 2px solid var(--SmartThemeQuoteColor);
+}
+
+.iig-gallery-card-selected .iig-gallery-thumb {
+    opacity: 0.75;
+}
+
+.iig-gallery-thumb {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.iig-gallery-checkbox {
+    position: absolute;
+    top: 5px;
+    left: 5px;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 17px;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.55);
+    border-radius: 6px;
+    pointer-events: none;
+}
+
+.iig-gallery-checkbox.checked {
+    color: #4caf50;
+    background: rgba(0, 0, 0, 0.75);
+}
+
+/* Кнопки действий — в углу поверх картинки */
+.iig-gallery-card-actions {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    display: flex;
+    gap: 3px;
+    transition: opacity 0.15s;
+}
+
+.iig-gallery-card-btn {
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: none;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.55);
+    color: #fff;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.iig-gallery-card-btn:hover {
+    background: rgba(0, 0, 0, 0.85);
+}
+
+.iig-gallery-card-btn-danger:hover {
+    background: rgba(211, 47, 47, 0.9);
+}
+
+/* Мета — градиент по нижнему краю картинки */
+.iig-gallery-card-meta {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 14px 6px 4px;
+    background: linear-gradient(transparent, rgba(0, 0, 0, 0.75));
+    color: #fff;
+    pointer-events: none;
+}
+
+.iig-gallery-card-line {
+    font-size: 10px;
+    line-height: 1.3;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
+.iig-gallery-card-prompt {
+    font-size: 10px;
+    line-height: 1.3;
+    opacity: 0.85;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
+/* С мышью: кнопки и промпт появляются при наведении, плитка чище */
+@media (hover: hover) and (pointer: fine) {
+    .iig-gallery-card-actions {
+        opacity: 0;
+    }
+
+    .iig-gallery-card:hover .iig-gallery-card-actions,
+    .iig-gallery-card-actions:focus-within {
+        opacity: 1;
+    }
+
+    .iig-gallery-card-prompt {
+        display: none;
+    }
+
+    .iig-gallery-card:hover .iig-gallery-card-prompt {
+        display: -webkit-box;
+    }
+}
+
+.iig-gallery-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 36px 20px;
+    color: var(--SmartThemeQuoteColor);
+    font-size: 13px;
+}
+
+.iig-gallery-empty i {
+    font-size: 40px;
+    opacity: 0.3;
+}
+
+.iig-gallery-empty p {
+    margin: 0;
+}
+
+/* ── Футер: пагинация и слайдер в одном ряду ── */
+
+.iig-gallery-footer {
+    flex-shrink: 0;
+    border-top: 1px solid var(--SmartThemeBorderColor);
+    background: var(--SmartThemeBlurTintColor);
+}
+
+.iig-gallery-footer-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 6px 10px;
+}
+
+.iig-gallery-thumb-size-wrap {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--SmartThemeQuoteColor);
+    flex-shrink: 0;
+}
+
+.iig-gallery-thumb-slider {
+    width: 80px;
+    height: 4px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: var(--SmartThemeBorderColor);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+}
+
+.iig-gallery-thumb-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--SmartThemeBodyColor);
+    cursor: pointer;
+}
+
+.iig-gallery-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    flex-wrap: wrap;
+}
+
+.iig-gallery-page-btn {
+    background: var(--SmartThemeBlurTintColor);
+    border: 1px solid var(--SmartThemeBorderColor);
+    color: var(--SmartThemeBodyColor);
+    cursor: pointer;
+    padding: 3px 8px;
+    border-radius: 6px;
+    font-size: 12px;
+    min-width: 28px;
+    text-align: center;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.iig-gallery-page-btn:hover:not(:disabled):not(.active) {
+    background: var(--SmartThemeBorderColor);
+}
+
+.iig-gallery-page-btn.active {
+    background: var(--SmartThemeQuoteColor);
+    color: var(--SmartThemeBlurTintColor);
+    border-color: var(--SmartThemeQuoteColor);
+    font-weight: 600;
+}
+
+.iig-gallery-page-btn:disabled {
+    opacity: 0.3;
+    cursor: default;
+}
+
+.iig-gallery-page-ellipsis {
+    padding: 3px 5px;
+    color: var(--SmartThemeQuoteColor);
+    font-size: 12px;
+    user-select: none;
+}
+
+/* ── Мобильная версия: фуллскрин, шапка в два ряда ── */
+
+@media (max-width: 600px), (pointer: coarse) and (max-width: 1024px) {
+    .iig-gallery-overlay {
+        padding: 0;
+        display: flex;
+        align-items: stretch;
+    }
+
+    .iig-gallery-modal {
+        width: 100%;
+        max-width: 100%;
+        max-height: none;
+        height: 100dvh;
+        border-radius: 0;
+        border: none;
+        box-shadow: none;
+    }
+
+    .iig-gallery-header {
+        flex-wrap: wrap;
+        gap: 6px;
+        padding-top: max(8px, env(safe-area-inset-top, 0px));
+        padding-right: max(8px, env(safe-area-inset-right, 0px));
+        padding-bottom: 6px;
+        padding-left: max(8px, env(safe-area-inset-left, 0px));
+    }
+
+    .iig-gallery-close {
+        width: 40px;
+        height: 40px;
+        min-width: 40px;
+        min-height: 40px;
+        padding: 0;
+        font-size: 20px;
+        justify-content: center;
+        flex-shrink: 0;
+    }
+
+    /* Второй ряд: скоуп + селекты + иконки, всё в одну строку */
+    .iig-gallery-header-actions {
+        order: 1;
+        width: 100%;
+        flex-wrap: wrap;
+        gap: 4px;
+    }
+
+    .iig-gallery-scope {
+        flex: 0 0 auto;
+    }
+
+    .iig-gallery-scope-btn {
+        min-height: 34px;
+        padding: 4px 12px;
+        font-size: 12px;
+    }
+
+    .iig-gallery-sort,
+    .iig-gallery-perpage {
+        flex: 1 1 60px;
+        min-width: 0;
+        max-width: none;
+        min-height: 34px;
+        font-size: 12px;
+    }
+
+    .iig-gallery-btn {
+        min-width: 34px;
+        min-height: 34px;
+        justify-content: center;
+    }
+
+    .iig-gallery-header-actions .iig-gallery-close {
+        display: none;
+    }
+
+    .iig-gallery-close-mobile {
+        display: flex;
+    }
+
+    .iig-gallery-body {
+        padding-top: 6px;
+        padding-right: max(6px, env(safe-area-inset-right, 0px));
+        padding-bottom: 6px;
+        padding-left: max(6px, env(safe-area-inset-left, 0px));
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .iig-gallery-grid {
+        gap: 5px;
+    }
+
+    .iig-gallery-footer-row {
+        gap: 8px;
+        padding: 5px 8px;
+        padding-right: max(8px, env(safe-area-inset-right, 0px));
+        padding-bottom: calc(5px + env(safe-area-inset-bottom, 0px));
+        padding-left: max(8px, env(safe-area-inset-left, 0px));
+    }
+
+    .iig-gallery-thumb-slider {
+        width: 90px;
+    }
+
+    .iig-gallery-page-btn {
+        min-width: 32px;
+        min-height: 32px;
+    }
+
+    .iig-gallery-card-btn {
+        width: 30px;
+        height: 30px;
+        font-size: 13px;
+    }
+}
+
+/* ════════════════════════════════════════════
+   Иллюстрация сцены: попап с wand-кнопки + цитата-эпиграф
+   ════════════════════════════════════════════ */
+
+/* Диалог: колонка, тянется на всю ширину попапа — ок и на ПК, и на телефоне */
+.iig-hp-dialog {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    text-align: left;
+    max-width: 440px;
+    margin: 0 auto;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.iig-hp-dialog-title {
+    margin: 0 0 4px;
+    text-align: center;
+}
+
+.iig-hp-dialog > label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 0.95em;
+}
+
+.iig-hp-dialog .checkbox_label {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+}
+
+.iig-hp-dialog-row {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.iig-hp-dialog-row > label {
+    flex: 1 1 140px;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 0.95em;
+}
+
+.iig-hp-dialog select,
+.iig-hp-dialog input[type="number"] {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+/* Цитата-эпиграф над иллюстрацией */
+.iig-scene-quote {
+    font-style: italic;
+    opacity: 0.85;
+    border-left: 3px solid var(--SmartThemeQuoteColor, #999);
+    margin: 0 0 8px;
+    padding: 4px 12px;
+}
+
+/* Скрытое из контекста (is_system) сообщение с иллюстрацией не должно выглядеть выцветшим */
+#chat .mes[is_system="true"] .mes_text .iig-scene-quote,
+#chat .mes[is_system="true"] .mes_text img {
+    opacity: 1;
+}
