@@ -8171,8 +8171,9 @@ function extractHistoryPicQuote(raw) {
     return { quote, rest: s };
 }
 
-// Признак «в сообщении уже есть сгенерированная картинка/видео» — граница периода истории.
-const HISTORYPIC_IMG_RE = /\[IMG:✓:|\[VID:✓:|\[IMG:GEN[:\]]|\[IMG:ERROR|data-iig-instruction/;
+// Граница периода — прошлая «Иллюстрация сцены» (extra.iig_history_pic), а НЕ любая
+// картинка: модель часто вставляет картинки прямо в РП-посты, и граница «любая картинка»
+// резала кусок до минимума вместо лимита юзера (жалоба: «почему 4, если стоит 20»).
 
 // Текст сообщения без картиночной разметки — в кусок истории для LLM идёт только сюжет.
 function historyPicCleanText(raw) {
@@ -8187,9 +8188,10 @@ function historyPicCleanText(raw) {
     return s;
 }
 
-// Кусок истории для LLM: сообщения ПОСЛЕ последней сгенерированной картинки, максимум N
-// (настройка historyPicMaxMessages). Если картинок не было — просто последние N. Даже если
-// картинка совсем свежая, добираем минимум 3 сообщения, чтобы LLM было из чего писать.
+// Кусок истории для LLM: сообщения ПОСЛЕ прошлой иллюстрации сцены, максимум N
+// (настройка historyPicMaxMessages). Если иллюстраций не было — просто последние N.
+// Даже если иллюстрация совсем свежая, добираем минимум 3 сообщения, чтобы LLM было
+// из чего писать.
 function collectHistoryPicSlice() {
     const context = SillyTavern.getContext();
     const settings = getSettings();
@@ -8199,9 +8201,8 @@ function collectHistoryPicSlice() {
     for (let i = context.chat.length - 1; i >= 0 && lines.length < cap; i--) {
         const m = context.chat[i];
         if (!m) continue;
-        // Границу-картинку ищем и в скрытых (is_system) сообщениях: сама иллюстрация теперь
-        // может вставляться скрытой — иначе следующий вызов не увидит прошлую картинку.
-        if (HISTORYPIC_IMG_RE.test(String(m.mes || '')) && lines.length >= HISTORYPIC_MIN) break;
+        // Граница — прошлая иллюстрация сцены (в т.ч. скрытая is_system), не раньше минимума.
+        if (m.extra?.iig_history_pic && lines.length >= HISTORYPIC_MIN) break;
         if (m.is_system) continue;
         const text = historyPicCleanText(m.mes);
         if (text) lines.push(`${m.name || (m.is_user ? 'User' : 'Narrator')}: ${text}`);
@@ -8402,7 +8403,7 @@ async function openHistoryPicDialog() {
                     <option value="vision" ${settings.historyPicLlm === 'vision' ? 'selected' : ''}>Vision API</option>
                 </select>
             </label>
-            <label title="Сколько сообщений истории брать максимум (с прошлой картинки, но не больше)">Сообщений
+            <label title="Сколько сообщений истории брать максимум (с прошлой иллюстрации сцены, но не больше)">Сообщений
                 <input type="number" id="iig_hpd_max" class="text_pole" min="2" max="100" step="1" value="${Math.max(2, Math.min(100, parseInt(settings.historyPicMaxMessages, 10) || 20))}">
             </label>
         </div>
@@ -9237,7 +9238,7 @@ function createSettingsUI() {
                             <span>Иллюстрация сцены</span>
                         </h4>
                         <div class="iig-card-body ${settings.historyPicOpen ? '' : 'iig-hidden'}" id="iig_historypic_body">
-                        <p class="hint">Кнопка «Иллюстрация сцены» в меню «волшебной палочки»: вспомогательная LLM читает последние события РП (с прошлой картинки, но не больше лимита) и пишет промпт по выбранному «образу», дальше картинка генерится как обычно — с референсами и кнопкой перегенерации.</p>
+                        <p class="hint">Кнопка «Иллюстрация сцены» в меню «волшебной палочки»: вспомогательная LLM читает последние события РП (с прошлой иллюстрации сцены, но не больше лимита) и пишет промпт по выбранному «образу», дальше картинка генерится как обычно — с референсами и кнопкой перегенерации.</p>
                         <label class="checkbox_label">
                             <input type="checkbox" id="iig_historypic_enabled" ${settings.historyPicEnabled !== false ? 'checked' : ''}>
                             <span>Кнопка в «волшебной палочке»</span>
@@ -9250,7 +9251,7 @@ function createSettingsUI() {
                             </select>
                         </div>
                         <div class="flex-row">
-                            <label for="iig_historypic_max" title="Сколько сообщений истории брать максимум. Берутся сообщения после последней сгенерированной картинки, но не больше этого числа.">Макс. сообщений</label>
+                            <label for="iig_historypic_max" title="Сколько сообщений истории брать максимум. Берутся сообщения после прошлой иллюстрации сцены (обычные картинки в постах не считаются), но не больше этого числа.">Макс. сообщений</label>
                             <input type="number" id="iig_historypic_max" class="text_pole flex1" min="2" max="100" step="1" value="${Math.max(2, Math.min(100, parseInt(settings.historyPicMaxMessages, 10) || 20))}">
                         </div>
                         <label class="checkbox_label" title="LLM допишет короткую строку-эпиграф — она встанет цитатой над картинкой.">
