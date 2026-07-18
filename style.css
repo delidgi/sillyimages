@@ -3621,3 +3621,21 @@ img[data-iig-instruction] {
 #chat .mes[is_system="true"] .mes_text img {
     opacity: 1;
 }
+
+/* ════════════════════════════════════════════
+   Настройка «Кнопки на картинке»: видимость оверлеев через классы на body
+   (applyImgActionButtonClasses). У картинок-ошибок (.iig-error-wrap)
+   перегенерация не прячется — это единственный путь их оживить.
+   ════════════════════════════════════════════ */
+
+body.iig-btn-no-fullscreen .iig-image-wrapper .iig-fullscreen-btn {
+    display: none;
+}
+
+body.iig-btn-no-download .iig-image-wrapper .iig-download-btn {
+    display: none;
+}
+
+body.iig-btn-no-regen .iig-image-wrapper:not(.iig-error-wrap) .iig-regen-single-btn {
+    display: none;
+}

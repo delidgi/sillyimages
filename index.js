@@ -2233,6 +2233,11 @@ const defaultSettings = Object.freeze({
     electronhubGuidanceScale: '',  // 1.0–20.0, чем выше тем точнее следует промпту (но менее креативно)
     electronhubSteps: '',          // 10–100, больше = качественнее но медленнее
     electronhubEnableReferences: false, // экспериментальная поддержка референсов (большинство моделей не работает)
+    // Кнопки-оверлеи на сгенерированных картинках в чате (галочки в «Параметрах генерации»).
+    // Видимость управляется классами на body — см. applyImgActionButtonClasses().
+    imgActionFullscreen: true, // «на весь экран»
+    imgActionDownload: false,  // «скачать оригинал» (по умолчанию скачивание живёт во вьюере)
+    imgActionRegen: true,      // «перегенерировать» (у картинок-ошибок остаётся всегда)
     // Стили (пресеты) — name + value, один активный.
     styles: [],
     activeStyleId: '',
@@ -8660,7 +8665,7 @@ function getRefByKey(key, settings) {
 //    active/enabled, ничего не копируя и не удаляя. note — подсказка для тултипа чеклиста.
 const PROFILE_SECTIONS = [
     { id: 'connection',    label: 'Подключение',              keys: ['apiType', 'endpoint', 'apiKey', 'model', 'customRequestFormat', 'customFullUrl', 'showAllModels'], secret: ['apiKey'] },
-    { id: 'generation',    label: 'Параметры генерации',      keys: ['size', 'quality', 'aspectRatio', 'imageSize', 'maxRetries', 'retryDelay', 'naisteraModel', 'naisteraAspectRatio', 'naisteraVideoTest', 'naisteraVideoEveryN', 'electronhubStyle', 'electronhubNegativePrompt', 'electronhubGuidanceScale', 'electronhubSteps', 'electronhubEnableReferences'] },
+    { id: 'generation',    label: 'Параметры генерации',      keys: ['size', 'quality', 'aspectRatio', 'imageSize', 'maxRetries', 'retryDelay', 'naisteraModel', 'naisteraAspectRatio', 'naisteraVideoTest', 'naisteraVideoEveryN', 'electronhubStyle', 'electronhubNegativePrompt', 'electronhubGuidanceScale', 'electronhubSteps', 'electronhubEnableReferences', 'imgActionFullscreen', 'imgActionDownload', 'imgActionRegen'] },
     { id: 'imageContext',  label: 'Контекст изображений',     keys: ['imageContextEnabled', 'imageContextCount'] },
     { id: 'avatars',       label: 'Активные авы (char/user)',  mode: 'activation', note: 'какой аватар активен для {{char}} и {{user}}' },
     { id: 'autoAvatar',    label: 'Аватары: отправка/инъекция', keys: ['sendCharAvatar', 'sendUserAvatar', 'userAvatarFile', 'injectAvatarAppearanceToGeneration', 'injectAvatarAppearanceToChatEnabled', 'avatarAppearanceInjectionDepth'] },
@@ -9110,6 +9115,22 @@ function createSettingsUI() {
                                 </select>
                             </div>
                         </div>
+
+                        <div class="flex-row" style="margin-top:6px;">
+                            <label title="Какие кнопки показывать в углу сгенерированной картинки в чате. У картинок-ошибок кнопка перегенерации остаётся всегда. Скачивание также доступно во вьюере по тапу на картинку.">Кнопки на картинке</label>
+                        </div>
+                        <label class="checkbox_label">
+                            <input type="checkbox" id="iig_imgbtn_fullscreen" ${settings.imgActionFullscreen !== false ? 'checked' : ''}>
+                            <span>На весь экран</span>
+                        </label>
+                        <label class="checkbox_label">
+                            <input type="checkbox" id="iig_imgbtn_download" ${settings.imgActionDownload === true ? 'checked' : ''}>
+                            <span>Скачать оригинал</span>
+                        </label>
+                        <label class="checkbox_label">
+                            <input type="checkbox" id="iig_imgbtn_regen" ${settings.imgActionRegen !== false ? 'checked' : ''}>
+                            <span>Перегенерировать</span>
+                        </label>
                         </div>
                     </div>
 
@@ -9850,6 +9871,23 @@ function bindSettingsEvents() {
         saveSettings();
     });
 
+    // Кнопки-оверлеи на картинках — применяем сразу, без перерисовки сообщений.
+    document.getElementById('iig_imgbtn_fullscreen')?.addEventListener('change', (e) => {
+        settings.imgActionFullscreen = e.target.checked;
+        saveSettings();
+        applyImgActionButtonClasses();
+    });
+    document.getElementById('iig_imgbtn_download')?.addEventListener('change', (e) => {
+        settings.imgActionDownload = e.target.checked;
+        saveSettings();
+        applyImgActionButtonClasses();
+    });
+    document.getElementById('iig_imgbtn_regen')?.addEventListener('change', (e) => {
+        settings.imgActionRegen = e.target.checked;
+        saveSettings();
+        applyImgActionButtonClasses();
+    });
+
     // Naistera aspect ratio
     document.getElementById('iig_naistera_model')?.addEventListener('change', (e) => {
         settings.naisteraModel = normalizeNaisteraModel(e.target.value);
@@ -10123,6 +10161,8 @@ function bindSettingsEvents() {
         electronhubStyle: ['iig_electronhub_style', 'value'], electronhubNegativePrompt: ['iig_electronhub_negative', 'value'],
         electronhubGuidanceScale: ['iig_electronhub_guidance', 'value'], electronhubSteps: ['iig_electronhub_steps', 'value'],
         electronhubEnableReferences: ['iig_electronhub_refs', 'checked'],
+        imgActionFullscreen: ['iig_imgbtn_fullscreen', 'checked'], imgActionDownload: ['iig_imgbtn_download', 'checked'],
+        imgActionRegen: ['iig_imgbtn_regen', 'checked'],
         imageContextEnabled: ['iig_image_context_enabled', 'checked'], imageContextCount: ['iig_image_context_count', 'value'],
         enabled: ['iig_enabled', 'checked'], externalBlocks: ['iig_external_blocks', 'checked'],
         visionEndpoint: ['iig_vision_endpoint', 'value'], visionApiKey: ['iig_vision_api_key', 'value'],
@@ -10170,6 +10210,7 @@ function bindSettingsEvents() {
         try { renderStylePresets(); } catch (_) {}
         try { renderHistoryPicPresetUi(); } catch (_) {}
         try { ensureHistoryPicWandButton(); } catch (_) {}
+        try { applyImgActionButtonClasses(); } catch (_) {}
         updateVisibility();
         return applied;
     }
@@ -10534,6 +10575,16 @@ function initGlobalClickHandler() {
             return;
         }
 
+        // Download button on image wrapper — скачать оригинал прямо с панельки
+        const dlBtn = e.target.closest('.iig-download-btn');
+        if (dlBtn) {
+            e.preventDefault();
+            e.stopPropagation();
+            const dlSrc = dlBtn.dataset.imgSrc || '';
+            if (dlSrc) iigDownloadImage(dlSrc);
+            return;
+        }
+
         // Per-image regen button
         const regenBtn = e.target.closest('.iig-regen-single-btn');
         if (regenBtn) {
@@ -10578,6 +10629,17 @@ function initGlobalClickHandler() {
  * Wrap a generated image element with action buttons (zoom, fullscreen, per-image regen).
  * Click handlers are NOT attached here — they use global event delegation instead.
  */
+// Видимость кнопок-оверлеев на картинках — классами на body: применяется мгновенно
+// ко всем уже отрисованным картинкам, без перерисовки сообщений.
+function applyImgActionButtonClasses() {
+    const settings = getSettings();
+    const b = document.body;
+    if (!b) return;
+    b.classList.toggle('iig-btn-no-fullscreen', settings.imgActionFullscreen === false);
+    b.classList.toggle('iig-btn-no-download', settings.imgActionDownload !== true);
+    b.classList.toggle('iig-btn-no-regen', settings.imgActionRegen === false);
+}
+
 function wrapImageWithActions(mediaElement, tag, messageId, tagIndex, totalTags) {
     if (mediaElement.tagName !== 'IMG') return mediaElement;
 
@@ -10599,6 +10661,14 @@ function wrapImageWithActions(mediaElement, tag, messageId, tagIndex, totalTags)
     // Скачивание оригинала — НЕ здесь: кнопка ⬇ живёт в полноэкранном вьюере (открывается тапом
     // по картинке), чтобы не раздувать панельку действий (просьба юзера: две кнопки, не три).
 
+    // Скачать оригинал — по умолчанию скрыта настройкой (см. applyImgActionButtonClasses).
+    const dlBtn = document.createElement('div');
+    dlBtn.className = 'iig-image-action-btn iig-download-btn';
+    dlBtn.title = 'Скачать оригинал';
+    dlBtn.innerHTML = '<i class="fa-solid fa-download"></i>';
+    dlBtn.dataset.imgSrc = mediaElement.src || mediaElement.getAttribute('src') || '';
+    actions.appendChild(dlBtn);
+
     // Per-image regeneration button — stores ids in dataset, handled by delegation
     const regenBtn = document.createElement('div');
     regenBtn.className = 'iig-image-action-btn iig-regen-single-btn';
@@ -10619,7 +10689,8 @@ function wrapImageWithActions(mediaElement, tag, messageId, tagIndex, totalTags)
  */
 function wrapErrorImageWithRegen(errorImg, messageId, tagIndex) {
     const wrapper = document.createElement('div');
-    wrapper.className = 'iig-image-wrapper';
+    // iig-error-wrap: у ошибок кнопка перегенерации не прячется настройкой (иначе не оживить).
+    wrapper.className = 'iig-image-wrapper iig-error-wrap';
     wrapper.dataset.tagIndex = String(tagIndex);
 
     const actions = document.createElement('div');
@@ -11745,6 +11816,7 @@ function initGalleryDownloadButton() {
         createSettingsUI();
         // Add buttons to any messages already in chat
         addButtonsToExistingMessages();
+        try { applyImgActionButtonClasses(); } catch (e) {}
         try { updateAvatarAppearanceInjection(); } catch (e) {}
         try { ensureHistoryPicWandButton(); } catch (e) {}
         try { ensureGalleryWandButton(); } catch (e) {}
