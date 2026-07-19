@@ -453,6 +453,14 @@
         left: 10px;
         touch-action: manipulation;
     }
+    #iig-fullscreen-overlay .iig-fs-nav {
+        width: 46px;
+        height: 46px;
+        font-size: 20px;
+        touch-action: manipulation;
+    }
+    #iig-fullscreen-overlay .iig-fs-prev { left: 8px; }
+    #iig-fullscreen-overlay .iig-fs-next { right: 8px; }
 }
 
 /* Make any IIG image clickable even without wrapper */
@@ -558,6 +566,49 @@ img[data-iig-instruction] {
 
 #iig-fullscreen-overlay .iig-fs-download:hover {
     background: rgba(255, 255, 255, 0.15);
+}
+
+/* Стрелки листания (вьюер, открытый из галереи) — по центру боковых краёв */
+#iig-fullscreen-overlay .iig-fs-nav {
+    position: fixed;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 44px;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.6);
+    color: #fff;
+    font-size: 18px;
+    cursor: pointer;
+    z-index: 100001;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    transition: background 0.15s, opacity 0.15s;
+    user-select: none;
+}
+#iig-fullscreen-overlay .iig-fs-prev { left: 12px; }
+#iig-fullscreen-overlay .iig-fs-next { right: 12px; }
+#iig-fullscreen-overlay .iig-fs-nav:hover { background: rgba(255, 255, 255, 0.15); }
+/* Край списка: стрелка гаснет, но остаётся на месте (ничего не прыгает) */
+#iig-fullscreen-overlay .iig-fs-nav.iig-fs-nav-off { opacity: 0.25; pointer-events: none; }
+
+/* Счётчик «3 / 27» — сверху по центру */
+#iig-fullscreen-overlay .iig-fs-counter {
+    position: fixed;
+    top: 22px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 4px 12px;
+    border-radius: 14px;
+    background: rgba(0, 0, 0, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    color: #fff;
+    font-size: 12.5px;
+    z-index: 100001;
+    user-select: none;
+    pointer-events: none;
 }
 
 /* Скачать оригинал — иконка в шапке draggable-вьюера штатной галереи ST */
@@ -2027,6 +2078,29 @@ img[data-iig-instruction] {
 }
 .sw-tryon-btn:hover { border-color: var(--SmartThemeQuoteColor, rgba(255, 255, 255, 0.45)); }
 .sw-tryon-busy { opacity: 0.55; pointer-events: none; }
+/* Тумблер выбора подключения-генератора (иконка-вилка в строке примерки) */
+.sw-conn-toggle {
+    flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+    width: 34px; cursor: pointer; user-select: none; font-size: 12.5px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2));
+    color: var(--SmartThemeQuoteColor, #999); transition: border-color 0.15s, color 0.15s;
+}
+.sw-conn-toggle:hover { border-color: var(--SmartThemeQuoteColor, rgba(255, 255, 255, 0.45)); }
+/* Активный пресет-генератор — подсвечиваем, чтобы было видно неявное состояние */
+.sw-conn-toggle.sw-conn-on {
+    color: var(--SmartThemeBodyColor, #e2e2e2);
+    border-color: var(--SmartThemeBodyColor, #e2e2e2);
+}
+/* Строка «Генератор: <select>» — раскрывается тумблером; видна сразу, если выбран пресет */
+.sw-conn-row { display: flex; gap: 8px; align-items: center; }
+.sw-conn-row[hidden] { display: none; }
+.sw-conn-caption {
+    flex: 0 0 auto; font-size: 11.5px; color: var(--SmartThemeQuoteColor, #999); white-space: nowrap;
+}
+.sw-conn-select {
+    flex: 1 1 auto; min-width: 0; width: auto !important;
+    box-sizing: border-box; border-radius: 0 !important; font-size: 12px;
+}
 .sw-tryon-status { font-size: 11.5px; color: var(--SmartThemeQuoteColor, #999); line-height: 1.35; }
 .sw-tryon-status[hidden] { display: none; }
 .sw-tryon-pick { display: flex; gap: 8px; }

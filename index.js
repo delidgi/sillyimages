@@ -47,6 +47,9 @@
         // аватар-референс вместо пары «аватар + наряд»: ИИ не путает чужую одежду,
         // и тратится один слот референсов вместо двух.
         tryOnAsAvatar: true,
+        // Каким подключением генерировать примерку/образ: '' = текущие настройки SillyImages,
+        // иначе id пресета из connectionPresets (подменяется только на время генерации).
+        tryOnPresetId: '',
     });
 
     function swGetSettings() {
@@ -809,14 +812,59 @@
             .trim();
     }
 
+    // ── Выбор подключения для генерации примерки ──
+    // Пресеты подключений (connectionPresets) живут в основном модуле SillyImages;
+    // гардероб может генерировать через любой из них, не трогая текущие настройки.
+
+    // Ключи подключения, которые подменяет пресет (зеркало snapshotCurrentAsPreset).
+    const SW_CONN_KEYS = ['apiType', 'endpoint', 'apiKey', 'model', 'naisteraModel', 'naisteraAspectRatio',
+        'aspectRatio', 'imageSize', 'size', 'quality', 'customRequestFormat', 'customFullUrl'];
+
+    function swConnPresets() { return getSettings().connectionPresets || []; }
+
+    // Выбранный для примерки пресет; null = генерировать текущим подключением
+    // (в т.ч. когда сохранённый пресет уже удалён — молча падаем на текущее).
+    function swGetTryOnPreset() {
+        const id = swGetSettings().tryOnPresetId;
+        return id ? (swConnPresets().find(p => p.id === id) || null) : null;
+    }
+
+    // Короткая подпись модели пресета/настроек — для option'ов и тултипов.
+    function swConnModelLabel(src) {
+        if (src.apiType === 'naistera') return src.naisteraModel || 'naistera';
+        if (src.apiType === 'custom') return src.model || src.customRequestFormat || 'custom';
+        return src.model || src.apiType || '?';
+    }
+
+    // Выполнить fn с временно подменённым подключением (пресет), затем вернуть всё как было.
+    // Настройки НЕ сохраняются (saveSettings не зовём) — подмена живёт только в памяти.
+    async function swWithConnection(preset, fn) {
+        if (!preset) return await fn();
+        const settings = getSettings();
+        const saved = {};
+        for (const k of SW_CONN_KEYS) {
+            saved[k] = settings[k];
+            if (preset[k] !== undefined) settings[k] = preset[k];
+        }
+        try { return await fn(); }
+        finally { for (const k of SW_CONN_KEYS) settings[k] = saved[k]; }
+    }
+
     /**
      * Сгенерировать примерку. side: 'bot' | 'user'. Возвращает PNG base64 (полный размер).
-     * Диспетчеризация по провайдерам — как в generateImageWithRetry, но с ЯВНЫМИ
-     * референсами (человек + наряд) и без авто-сбора контекста чата.
+     * Учитывает выбранный пресет подключения (tryOnPresetId) — подмена только на время генерации.
+     */
+    async function swTryOnGenerate(side, outfitB64, outfitDesc) {
+        return await swWithConnection(swGetTryOnPreset(), () => swTryOnGenerateCore(side, outfitB64, outfitDesc));
+    }
+
+    /**
+     * Ядро генерации примерки. Диспетчеризация по провайдерам — как в generateImageWithRetry,
+     * но с ЯВНЫМИ референсами (человек + наряд) и без авто-сбора контекста чата.
      * outfitB64 = null → режим «образ по описанию»: референс только аватар,
      * наряд целиком задаётся текстом outfitDesc (шаблон SW_DEFAULT_GENLOOK_PROMPT).
      */
-    async function swTryOnGenerate(side, outfitB64, outfitDesc) {
+    async function swTryOnGenerateCore(side, outfitB64, outfitDesc) {
         validateSettings(); // бросает понятную ошибку, если API не настроен
         const settings = getSettings();
         const personB64 = await swGetPersonRefB64(side);
@@ -908,6 +956,10 @@
         const charNm = swCharName() || 'персонаж';
         const userNm = stCtx.name1 || 'персона';
 
+        // Выбор подключения-генератора: показываем, только если пресеты вообще есть.
+        const connPresets = swConnPresets();
+        const connPreset = swGetTryOnPreset();
+
         const ov = document.createElement('div'); ov.id = 'sw-form-overlay';
         ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
         const panel = document.createElement('div'); panel.id = 'sw-form';
@@ -925,8 +977,16 @@
                         <option value="bot" ${view.side === 'bot' ? 'selected' : ''}>На персонажа — ${esc(charNm)}</option>
                         <option value="user" ${view.side === 'user' ? 'selected' : ''}>На персону — ${esc(userNm)}</option>
                     </select>
+                    ${connPresets.length ? `<div class="sw-conn-toggle ${connPreset ? 'sw-conn-on' : ''}" id="sw-conn-toggle"><i class="fa-solid fa-plug"></i></div>` : ''}
                     <div class="sw-tryon-btn" id="sw-tryon-btn" title="${isGen ? 'Сгенерировать фулбоди-картинку по описанию (ИИ): референсом уходит только аватар' : 'Сгенерировать фулбоди-картинку: персонаж в этом наряде (ИИ)'}"><i class="fa-solid ${isGen ? 'fa-wand-magic-sparkles' : 'fa-person-rays'}"></i> ${isGen ? 'Сгенерировать' : 'Примерить'}</div>
                 </div>
+                ${connPresets.length ? `<div class="sw-conn-row" id="sw-conn-row" ${connPreset ? '' : 'hidden'}>
+                    <span class="sw-conn-caption">Генератор</span>
+                    <select class="text_pole sw-conn-select" id="sw-conn-select" title="Каким подключением генерировать примерку. Пресеты — из «Пресетов подключений» в настройках SillyImages; текущие настройки не меняются, подмена только на время генерации">
+                        <option value="">Текущее подключение · ${esc(swConnModelLabel(getSettings()))}</option>
+                        ${connPresets.map(p => `<option value="${esc(p.id)}" ${connPreset?.id === p.id ? 'selected' : ''}>${esc(p.name)} · ${esc(swConnModelLabel(p))}</option>`).join('')}
+                    </select>
+                </div>` : ''}
                 <div class="sw-tryon-status" id="sw-tryon-status" hidden></div>
                 <div class="sw-tryon-pick" id="sw-tryon-pick" hidden>
                     <div class="sw-tryon-opt" data-pick="orig" title="Сохранить исходную картинку наряда"><img alt="оригинал"><span>Оригинал</span></div>
@@ -983,6 +1043,25 @@
         const tryBtn = panel.querySelector('#sw-tryon-btn');
         const tryStatus = panel.querySelector('#sw-tryon-status');
         const tryPick = panel.querySelector('#sw-tryon-pick');
+
+        // ── Выбор подключения-генератора (пресет из настроек SillyImages) ──
+        const connToggle = panel.querySelector('#sw-conn-toggle');
+        const connRow = panel.querySelector('#sw-conn-row');
+        const connSelect = panel.querySelector('#sw-conn-select');
+        function refreshConnUI() {
+            const p = swGetTryOnPreset();
+            connToggle?.classList.toggle('sw-conn-on', !!p);
+            if (connToggle) connToggle.title = p
+                ? `Генерирует пресет «${p.name}» (${swConnModelLabel(p)}) — клик, чтобы скрыть/показать выбор`
+                : `Генерирует текущее подключение (${swConnModelLabel(getSettings())}) — клик, чтобы выбрать пресет`;
+        }
+        refreshConnUI();
+        connToggle?.addEventListener('click', () => { if (connRow) connRow.hidden = !connRow.hidden; });
+        connSelect?.addEventListener('change', () => {
+            swGetSettings().tryOnPresetId = connSelect.value || '';
+            swSave();
+            refreshConnUI();
+        });
 
         function refreshTryOnUI() {
             // В gen-режиме выбирать не из чего (оригинала нет) — пикер не показываем.
@@ -1058,7 +1137,8 @@
                     srcB64 = await getFormImageB64();
                     if (!srcB64) throw new Error('Не удалось получить картинку наряда');
                 }
-                tryStatus.textContent = `Генерация ${isGen ? 'образа' : 'примерки'}… (обычно 15–60 секунд)`;
+                const connNow = swGetTryOnPreset();
+                tryStatus.textContent = `Генерация ${isGen ? 'образа' : 'примерки'}${connNow ? ` через «${connNow.name}»` : ''}… (обычно 15–60 секунд)`;
                 const out = await swTryOnGenerate(side, srcB64, descNow);
                 if (!document.body.contains(panel)) return; // форму уже закрыли
                 genB64 = out; genSide = side; picked = 'gen';
@@ -10412,7 +10492,7 @@ function bindSettingsEvents() {
  * Fullscreen image viewer with zoom
  * ═══════════════════════════════════════════
  */
-function openFullscreenViewer(imgSrc) {
+function openFullscreenViewer(imgSrc, nav = null) {
     if (!imgSrc) return;
     closeFullscreenViewer();
     const overlay = document.createElement('div');
@@ -10432,10 +10512,52 @@ function openFullscreenViewer(imgSrc) {
     closeBtn.addEventListener('touchend', (e) => { e.preventDefault(); e.stopPropagation(); closeFullscreenViewer(); });
 
     // Скачать оригинал (клик обрабатывается глобальной делегацией — см. initGlobalClickHandler).
+    // Делегация читает src с .iig-fs-image, поэтому после листания скачивается ТЕКУЩАЯ картинка.
     const downloadBtn = document.createElement('div');
     downloadBtn.className = 'iig-fs-download';
     downloadBtn.title = 'Скачать оригинал';
     downloadBtn.innerHTML = '<i class="fa-solid fa-download"></i>';
+
+    // ── Листание (из галереи): nav = { index, srcs } — стрелки, счётчик, ←/→, свайп ──
+    const hasNav = !!(nav && Array.isArray(nav.srcs) && nav.srcs.length > 1);
+    let navIndex = hasNav ? Math.max(0, Math.min(nav.index || 0, nav.srcs.length - 1)) : 0;
+    let prevBtn = null, nextBtn = null, navCounter = null;
+    function fsShowAt(i) {
+        if (!hasNav) return;
+        navIndex = Math.max(0, Math.min(i, nav.srcs.length - 1));
+        img.src = nav.srcs[navIndex];
+        navCounter.textContent = `${navIndex + 1} / ${nav.srcs.length}`;
+        prevBtn.classList.toggle('iig-fs-nav-off', navIndex === 0);
+        nextBtn.classList.toggle('iig-fs-nav-off', navIndex === nav.srcs.length - 1);
+        // Новую картинку всегда показываем вписанной, а не в зуме прошлой.
+        overlay.classList.remove('iig-fs-zoom');
+        overlay.classList.add('iig-fs-fit');
+    }
+    if (hasNav) {
+        prevBtn = document.createElement('div');
+        prevBtn.className = 'iig-fs-nav iig-fs-prev';
+        prevBtn.title = 'Предыдущая (←)';
+        prevBtn.innerHTML = '<i class="fa-solid fa-chevron-left"></i>';
+        prevBtn.addEventListener('click', (e) => { e.stopPropagation(); fsShowAt(navIndex - 1); });
+        nextBtn = document.createElement('div');
+        nextBtn.className = 'iig-fs-nav iig-fs-next';
+        nextBtn.title = 'Следующая (→)';
+        nextBtn.innerHTML = '<i class="fa-solid fa-chevron-right"></i>';
+        nextBtn.addEventListener('click', (e) => { e.stopPropagation(); fsShowAt(navIndex + 1); });
+        navCounter = document.createElement('div');
+        navCounter.className = 'iig-fs-counter';
+        // Свайп по вписанной картинке (в зуме — скролл, не листаем).
+        let tsX = 0, tsY = 0;
+        overlay.addEventListener('touchstart', (e) => {
+            if (e.touches.length === 1) { tsX = e.touches[0].clientX; tsY = e.touches[0].clientY; }
+        }, { passive: true });
+        overlay.addEventListener('touchend', (e) => {
+            if (!overlay.classList.contains('iig-fs-fit')) return;
+            const t = e.changedTouches[0]; if (!t) return;
+            const dx = t.clientX - tsX, dy = t.clientY - tsY;
+            if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) fsShowAt(navIndex + (dx < 0 ? 1 : -1));
+        }, { passive: true });
+    }
 
     // Tap on overlay background → close
     overlay.addEventListener('click', (e) => {
@@ -10464,6 +10586,8 @@ function openFullscreenViewer(imgSrc) {
 
     const handleKey = (e) => {
         if (e.key === 'Escape') closeFullscreenViewer();
+        else if (hasNav && e.key === 'ArrowLeft') fsShowAt(navIndex - 1);
+        else if (hasNav && e.key === 'ArrowRight') fsShowAt(navIndex + 1);
     };
     document.addEventListener('keydown', handleKey);
     overlay._iigKeyHandler = handleKey;
@@ -10471,6 +10595,12 @@ function openFullscreenViewer(imgSrc) {
     overlay.appendChild(img);
     overlay.appendChild(closeBtn);
     overlay.appendChild(downloadBtn);
+    if (hasNav) {
+        overlay.appendChild(prevBtn);
+        overlay.appendChild(nextBtn);
+        overlay.appendChild(navCounter);
+        fsShowAt(navIndex); // инициализировать счётчик и состояние стрелок
+    }
     document.body.appendChild(overlay);
 }
 
@@ -11645,7 +11775,8 @@ function openGalleryViewer(idx) {
     const overlay = document.getElementById(GALLERY_OVERLAY_ID);
     if (overlay) overlay.style.display = 'none';
 
-    openFullscreenViewer(img.src);
+    // Стрелки листания во вьюере: весь отсортированный список (не только текущая страница).
+    openFullscreenViewer(img.src, { index: idx, srcs: sorted.map(i => i.src) });
     restoreGalleryWhenViewerCloses(overlay);
 }
 
