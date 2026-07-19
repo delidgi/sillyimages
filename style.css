@@ -568,9 +568,11 @@ img[data-iig-instruction] {
     background: rgba(255, 255, 255, 0.15);
 }
 
-/* Стрелки листания (вьюер, открытый из галереи) — по центру боковых краёв */
+/* Стрелки листания (вьюер, открытый из галереи) — по центру боковых краёв.
+   position: absolute (от оверлея), НЕ fixed: на мобиле transform у предков ломает
+   fixed-привязку к вьюпорту и top:50% уезжает к верху экрана. */
 #iig-fullscreen-overlay .iig-fs-nav {
-    position: fixed;
+    position: absolute;
     top: 50%;
     transform: translateY(-50%);
     width: 44px;
@@ -594,9 +596,9 @@ img[data-iig-instruction] {
 /* Край списка: стрелка гаснет, но остаётся на месте (ничего не прыгает) */
 #iig-fullscreen-overlay .iig-fs-nav.iig-fs-nav-off { opacity: 0.25; pointer-events: none; }
 
-/* Счётчик «3 / 27» — сверху по центру */
+/* Счётчик «3 / 27» — сверху по центру (absolute от оверлея, как стрелки) */
 #iig-fullscreen-overlay .iig-fs-counter {
-    position: fixed;
+    position: absolute;
     top: 22px;
     left: 50%;
     transform: translateX(-50%);
@@ -609,6 +611,13 @@ img[data-iig-instruction] {
     z-index: 100001;
     user-select: none;
     pointer-events: none;
+}
+
+/* В зуме оверлей скроллится — absolute-элементы уехали бы со скроллом; прячем
+   (листание в зуме и не нужно: выход из зума тапом возвращает стрелки) */
+#iig-fullscreen-overlay.iig-fs-zoom .iig-fs-nav,
+#iig-fullscreen-overlay.iig-fs-zoom .iig-fs-counter {
+    display: none;
 }
 
 /* Скачать оригинал — иконка в шапке draggable-вьюера штатной галереи ST */
