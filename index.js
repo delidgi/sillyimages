@@ -523,7 +523,7 @@
         const pageItems = shown.slice(swPage * SW_PAGE_SIZE, (swPage + 1) * SW_PAGE_SIZE);
 
         h += '<div class="sw-outfit-grid"><div class="sw-outfit-card sw-upload-card" id="sw-upload-trigger"><div class="sw-upload-icon"><i class="fa-solid fa-plus"></i></div><span>Загрузить</span></div>'
-           + '<div class="sw-outfit-card sw-upload-card" id="sw-gen-trigger" title="Сгенерировать образ по текстовому описанию (ИИ): референсом уходит только аватар, результат сохраняется как примерка"><div class="sw-upload-icon"><i class="fa-solid fa-wand-magic-sparkles"></i></div><span>Сгенерировать</span></div>';
+           + '<div class="sw-outfit-card sw-upload-card" id="sw-gen-trigger" title="Сгенерировать образ по текстовому описанию (ИИ): референсом уходит только аватар. Результат сохраняется обычным нарядом — пометку «примерка» при желании включите на карточке"><div class="sw-upload-icon"><i class="fa-solid fa-wand-magic-sparkles"></i></div><span>Сгенерировать</span></div>';
         for (const o of pageItems) {
             const a = o.id === aid;
             const oDesc = swSanitizeDesc(o.description);
@@ -990,7 +990,7 @@
                 <div class="sw-tryon-status" id="sw-tryon-status" hidden></div>
                 <div class="sw-tryon-pick" id="sw-tryon-pick" hidden>
                     <div class="sw-tryon-opt" data-pick="orig" title="Сохранить исходную картинку наряда"><img alt="оригинал"><span>Оригинал</span></div>
-                    <div class="sw-tryon-opt" data-pick="gen" title="Сохранить сгенерированную примерку — при генерации картинок она уйдёт как аватар персонажа/персоны (наряд уже надет)"><img alt="примерка"><span>Примерка</span></div>
+                    <div class="sw-tryon-opt" data-pick="gen" title="Сохранить сгенерированную картинку. Пометку «примерка» (уходит аватар-референсом) при желании включите потом кнопкой с человечком на карточке"><img alt="примерка"><span>Примерка</span></div>
                 </div>
                 <label class="sw-form-label">Название</label>
                 <input type="text" class="text_pole sw-form-input" id="sw-form-name" value="${esc(curName)}" placeholder="Название образа">
@@ -1037,7 +1037,7 @@
 
         // ── Примерка наряда (ИИ): фулбоди-генерация на персонажа/персону ──
         let genB64 = null;     // сгенерированная примерка (PNG, полный размер)
-        let genSide = null;    // на кого сгенерирована примерка: 'bot' | 'user' (для флага tryOnSide)
+        let genSide = null;    // на кого сгенерирована примерка: 'bot' | 'user' (только для подсказки после сохранения)
         let picked = isGen ? 'gen' : 'orig'; // какая картинка будет сохранена: 'orig' | 'gen' (в gen-режиме оригинала нет)
         const previewImg = panel.querySelector('.sw-form-preview img');
         const tryBtn = panel.querySelector('#sw-tryon-btn');
@@ -1187,9 +1187,9 @@
                             } catch (err) { swLog('WARN', 'try-on file store failed, fallback to base64:', err.message); }
                         }
                         if (!stored) { item.base64 = await swShrinkForStore(genB64); delete item.imagePath; }
-                        // Картинка образа теперь — примерка (человек в наряде): помечаем, на кого
-                        // она сгенерирована. При генерации такой образ уходит аватар-референсом.
-                        item.tryOnSide = genSide;
+                        // Флаг «примерка» (tryOnSide) НЕ ставим автоматически: пометка меняет способ
+                        // отправки референсов, и включать её должен пользователь — кнопкой с человечком
+                        // на карточке. Уже стоявшую пометку не трогаем.
                         // Кэш активного образа мог держать старую картинку этого id — сбрасываем.
                         swSharedCache[view.side].b64 = null; swSharedCache[view.side].id = null;
                     } else if (imageDirty && origB64) {
@@ -1213,8 +1213,8 @@
                     if (view.shared) swPreloadSharedActive(view.side);
                 } else {
                     const newItem = { id: uid(), name, type, description: desc, addedAt: Date.now() };
-                    // Сохраняем примерку → помечаем, на кого она сгенерирована (уйдёт аватар-референсом).
-                    if (useGen && genSide) newItem.tryOnSide = genSide;
+                    // Пометку «примерка» автоматически не ставим — образ добавляется обычным нарядом.
+                    // Нужен аватар-референс — включается вручную кнопкой с человечком на карточке.
                     // origB64 мог быть кадрирован в форме — он приоритетнее исходного base64.
                     const imgB64 = useGen ? genB64 : (origB64 || base64);
                     if (view.shared) {
@@ -1239,7 +1239,7 @@
                 close();
                 swRender(); swUpdatePromptInjection(); swInjectFloatingBtn();
                 toastr.success(isEdit ? 'Обновлён' : `«${name}» добавлен`, 'Гардероб', { timeOut: 2000 });
-                if (useGen && swGetSettings().tryOnAsAvatar) toastr.info('Образ-примерка: при генерации уйдёт как аватарка (наряд уже надет) — отдельный наряд не отправляется', 'Гардероб', { timeOut: 5000 });
+                if (useGen) toastr.info(`Сохранено обычным нарядом. Чтобы картинка уходила аватаркой ${genSide === 'user' ? 'персоны' : 'персонажа'} (наряд уже надет), включите «примерку» кнопкой с человечком на карточке`, 'Гардероб', { timeOut: 6000 });
             } catch (e) {
                 toastr.error('Ошибка: ' + e.message, 'Гардероб');
                 saveBtn.classList.remove('sw-form-btn-busy'); saveBtn.textContent = isEdit ? 'Сохранить' : 'Добавить';
