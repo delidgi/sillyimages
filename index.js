@@ -2265,8 +2265,9 @@ const defaultSettings = Object.freeze({
     // Connection presets (saved configs for quick switching)
     connectionPresets: [],
     activePresetId: '',
-    size: '1024x1024',
-    quality: 'standard',
+    // 'auto' = параметр не уходит в запрос; безопасный дефолт для любого семейства моделей.
+    size: 'auto',
+    quality: 'auto',
     maxRetries: 0, // No auto-retry - user clicks error image to retry manually
     retryDelay: 1000,
     // Nano-banana specific
@@ -4395,7 +4396,8 @@ async function generateImageElectronHub(prompt, style, referenceImages = [], opt
     // Размер — приоритет: aspectRatio из тега → settings.aspectRatio → settings.size
     const aspect = options.aspectRatio || settings.aspectRatio;
     const sizeFromAspect = electronHubAspectToSize(aspect, settings.model);
-    const size = sizeFromAspect || settings.size || '1024x1024';
+    // ElectronHub требует конкретный WxH — 'auto' из общего селекта здесь не годится.
+    const size = sizeFromAspect || (isAutoOpenAIValue(settings.size) ? '1024x1024' : settings.size);
 
     const ehStyle = String(settings.electronhubStyle || '').trim();
     const negPrompt = String(settings.electronhubNegativePrompt || '').trim();
@@ -4503,7 +4505,6 @@ async function generateImageElectronHub(prompt, style, referenceImages = [], opt
 
 async function generateImageOpenAI(prompt, style, referenceImages = [], options = {}) {
     const settings = getSettings();
-    const baseEndpoint = (settings.endpoint || '').replace(/\/$/, '');
 
     const fullPrompt = style ? `[Style: ${style}] ${prompt}` : prompt;
 
@@ -4512,59 +4513,62 @@ async function generateImageOpenAI(prompt, style, referenceImages = [], options 
     const isFluxKontext = modelKind === 'flux-kontext';
     const isDallE2 = modelKind === 'dall-e-2';
 
-    // Map aspect ratio → size for the model family
-    let size = settings.size;
-    if (options.aspectRatio) {
-        size = openAIAspectToSize(options.aspectRatio, modelKind) || size;
-    }
+    // Map aspect ratio → size for the model family, затем валидируем под семейство:
+    // сохранённые с времён DALL·E 1792x1024 / 512x512 иначе ловят 400 на gpt-image-*.
+    const requestedSize = options.aspectRatio
+        ? (openAIAspectToSize(options.aspectRatio, modelKind) || settings.size)
+        : settings.size;
+    const size = normalizeOpenAISize(requestedSize, modelKind);
 
-    const quality = normalizeOpenAIQuality(options.quality || settings.quality, modelKind);
+    const normalizedQuality = normalizeOpenAIQuality(options.quality || settings.quality, modelKind);
+    const quality = isAutoOpenAIValue(normalizedQuality) ? '' : normalizedQuality;
 
     // Routing: if we have references AND model supports /edits → multipart
     const supportsEdits = isGptImg || isFluxKontext || isDallE2;
     const wantsEdits = referenceImages.length > 0 && supportsEdits;
 
-    iigLog('INFO', `OpenAI generate: model=${settings.model} kind=${modelKind} refs=${referenceImages.length} mode=${wantsEdits ? 'edits' : 'generations'} size=${size || '(auto)'} quality=${quality || '(auto)'}`);
+    const url = options.overrideUrl || buildOpenAIImagesUrl(settings, wantsEdits ? 'edits' : 'generations');
 
-    let url;
-    let init;
+    iigLog('INFO', `OpenAI generate: model=${settings.model} kind=${modelKind} refs=${referenceImages.length} mode=${wantsEdits ? 'edits' : 'generations'} size=${size || '(auto)'} quality=${quality || '(auto)'} url=${url}`);
 
-    if (wantsEdits) {
-        url = options.overrideUrl || `${baseEndpoint}/v1/images/edits`;
-        const form = new FormData();
-        form.append('model', settings.model);
-        form.append('prompt', fullPrompt);
-        form.append('n', '1');
-        if (size) form.append('size', size);
-        if (quality) form.append('quality', quality);
+    // Тело собираем фабрикой: при 400 по size/quality повторяем запрос без них —
+    // у прокси список допустимых значений часто уже, чем у самого OpenAI.
+    const buildInit = (withParams) => {
+        if (wantsEdits) {
+            const form = new FormData();
+            form.append('model', settings.model);
+            form.append('prompt', fullPrompt);
+            form.append('n', '1');
+            if (withParams && size) form.append('size', size);
+            if (withParams && quality) form.append('quality', quality);
 
-        // gpt-image-* supports multi-image via image[]; flux-kontext / dall-e-2 → single image
-        if (isGptImg && referenceImages.length > 1) {
-            referenceImages.forEach((b64, idx) => {
-                form.append('image[]', iigBase64ToBlob(b64, 'image/png'), `reference-${idx}.png`);
-            });
-        } else {
-            form.append('image', iigBase64ToBlob(referenceImages[0], 'image/png'), 'reference-0.png');
+            // gpt-image-* supports multi-image via image[]; flux-kontext / dall-e-2 → single image
+            if (isGptImg && referenceImages.length > 1) {
+                referenceImages.forEach((b64, idx) => {
+                    form.append('image[]', iigBase64ToBlob(b64, 'image/png'), `reference-${idx}.png`);
+                });
+            } else {
+                form.append('image', iigBase64ToBlob(referenceImages[0], 'image/png'), 'reference-0.png');
+            }
+
+            return {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${settings.apiKey}` },
+                body: form,
+            };
         }
 
-        init = {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${settings.apiKey}` },
-            body: form,
-        };
-    } else {
-        url = options.overrideUrl || `${baseEndpoint}/v1/images/generations`;
         const body = {
             model: settings.model,
             prompt: fullPrompt,
             n: 1,
         };
-        if (size) body.size = size;
-        if (quality) body.quality = quality;
+        if (withParams && size) body.size = size;
+        if (withParams && quality) body.quality = quality;
         // gpt-image-* always returns b64 — sending response_format=b64_json triggers 400 on strict proxies.
         if (!isGptImg) body.response_format = 'b64_json';
 
-        init = {
+        return {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${settings.apiKey}`,
@@ -4572,7 +4576,14 @@ async function generateImageOpenAI(prompt, style, referenceImages = [], options 
             },
             body: JSON.stringify(body),
         };
-    }
+    };
+
+    // Кнопка «Остановить» обрывает сетевой запрос.
+    const doFetch = async (withParams) => {
+        const init = buildInit(withParams);
+        if (options.signal) init.signal = options.signal;
+        return await fetch(url, init);
+    };
 
     // Helper: chat-completions fallback that PRESERVES references
     const chatFallback = async (reason) => {
@@ -4589,38 +4600,63 @@ async function generateImageOpenAI(prompt, style, referenceImages = [], options 
         });
     };
 
-    // Кнопка «Остановить» обрывает сетевой запрос.
-    if (options.signal && !init.signal) init.signal = options.signal;
+    // Последний шанс для /edits-прокси: повторяем без референсов через /generations.
+    const retryWithoutRefs = async (reason) => {
+        iigLog('WARN', `Chat-completions fallback failed: ${reason}. Last resort: /generations without refs.`);
+        try { toastr?.warning?.('Прокси не поддерживает ни /v1/images/edits, ни /v1/chat/completions с картинками — рефы пропущены.', 'OpenAI', { timeOut: 7000 }); } catch (_) {}
+        return await generateImageOpenAI(prompt, style, [], options);
+    };
 
     let response;
     try {
-        response = await fetch(url, init);
+        response = await doFetch(true);
     } catch (e) {
         if (isGenerationCancelled(e, options.signal)) throw e;
         // CORS/network error on /edits — most proxies (rout.my, openrouter, ...) don't expose /v1/images/edits.
         // Try /v1/chat/completions instead — same proxy almost always supports it WITH references.
         if (wantsEdits && e?.name === 'TypeError') {
             try { return await chatFallback(`/edits unreachable (${e.message})`); } catch (e2) {
-                iigLog('WARN', `Chat-completions fallback failed: ${e2.message}. Last resort: /generations without refs.`);
-                try { toastr?.warning?.('Прокси не поддерживает ни /v1/images/edits, ни /v1/chat/completions с картинками — рефы пропущены.', 'OpenAI', { timeOut: 7000 }); } catch (_) {}
-                return await generateImageOpenAI(prompt, style, [], options);
+                return await retryWithoutRefs(e2.message);
             }
         }
         throw e;
     }
 
+    let errorText = '';
     if (!response.ok) {
-        const text = await response.text();
-        // Some proxies return 400 "Model name is required in path" / INVALID_ARGUMENT for /edits and /generations
-        // when they actually route through chat completions. Try that path with refs.
-        if (referenceImages.length > 0 &&
-            (response.status === 400 || response.status === 404 || response.status === 405) &&
-            /Model name is required|INVALID_ARGUMENT|not.found|method not allowed/i.test(text)) {
-            try { return await chatFallback(`${response.status}: ${text.slice(0, 80)}`); } catch (e2) {
-                throw new Error(`API Error (${response.status}): ${text}`);
+        errorText = await response.text();
+
+        // 400 из-за size/quality: прокси принимает не весь список значений.
+        // Повторяем тот же запрос без этих полей — модель возьмёт свой дефолт.
+        if (response.status === 400 && (size || quality)
+            && /\b(size|quality|dimension|resolution)\b/i.test(errorText)) {
+            iigLog('WARN', `OpenAI 400 по size/quality (${errorText.slice(0, 120)}) — повтор без size/quality.`);
+            try {
+                const retry = await doFetch(false);
+                response = retry;
+                errorText = retry.ok ? '' : await retry.text();
+            } catch (e) {
+                if (isGenerationCancelled(e, options.signal)) throw e;
             }
         }
-        throw new Error(`API Error (${response.status}): ${text}`);
+    }
+
+    if (!response.ok) {
+        // Прокси без /v1/images/edits отвечают 404/405/415/501 или 400 вида
+        // "Model name is required in path" / INVALID_ARGUMENT — там реально работает
+        // chat-completions, и он умеет принимать картинки. Отказ по контенту не трогаем.
+        const isRoutingError = wantsEdits
+            || /Model name is required|INVALID_ARGUMENT|not.?found|method not allowed|unsupported/i.test(errorText);
+        const isContentRefusal = /content.?policy|safety|moderation|nsfw/i.test(errorText);
+        if (referenceImages.length > 0 && !isContentRefusal && isRoutingError
+            && [400, 404, 405, 415, 501].includes(response.status)) {
+            try { return await chatFallback(`${response.status}: ${errorText.slice(0, 80)}`); } catch (e2) {
+                if (isGenerationCancelled(e2, options.signal)) throw e2;
+                if (wantsEdits) return await retryWithoutRefs(e2.message);
+                throw new Error(describeOpenAIError(response.status, errorText));
+            }
+        }
+        throw new Error(describeOpenAIError(response.status, errorText));
     }
 
     const result = await response.json();
@@ -4652,6 +4688,121 @@ function classifyOpenAIModel(modelId) {
 function isGptImageFamily(kind) {
     return kind === 'gpt-image-2' || kind === 'gpt-image-1.5' || kind === 'gpt-image-1-mini'
         || kind === 'gpt-image-1' || kind === 'gpt-image';
+}
+
+// 'auto' / 'prompt' / пусто = «не задано»: параметр не уходит в запрос, модель берёт свой дефолт.
+function isAutoOpenAIValue(value) {
+    const v = String(value ?? '').trim().toLowerCase();
+    return !v || v === 'auto' || v === 'prompt';
+}
+
+// Размеры, которые реально принимает каждое семейство. Настройки живут с времён DALL·E,
+// поэтому 1792x1024 / 512x512 регулярно прилетают в gpt-image-* и ловят 400 invalid size.
+const OPENAI_ALLOWED_SIZES = Object.freeze({
+    'gpt-image-2': ['1024x1024', '1536x1024', '1024x1536', '2048x1152', '1152x2048', '1536x1152', '1152x1536'],
+    'gpt-image': ['1024x1024', '1536x1024', '1024x1536'],
+    'dall-e-3': ['1024x1024', '1792x1024', '1024x1792'],
+    'dall-e-2': ['256x256', '512x512', '1024x1024'],
+});
+
+function getOpenAIAllowedSizes(modelKind) {
+    if (modelKind === 'gpt-image-2') return OPENAI_ALLOWED_SIZES['gpt-image-2'];
+    if (isGptImageFamily(modelKind)) return OPENAI_ALLOWED_SIZES['gpt-image'];
+    if (modelKind === 'dall-e-3') return OPENAI_ALLOWED_SIZES['dall-e-3'];
+    if (modelKind === 'dall-e-2') return OPENAI_ALLOWED_SIZES['dall-e-2'];
+    return null; // неизвестная модель кастомного прокси — не мешаем, шлём как есть
+}
+
+/**
+ * Приводит размер из настроек к валидному для выбранного семейства.
+ * Невалидный подменяется ближайшим по ориентации (альбом/портрет/квадрат),
+ * 'auto' и пустое → '' (параметр не отправляем).
+ */
+function normalizeOpenAISize(size, modelKind) {
+    if (isAutoOpenAIValue(size)) return '';
+    const raw = String(size).trim().toLowerCase();
+    const allowed = getOpenAIAllowedSizes(modelKind);
+    if (!allowed) return raw;
+    if (allowed.includes(raw)) return raw;
+
+    const [w, h] = raw.split('x').map(n => Number.parseInt(n, 10));
+    if (!Number.isFinite(w) || !Number.isFinite(h)) return allowed[0];
+    const match = allowed.find((candidate) => {
+        const [cw, ch] = candidate.split('x').map(n => Number.parseInt(n, 10));
+        if (w > h) return cw > ch;
+        if (w < h) return cw < ch;
+        return cw === ch;
+    });
+    return match || allowed[0];
+}
+
+/**
+ * Собирает URL для /images/generations или /images/edits.
+ * Эндпоинт может быть базовым ("https://host") или уже полным
+ * ("https://host/v1/images/generations") — во втором случае путь не дописываем,
+ * только подменяем generations↔edits, когда уходят референсы.
+ */
+function buildOpenAIImagesUrl(settings, kind) {
+    const base = (getEffectiveEndpoint(settings) || String(settings.endpoint || '')).replace(/\/+$/, '');
+    const tail = /\/images\/(generations|edits)$/i;
+    if (tail.test(base)) {
+        return base.replace(tail, `/images/${kind}`);
+    }
+    return `${base}/v1/images/${kind}`;
+}
+
+// Ошибка OpenAI-совместимого API приходит как {"error":{"message":...}} — вытаскиваем текст,
+// иначе в тосте оказывается нечитаемый JSON целиком.
+function describeOpenAIError(status, text) {
+    let message = String(text || '').trim();
+    try {
+        const payload = JSON.parse(message);
+        const err = payload?.error || payload;
+        message = err?.message || err?.detail || message;
+    } catch (_e) { /* не JSON — показываем как есть */ }
+    return `API Error (${status}): ${String(message).slice(0, 600)}`;
+}
+
+function buildOpenAISizeOptionsHtml(selected) {
+    const current = String(selected || '').trim().toLowerCase();
+    const opt = (value, label) => `<option value="${value}" ${current === value ? 'selected' : ''}>${label}</option>`;
+    return [
+        opt('auto', 'Авто (решает модель)'),
+        '<optgroup label="gpt-image-2">',
+        opt('1024x1024', '1024x1024 (Квадрат)'),
+        opt('1536x1024', '1536x1024 (Альбомная)'),
+        opt('1024x1536', '1024x1536 (Портретная)'),
+        opt('2048x1152', '2048x1152 (16:9)'),
+        opt('1152x2048', '1152x2048 (9:16)'),
+        opt('1536x1152', '1536x1152 (4:3)'),
+        opt('1152x1536', '1152x1536 (3:4)'),
+        '</optgroup>',
+        '<optgroup label="DALL·E 3">',
+        opt('1792x1024', '1792x1024 (Альбомная)'),
+        opt('1024x1792', '1024x1792 (Портретная)'),
+        '</optgroup>',
+        '<optgroup label="DALL·E 2">',
+        opt('512x512', '512x512'),
+        opt('256x256', '256x256'),
+        '</optgroup>',
+    ].join('');
+}
+
+function buildOpenAIQualityOptionsHtml(selected) {
+    const current = String(selected || '').trim().toLowerCase();
+    const opt = (value, label) => `<option value="${value}" ${current === value ? 'selected' : ''}>${label}</option>`;
+    return [
+        opt('auto', 'Авто (решает модель)'),
+        '<optgroup label="gpt-image-*">',
+        opt('low', 'Низкое (быстро, дёшево)'),
+        opt('medium', 'Среднее'),
+        opt('high', 'Высокое'),
+        '</optgroup>',
+        '<optgroup label="DALL·E 3">',
+        opt('standard', 'Стандартное'),
+        opt('hd', 'HD'),
+        '</optgroup>',
+    ].join('');
 }
 
 function openAIAspectToSize(aspect, modelKind) {
@@ -5035,8 +5186,8 @@ async function generateImageVoid(prompt, style, referenceImages = [], options = 
     const buildBody = (content) => ({
         model: settings.model,
         messages: [{ role: 'user', content }],
-        size: settings.size || '1024x1024',
-        quality: options.quality || settings.quality || 'standard',
+        size: isAutoOpenAIValue(settings.size) ? '1024x1024' : settings.size,
+        quality: isAutoOpenAIValue(options.quality || settings.quality) ? 'standard' : (options.quality || settings.quality),
         n: 1
     });
 
@@ -9133,19 +9284,16 @@ function createSettingsUI() {
                         <div class="flex-row ${settings.apiType !== 'openai' ? 'iig-hidden' : ''}" id="iig_size_row">
                             <label for="iig_size">Размер</label>
                             <select id="iig_size" class="flex1">
-                                <option value="1024x1024" ${settings.size === '1024x1024' ? 'selected' : ''}>1024x1024 (Квадрат)</option>
-                                <option value="1792x1024" ${settings.size === '1792x1024' ? 'selected' : ''}>1792x1024 (Альбомная)</option>
-                                <option value="1024x1792" ${settings.size === '1024x1792' ? 'selected' : ''}>1024x1792 (Портретная)</option>
-                                <option value="512x512" ${settings.size === '512x512' ? 'selected' : ''}>512x512 (Маленький)</option>
+                                ${buildOpenAISizeOptionsHtml(settings.size)}
                             </select>
                         </div>
+                        <p class="hint ${settings.apiType !== 'openai' ? 'iig-hidden' : ''}" id="iig_size_hint">Размер под семейство модели: у gpt-image-* свой список, DALL·E-шные 1792x1024 / 512x512 они не принимают. Несовпадающий размер подгоняется автоматически; «Авто» — параметр не отправляется вовсе.</p>
 
                         <!-- Качество -->
                         <div class="flex-row ${settings.apiType !== 'openai' ? 'iig-hidden' : ''}" id="iig_quality_row">
                             <label for="iig_quality">Качество</label>
                             <select id="iig_quality" class="flex1">
-                                <option value="standard" ${settings.quality === 'standard' ? 'selected' : ''}>Стандартное</option>
-                                <option value="hd" ${settings.quality === 'hd' ? 'selected' : ''}>HD</option>
+                                ${buildOpenAIQualityOptionsHtml(settings.quality)}
                             </select>
                         </div>
 
@@ -9759,6 +9907,7 @@ function bindSettingsEvents() {
         const isOpenAIOrVoid = isOpenAI || apiType === 'void';
         const supportsSize = isOpenAIOrVoid || isElectronHub;
         document.getElementById('iig_size_row')?.classList.toggle('iig-hidden', !supportsSize);
+        document.getElementById('iig_size_hint')?.classList.toggle('iig-hidden', !isOpenAI);
         document.getElementById('iig_quality_row')?.classList.toggle('iig-hidden', !isOpenAIOrVoid);
 
         // Naistera-only params
