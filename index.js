@@ -33,6 +33,9 @@
         // *Active — глобальный фолбэк (когда нет открытого чата); *ActiveByChat — что надето в каждом чате: { [chatId]: outfitId }.
         sharedUserWardrobe: [], sharedUserActive: null, sharedUserActiveByChat: {}, useSharedUserWardrobe: false,
         sharedBotWardrobe:  [], sharedBotActive:  null, sharedBotActiveByChat:  {}, useSharedBotWardrobe:  false,
+        // Персональный (не общий) гардероб {{user}} — ключевать по персоне ST, а не по текущему персонажу.
+        // Так у каждой персоны юзера свой набор аутфитов, единый для всех ботов, с кем она общается.
+        userWardrobeByPersona: false,
         maxDimension: 512, showFloatingBtn: false,
         // Где живёт кнопка-гардероб: 'bar' — в строке ввода, 'float' — плавающая поверх чата,
         // 'wand' — спрятана в меню «волшебной палочки» (#extensionsMenu), без иконки в чате.
@@ -237,12 +240,47 @@
         return (ctx.characterId !== undefined && ctx.characters?.[ctx.characterId]) ? (ctx.characters[ctx.characterId].name || '') : '';
     }
 
+    // ── Ключ персоны ST (для режима «Гардероб {{user}} по персоне») ──
+    // getPersonaKey() объявлена ниже (в модуле SillyImages) как function-декларация верхнего уровня,
+    // поэтому доступна здесь благодаря hoisting — но на всякий случай страхуемся фолбэком.
+    function swPersonaKey() {
+        // ВАЖНО: НЕ использовать getPersonaKey() из модуля SillyImages — та функция сначала смотрит
+        // на вручную выбранную аватарку для референса (userAvatarFile), которая может быть общей
+        // для всех персон. Гардеробу нужен ключ реальной активной персоны ST.
+        // На практике при переключении персоны у некоторых пользователей меняется только name1
+        // (ST меняет "имя юзера"), а user_avatar остаётся пустым/тем же — поэтому берём оба поля.
+        try {
+            const ctx = SillyTavern.getContext();
+            const av = ctx.user_avatar || '';
+            const nm = ctx.name1 || '';
+            if (!av && !nm) return '__default_persona__';
+            return 'av:' + av + '|nm:' + nm;
+        } catch (e) { return '__default_persona__'; }
+    }
+    function swPersonaLabel() {
+        try {
+            const ctx = SillyTavern.getContext();
+            if (typeof getPersonaDisplayName === 'function' && ctx.user_avatar) return getPersonaDisplayName(ctx.user_avatar);
+            return ctx.name1 || 'Персона по умолчанию';
+        } catch (e) { return 'Персона'; }
+    }
+    // Ключ персонального (не общего) гардероба для стороны:
+    // 'bot' — всегда по текущему персонажу; 'user' — по персонажу ИЛИ по персоне ST,
+    // если включена настройка userWardrobeByPersona (мини-настройки → «Гардероб {{user}} по персоне»).
+    function swWardrobeKeyFor(side) {
+        if (side === 'user' && swGetSettings().userWardrobeByPersona) return 'persona::' + swPersonaKey();
+        return swCharName();
+    }
+
     function swGetWardrobe(cn) { const s = swGetSettings(); if (!s.wardrobes[cn]) s.wardrobes[cn] = { bot: [], user: [] }; return s.wardrobes[cn]; }
-    function swGetActive() { const cn = swCharName(); if (!cn) return { bot: null, user: null }; const s = swGetSettings(); if (!s.activeOutfits[cn]) s.activeOutfits[cn] = { bot: null, user: null }; return s.activeOutfits[cn]; }
-    function swSetActive(type, id) { const cn = swCharName(); if (!cn) { toastr.error('Персонаж не выбран', 'Гардероб'); return false; } const s = swGetSettings(); if (!s.activeOutfits[cn]) s.activeOutfits[cn] = { bot: null, user: null }; s.activeOutfits[cn][type] = id; swSave(); return true; }
+    function swActiveRecordFor(key) { const s = swGetSettings(); if (!s.activeOutfits[key]) s.activeOutfits[key] = { bot: null, user: null }; return s.activeOutfits[key]; }
+    function swGetActive() { const cn = swCharName(); if (!cn) return { bot: null, user: null }; return swActiveRecordFor(cn); }
+    // Активный id для КОНКРЕТНОЙ стороны с учётом её собственного ключа (перс./перс. ST).
+    function swGetActiveOne(side) { const key = swWardrobeKeyFor(side); if (!key) return null; return swActiveRecordFor(key)[side]; }
+    function swSetActive(type, id) { const key = swWardrobeKeyFor(type); if (!key) { toastr.error(type === 'user' ? 'Персона не определена' : 'Персонаж не выбран', 'Гардероб'); return false; } swActiveRecordFor(key)[type] = id; swSave(); return true; }
     function swFind(cn, type, id) { return swGetWardrobe(cn)[type].find(o => o.id === id) || null; }
     function swAdd(cn, type, o) { swGetWardrobe(cn)[type].push(o); swSave(); }
-    function swRemove(cn, type, id) { const w = swGetWardrobe(cn); w[type] = w[type].filter(o => o.id !== id); swSave(); if (swGetActive()[type] === id) { swSetActive(type, null); swUpdatePromptInjection(); } }
+    function swRemove(cn, type, id) { const w = swGetWardrobe(cn); w[type] = w[type].filter(o => o.id !== id); swSave(); if (swGetActiveOne(type) === id) { swSetActive(type, null); swUpdatePromptInjection(); } }
 
     // ── Конфиг общего гардероба ПО СТОРОНЕ ('bot' | 'user') ──
     // Коллекция общая для всех персонажей; что именно надето — своё в каждом чате (per-chat).
@@ -290,8 +328,9 @@
             const id = swGetSharedActiveId(side);
             return id ? (cfg.list().find(o => o.id === id) || null) : null;
         }
-        const cn = swCharName(); if (!cn) return null;
-        const a = swGetActive(); return a[side] ? swFind(cn, side, a[side]) : null;
+        const key = swWardrobeKeyFor(side); if (!key) return null;
+        const activeId = swGetActiveOne(side);
+        return activeId ? swFind(key, side, activeId) : null;
     }
     function swGetActiveBotOutfit()  { return swGetActiveSideOutfit('bot'); }
     function swGetActiveUserOutfit() { return swGetActiveSideOutfit('user'); }
@@ -316,15 +355,15 @@
                 },
             };
         }
-        const cn = swCharName();
+        const key = swWardrobeKeyFor(swTab);
         return {
             shared: false, side: swTab,
-            list: () => swGetWardrobe(cn)[swTab],
-            activeId: () => swGetActive()[swTab],
+            list: () => swGetWardrobe(key)[swTab],
+            activeId: () => swGetActiveOne(swTab),
             setActive: (id) => swSetActive(swTab, id),
-            find: (id) => swFind(cn, swTab, id),
-            add: (o) => swAdd(cn, swTab, o),
-            remove: (id) => swRemove(cn, swTab, id),
+            find: (id) => swFind(key, swTab, id),
+            add: (o) => swAdd(key, swTab, o),
+            remove: (id) => swRemove(key, swTab, id),
         };
     }
 
@@ -499,6 +538,12 @@
                     <select class="sw-sort-select">${sortOpt('added', 'Недавно добавленные')}${sortOpt('worn', 'Недавно надетые')}${sortOpt('name', 'По имени')}</select>
                 </div>
             </div>`;
+            // Персональный гардероб {{user}} keyed по персоне ST — небольшая подсказка, чтобы не путаться.
+            if (!useShared && swTab === 'user' && swGetSettings().userWardrobeByPersona) {
+                h += `<div class="sw-quick-hint" style="margin:-4px 0 8px;">
+                    <i class="fa-solid fa-id-badge"></i> Этот гардероб привязан к персоне «${esc(swPersonaLabel())}»
+                </div>`;
+            }
         }
 
         // ── Фильтр по типам (виды одежды) ──
@@ -1328,7 +1373,8 @@
     function swDebugInjection() {
         const cn = swCharName();
         const text = cn ? swBuildInjectionText(cn) : '(no character)';
-        console.log('[SW DEBUG] Active outfits for', cn, ':', swGetActive());
+        console.log('[SW DEBUG] bot key:', swWardrobeKeyFor('bot'), 'active:', swGetActiveOne('bot'));
+        console.log('[SW DEBUG] user key:', swWardrobeKeyFor('user'), 'active:', swGetActiveOne('user'));
         console.log('[SW DEBUG] Injection text that will be sent:\n' + (text || '(empty)'));
         return text;
     }
@@ -1448,6 +1494,17 @@
                     </div>
                 </div>
 
+                <div class="sw-quick-persona">
+                    <label class="sw-quick-check">
+                        <input type="checkbox" id="sw-q-user-by-persona" ${swGetSettings().userWardrobeByPersona ? 'checked' : ''}>
+                        <span><i class="fa-solid fa-id-badge"></i> Гардероб {{user}} — по персоне ST, а не по персонажу</span>
+                    </label>
+                    <div class="sw-quick-hint">
+                        Влияет только на режим «Перс» (не «Общий») на табе «Юзер». Включено — у каждой персоны SillyTavern свой набор аутфитов,
+                        общий для всех персонажей, с которыми она общается. Выключено (по умолчанию) — как раньше, гардероб юзера отдельный у каждого персонажа.
+                    </div>
+                </div>
+
                 <div class="sw-quick-tags">
                     <label class="sw-quick-tags-title"><i class="fa-solid fa-tags"></i> Теги одежды</label>
                     <div class="sw-tags-list" id="sw-tags-list"></div>
@@ -1540,6 +1597,12 @@
         panel.querySelector('#sw-q-tryon-avatar')?.addEventListener('change', (e) => {
             swGetSettings().tryOnAsAvatar = e.target.checked;
             swSave();
+        });
+        panel.querySelector('#sw-q-user-by-persona')?.addEventListener('change', (e) => {
+            swGetSettings().userWardrobeByPersona = e.target.checked;
+            swSave();
+            swUpdatePromptInjection();
+            toastr.info('Гардероб {{user}} теперь ' + (e.target.checked ? 'привязан к персоне ST' : 'привязан к персонажу') + '. Переоткройте гардероб, чтобы увидеть изменения.', 'Гардероб', { timeOut: 3500 });
         });
 
         const save = () => ctx.saveSettingsDebounced();
